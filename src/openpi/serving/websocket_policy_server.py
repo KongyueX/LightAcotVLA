@@ -3,6 +3,7 @@ import http
 import json
 import logging
 import pathlib
+import re
 import time
 import traceback
 
@@ -27,15 +28,20 @@ class WebsocketPolicyServer:
         port: int | None = None,
         metadata: dict | None = None,
         timing_log_path: str | pathlib.Path | None = None,
+        timing_log_dir: str | pathlib.Path | None = None,
     ) -> None:
         self._policy = policy
         self._host = host
         self._port = port
         self._metadata = metadata or {}
         self._timing_log_path = pathlib.Path(timing_log_path) if timing_log_path else None
+        self._timing_log_dir = pathlib.Path(timing_log_dir) if timing_log_dir else None
         self._request_index = 0
+        self._prompt_to_task_index: dict[str, int] = {}
         if self._timing_log_path is not None:
             self._timing_log_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._timing_log_dir is not None:
+            self._timing_log_dir.mkdir(parents=True, exist_ok=True)
         logging.getLogger("websockets.server").setLevel(logging.INFO)
 
     def serve_forever(self) -> None:
@@ -70,7 +76,7 @@ class WebsocketPolicyServer:
                     "infer_ms": infer_ms,
                 }
 
-                self._write_timing_record(action)
+                self._write_timing_record(obs, action)
                 await websocket.send(packer.pack(action))
 
             except websockets.ConnectionClosed:
@@ -84,8 +90,9 @@ class WebsocketPolicyServer:
                 )
                 raise
 
-    def _write_timing_record(self, action: dict) -> None:
-        if self._timing_log_path is None:
+    def _write_timing_record(self, obs: dict, action: dict) -> None:
+        log_path = self._get_timing_log_path(obs)
+        if log_path is None:
             return
 
         record = {
@@ -98,9 +105,28 @@ class WebsocketPolicyServer:
             },
         }
 
-        with self._timing_log_path.open("a") as f:
+        with log_path.open("a") as f:
             f.write(json.dumps(record, ensure_ascii=True) + "\n")
         self._request_index += 1
+
+    def _get_timing_log_path(self, obs: dict) -> pathlib.Path | None:
+        if self._timing_log_dir is None:
+            return self._timing_log_path
+
+        prompt = str(obs.get("prompt", "unknown_task"))
+        if prompt not in self._prompt_to_task_index:
+            self._prompt_to_task_index[prompt] = len(self._prompt_to_task_index)
+
+        task_index = self._prompt_to_task_index[prompt]
+        task_name = _sanitize_filename(prompt)
+        return self._timing_log_dir / f"{task_index:02d}_{task_name}.jsonl"
+
+
+def _sanitize_filename(value: str, *, max_len: int = 96) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    value = value.strip("_")
+    return (value or "unknown_task")[:max_len]
 
 
 def _health_check(connection: _server.ServerConnection, request: _server.Request) -> _server.Response | None:
