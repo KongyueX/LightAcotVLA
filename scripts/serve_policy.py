@@ -55,6 +55,8 @@ class Args:
     record: bool = False
     # Optional JSONL path. One timing record is written for every completed inference request.
     timing_log_path: str | None = None
+    # Optional directory. Timing records are split into one JSONL file per prompt/task.
+    timing_log_dir: str | None = None
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -131,6 +133,7 @@ def main(args: Args) -> None:
         port=args.port,
         metadata=policy_metadata,
         timing_log_path=args.timing_log_path,
+        timing_log_dir=args.timing_log_dir,
     )
     server.serve_forever()
 
