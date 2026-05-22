@@ -76,23 +76,18 @@ def main(data_dir: str, *, push_to_hub: bool = False):
         raw_dataset = tfds.load(raw_dataset_name, data_dir=data_dir, split="train")
         for episode in raw_dataset:
             for step in episode["steps"].as_numpy_iterator():
-                task = step["language_instruction"]
-                if isinstance(task, bytes):
-                    task = task.decode("utf-8")
-
                 dataset.add_frame(
                     {
                         "image": step["observation"]["image"],
                         "wrist_image": step["observation"]["wrist_image"],
                         "state": step["observation"]["state"],
                         "actions": step["action"],
-                        "task": task,
                     }
                 )
-            dataset.save_episode()
+            dataset.save_episode(task=step["language_instruction"].decode())
 
     # Consolidate the dataset, skip computing stats since we will do that later
-    # dataset.consolidate(run_compute_stats=False)  # current LeRobotDataset has no consolidate()
+    dataset.consolidate(run_compute_stats=False)
 
     # Optionally push to the Hugging Face Hub
     if push_to_hub:
