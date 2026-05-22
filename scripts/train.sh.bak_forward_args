@@ -7,4 +7,4 @@ CONFIG_NAME=${1}
 EXP_NAME=${2}
 
 env | sort
-/root/.local/bin/uv run python scripts/train.py $CONFIG_NAME --exp-name=$EXP_NAME "${@:3}"
+/root/.local/bin/uv run python scripts/train.py $CONFIG_NAME --exp-name=$EXP_NAME

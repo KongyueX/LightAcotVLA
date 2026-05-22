@@ -1585,7 +1585,7 @@ _CONFIGS = [
         name="acot_libero_action_cot_explicit_implicit_co_fusion",
         model=acot_vla.ACOTConfig(coarse_action_horizon=15, action_horizon=10, pi05=True, discrete_state_input=False, coarse_action_expert_variant = "gemma_300m", action_expert_variant = "gemma_300m", adopt_explicit_action_reasoner=True, adopt_implicit_action_reasoner=True, downsample_based_implicit_extractor=True),
         data=LeRobotACOTLiberoDataConfig(
-            repo_id="your_hf_username/libero",
+            repo_id="/mnt/public/zhonglinqing/data/datasets/libero_dataset/",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=(False, False),
             joint_action_shifts=(2, 1)
@@ -1599,12 +1599,12 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
-            "/root/autodl-tmp/acotvla/openpi-cache/openpi-assets/checkpoints/pi05_base/params"
+            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
         ),
         num_train_steps=51_000,
         save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1000,
         num_workers=48 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
-        batch_size=16,
+        batch_size=128 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
         freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(freeze_vision = False, freeze_llm = True, freeze_dual_ae=[False, False]),
     ),
     # VLABench configs
@@ -1637,7 +1637,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
-            "/root/autodl-tmp/acotvla/openpi-cache/openpi-assets/checkpoints/pi05_base/params"
+            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
         ),
         num_train_steps=61_000,
         save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1000,
@@ -1664,7 +1664,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
-            "/root/autodl-tmp/acotvla/openpi-cache/openpi-assets/checkpoints/pi05_base/params"
+            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
         ),
         num_train_steps=101_000,
         save_interval=20000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1000,
@@ -1708,7 +1708,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
-            "/root/autodl-tmp/acotvla/openpi-cache/openpi-assets/checkpoints/pi05_base/params"
+            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
         ),
         num_train_steps=51_000,
         save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1000,
@@ -1734,7 +1734,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
-            "/root/autodl-tmp/acotvla/openpi-cache/openpi-assets/checkpoints/pi05_base/params"
+            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
         ),
         num_train_steps=51_000,
         save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1000,
@@ -1760,7 +1760,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
-            "/root/autodl-tmp/acotvla/openpi-cache/openpi-assets/checkpoints/pi05_base/params"
+            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
         ),
         num_train_steps=240_000,
         save_interval=30000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1000,
@@ -1804,7 +1804,7 @@ _CONFIGS = [
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
-            "/root/autodl-tmp/acotvla/openpi-cache/openpi-assets/checkpoints/pi05_base/params"
+            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
         ),
         num_train_steps=51_000,
         save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
@@ -1926,7 +1926,7 @@ _CONFIGS = [
         optimizer = _optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay = 0.999,
         weight_loader = weight_loaders.ACOTCheckpointWeightLoader(
-            "/root/autodl-tmp/acotvla/openpi-cache/openpi-assets/checkpoints/pi05_base/params"
+            "/mnt/public/zhonglinqing/pkgs/pi05_model/params"
         ),
         num_train_steps = 50_000,
         save_interval = 5000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 200,
@@ -2070,72 +2070,6 @@ TrainConfig(
 )
 
 
-
-,
-
-TrainConfig(
-    name="acot_autodl_agibot_50k_bs8_clean",
-
-    model=acot_vla.ACOTConfig(
-        coarse_action_horizon=30,
-        action_horizon=30,
-        pi05=True,
-        discrete_state_input=False,
-        paligemma_variant="gemma_2b_lora",
-        adopt_explicit_action_reasoner=True,
-        adopt_implicit_action_reasoner=True,
-        downsample_based_implicit_extractor=True,
-    ),
-
-    data=LerobotACOTGo2DataConfig(
-        default_prompt="Clean the desktop.",
-        repo_id="/root/autodl-tmp/acotvla/datasets/agibot/Reasoning2Action-Sim/dataset_without_depth/clean_the_desktop_part_1",
-        assets=AssetsConfig(
-            assets_dir=None,
-            asset_id="/root/autodl-tmp/acotvla/assets/acot_autodl_agibot_50k_bs8_clean",
-        ),
-        base_config=DataConfig(
-            dataloader_sampler="subtask",
-            prompt_from_hl_instruction=True,
-        ),
-        joint_action_shifts=(2, 1),
-        extra_delta_transform=(True, True),
-    ),
-
-    lr_schedule=_optimizer.CosineDecaySchedule(
-        warmup_steps=1000,
-        peak_lr=5e-5,
-        decay_steps=50_000,
-        decay_lr=5e-6,
-    ),
-    optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
-    ema_decay=0.999,
-
-    weight_loader=weight_loaders.ACOTCheckpointWeightLoader(
-        "gs://openpi-assets/checkpoints/pi05_base/params"
-    ),
-
-    num_train_steps=50_000,
-    save_interval=10_000,
-    log_interval=50,
-    keep_period=10_000,
-
-    batch_size=8,
-    num_workers=6,
-    fsdp_devices=1,
-
-    assets_base_dir="/root/autodl-tmp/acotvla/assets",
-    checkpoint_base_dir="/root/autodl-tmp/acotvla/checkpoints",
-
-    freeze_filter=acot_vla.ACOTConfig(
-        paligemma_variant="gemma_2b_lora"
-    ).get_freeze_filter(
-        freeze_vision=False,
-        freeze_llm=True,
-        freeze_llm_embedder=True,
-        freeze_dual_ae=[False, False],
-    ),
-)
 
 ]
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
