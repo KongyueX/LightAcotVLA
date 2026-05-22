@@ -183,7 +183,15 @@ def eval_libero(args: Args) -> None:
 
                         # Query model to get action
                         ret_result = client.infer(element)
-                        timing_record = _make_timing_record(
+                        action_chunk = ret_result["actions"]
+
+                        assert (
+                            len(action_chunk) >= args.replan_steps
+                        ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
+                        action_plan.extend(action_chunk[: args.replan_steps])
+                        _record_timing_if_available(
+                            timing_stats=timing_stats,
+                            episode_timing_records=episode_timing_records,
                             args=args,
                             task_id=task_id,
                             task_description=str(task_description),
@@ -192,16 +200,7 @@ def eval_libero(args: Args) -> None:
                             infer_idx=episode_infer_idx,
                             response=ret_result,
                         )
-                        episode_timing_records.append(timing_record)
-                        _accumulate_timing(timing_stats, timing_record)
                         episode_infer_idx += 1
-
-                        action_chunk = ret_result["actions"]
-
-                        assert (
-                            len(action_chunk) >= args.replan_steps
-                        ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
-                        action_plan.extend(action_chunk[: args.replan_steps])
 
                     action = action_plan.popleft()
 
@@ -213,8 +212,8 @@ def eval_libero(args: Args) -> None:
                         break
                     t += 1
 
-                except Exception as e:
-                    logging.error(f"Caught exception: {e}")
+                except Exception:
+                    logging.exception("Caught exception while running task %d trial %d", task_id, episode_idx)
                     break
 
             task_episodes += 1
@@ -308,6 +307,34 @@ def _make_timing_record(
             "infer_ms": _as_float(response.get("policy_timing", {}).get("infer_ms")),
         },
     }
+
+
+def _record_timing_if_available(
+    *,
+    timing_stats,
+    episode_timing_records: list[dict],
+    args: Args,
+    task_id: int,
+    task_description: str,
+    episode_idx: int,
+    init_state_idx: int,
+    infer_idx: int,
+    response: dict,
+) -> None:
+    try:
+        timing_record = _make_timing_record(
+            args=args,
+            task_id=task_id,
+            task_description=task_description,
+            episode_idx=episode_idx,
+            init_state_idx=init_state_idx,
+            infer_idx=infer_idx,
+            response=response,
+        )
+        episode_timing_records.append(timing_record)
+        _accumulate_timing(timing_stats, timing_record)
+    except Exception:
+        logging.exception("Failed to record timing for task %d trial %d infer %d", task_id, episode_idx, infer_idx)
 
 
 def _accumulate_timing(timing_stats, record: dict) -> None:
@@ -416,7 +443,10 @@ def _mean_or_none(total: float, count: int) -> float | None:
 def _as_float(value) -> float | None:
     if value is None:
         return None
-    return float(value)
+    array = np.asarray(value)
+    if array.size != 1:
+        return None
+    return float(array.reshape(()))
 
 
 def _sanitize_filename(value: str, *, max_len: int = 96) -> str:
