@@ -120,6 +120,8 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 def _resolve_checkpoint_dir(train_config: _config.TrainConfig, checkpoint_dir: str | None) -> pathlib.Path:
     if checkpoint_dir is not None:
+        if not checkpoint_dir.strip():
+            raise ValueError("--checkpoint_dir was provided but is empty. Check that $CHECKPOINT_DIR is set.")
         return download.maybe_download(checkpoint_dir)
 
     try:
@@ -387,10 +389,10 @@ def main() -> None:
     train_config = _config.get_config(args.config_name)
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
     checkpoint_dir = None
-    if args.policy_host is None:
+    if args.checkpoint_dir is not None:
         checkpoint_dir = _resolve_checkpoint_dir(train_config, args.checkpoint_dir)
-    elif args.checkpoint_dir is not None:
-        checkpoint_dir = pathlib.Path(args.checkpoint_dir)
+    elif args.policy_host is None and not args.dry_run_dataset:
+        checkpoint_dir = _resolve_checkpoint_dir(train_config, args.checkpoint_dir)
     norm_stats = _load_norm_stats(train_config, checkpoint_dir, data_config)
 
     _status("Creating policy input dataset")
