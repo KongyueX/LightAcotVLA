@@ -1,9 +1,10 @@
 """Export offline Action-CoT entropy labels for ACoT-VLA policies.
 
 Debug example:
+mkdir -p checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion
+ln -sfn /path/to/checkpoint/step checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/latest
 python scripts/export_action_cot_entropy.py \
     --config_name acot_libero_action_cot_explicit_implicit_co_fusion \
-    --checkpoint_dir "$CHECKPOINT_DIR" \
     --num_samples 4 \
     --segment_mode fixed \
     --chunk_size 5 \
@@ -119,15 +120,33 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 
 def _resolve_checkpoint_dir(train_config: _config.TrainConfig, checkpoint_dir: str | None) -> pathlib.Path:
-    if checkpoint_dir is not None:
-        if not checkpoint_dir.strip():
-            raise ValueError("--checkpoint_dir was provided but is empty. Check that $CHECKPOINT_DIR is set.")
+    if checkpoint_dir is not None and checkpoint_dir.strip():
         return download.maybe_download(checkpoint_dir)
+
+    candidate_dirs = [
+        pathlib.Path(train_config.checkpoint_base_dir) / train_config.name / "latest",
+        pathlib.Path("checkpoints") / train_config.name / "latest",
+        pathlib.Path("/root/autodl-tmp/acotvla/checkpoints") / train_config.name / "latest",
+    ]
+    seen = set()
+    for candidate in candidate_dirs:
+        candidate = candidate.expanduser()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists():
+            _status(f"Using checkpoint symlink/default path: {candidate}")
+            return candidate.resolve()
 
     try:
         return download.maybe_download(str(train_config.checkpoint_dir))
     except Exception as exc:
-        raise ValueError("--checkpoint_dir is required when config.checkpoint_dir cannot be resolved.") from exc
+        candidates = "\n  ".join(str(path) for path in candidate_dirs)
+        raise ValueError(
+            "--checkpoint_dir is required when config.checkpoint_dir cannot be resolved. "
+            "Alternatively create one of these symlinks:\n  "
+            f"{candidates}"
+        ) from exc
 
 
 def _load_norm_stats(
