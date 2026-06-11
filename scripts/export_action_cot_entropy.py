@@ -10,6 +10,18 @@ python scripts/export_action_cot_entropy.py \
     --prune_ratio 0.3 \
     --max_items 200 \
     --output_dir ./action_cot_entropy_labels
+
+Remote-policy example, with serve_policy.py already running:
+python scripts/export_action_cot_entropy.py \
+    --config_name acot_libero_action_cot_explicit_implicit_co_fusion \
+    --policy_host 127.0.0.1 \
+    --policy_port 8000 \
+    --num_samples 4 \
+    --segment_mode fixed \
+    --chunk_size 5 \
+    --prune_ratio 0.3 \
+    --max_items 200 \
+    --output_dir ./action_cot_entropy_labels
 """
 
 import argparse
@@ -32,6 +44,10 @@ from openpi.training import data_loader as _data_loader
 
 
 LOGGER = logging.getLogger("export_action_cot_entropy")
+
+
+def _status(message: str) -> None:
+    print(f"[export_action_cot_entropy] {message}", flush=True)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -62,6 +78,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", "--output-dir", default="./action_cot_entropy_labels")
     parser.add_argument("--default_prompt", "--default-prompt", default=None)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--policy_host", "--policy-host", default=None)
+    parser.add_argument("--policy_port", "--policy-port", type=int, default=None)
+    parser.add_argument("--policy_api_key", "--policy-api-key", default=None)
+    parser.add_argument(
+        "--continue_on_error",
+        "--continue-on-error",
+        action="store_true",
+        help="Skip bad dataset items instead of failing immediately with a traceback.",
+    )
+    parser.add_argument(
+        "--dry_run_dataset",
+        "--dry-run-dataset",
+        action="store_true",
+        help="Only construct the policy input dataset and print the first item summary.",
+    )
     parser.add_argument("--gripper_indices", "--gripper-indices", nargs="*", type=int, default=None)
     parser.add_argument(
         "--offline_fallback_noise_std",
@@ -83,6 +114,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max_items must be positive.")
     if args.offline_fallback_noise_std < 0:
         raise ValueError("--offline_fallback_noise_std must be non-negative.")
+    if (args.policy_host is None) != (args.policy_port is None):
+        raise ValueError("--policy_host and --policy_port must be provided together.")
 
 
 def _resolve_checkpoint_dir(train_config: _config.TrainConfig, checkpoint_dir: str | None) -> pathlib.Path:
@@ -97,13 +130,13 @@ def _resolve_checkpoint_dir(train_config: _config.TrainConfig, checkpoint_dir: s
 
 def _load_norm_stats(
     train_config: _config.TrainConfig,
-    checkpoint_dir: pathlib.Path,
+    checkpoint_dir: pathlib.Path | None,
     data_config: _config.DataConfig,
 ) -> dict[str, Any] | None:
     if data_config.norm_stats is not None:
         return data_config.norm_stats
 
-    if data_config.asset_id is None:
+    if data_config.asset_id is None or checkpoint_dir is None:
         return None
 
     try:
@@ -159,6 +192,57 @@ def _create_policy_dataset(train_config: _config.TrainConfig, data_config: _conf
     return _data_loader.TransformedDataset(base_dataset, [*data_config.repack_transforms.inputs])
 
 
+def _summarize_value(value: Any) -> str:
+    try:
+        array = np.asarray(value)
+        return f"shape={array.shape}, dtype={array.dtype}"
+    except Exception:
+        return type(value).__name__
+
+
+def _print_dataset_summary(dataset: _data_loader.Dataset, max_items: int) -> None:
+    _status(f"Dataset length: {len(dataset)}; requested max_items: {max_items}")
+    if len(dataset) == 0:
+        return
+    item = dataset[0]
+    if item is None:
+        _status("First dataset item is None")
+        return
+    _status("First dataset item:")
+    for key in sorted(item):
+        _status(f"  {key}: {_summarize_value(item[key])}")
+
+
+def _create_policy(
+    args: argparse.Namespace,
+    train_config: _config.TrainConfig,
+    checkpoint_dir: pathlib.Path | None,
+    norm_stats: dict[str, Any] | None,
+):
+    if args.policy_host is not None:
+        from openpi_client import websocket_client_policy as _websocket_client_policy
+
+        _status(f"Connecting to remote policy at {args.policy_host}:{args.policy_port}")
+        return _websocket_client_policy.WebsocketClientPolicy(
+            args.policy_host,
+            args.policy_port,
+            api_key=args.policy_api_key,
+            ping_interval=None,
+            ping_timeout=None,
+        )
+
+    if checkpoint_dir is None:
+        raise ValueError("--checkpoint_dir is required unless --policy_host/--policy_port are provided.")
+
+    _status(f"Loading local policy from {checkpoint_dir}")
+    return _policy_config.create_trained_policy(
+        train_config,
+        checkpoint_dir,
+        default_prompt=args.default_prompt,
+        norm_stats=norm_stats,
+    )
+
+
 def _set_policy_seed(policy: Any, seed: int) -> None:
     if hasattr(policy, "_rng"):
         setattr(policy, "_rng", jax.random.key(seed))
@@ -197,6 +281,7 @@ def _collect_policy_samples(
 
     for sample_index in range(num_samples):
         _set_policy_seed(policy, seed + item_index * num_samples + sample_index)
+        _status(f"  policy.infer sample {sample_index + 1}/{num_samples}")
         result = policy.infer(data)
         if "coarse_actions" not in result:
             raise KeyError("Policy output does not contain 'coarse_actions'. Is this an explicit Action-CoT policy?")
@@ -256,10 +341,12 @@ def _entropy_samples(
     return coarse_samples_normalized + noise, True
 
 
-def _write_metadata(args: argparse.Namespace, checkpoint_dir: pathlib.Path, output_dir: pathlib.Path) -> None:
+def _write_metadata(args: argparse.Namespace, checkpoint_dir: pathlib.Path | None, output_dir: pathlib.Path) -> None:
     metadata = {
         "config_name": args.config_name,
-        "checkpoint_dir": str(checkpoint_dir),
+        "checkpoint_dir": str(checkpoint_dir) if checkpoint_dir is not None else None,
+        "policy_host": args.policy_host,
+        "policy_port": args.policy_port,
         "num_samples": args.num_samples,
         "segment_mode": args.segment_mode,
         "chunk_size": args.chunk_size,
@@ -289,27 +376,32 @@ def _summary_row(sample_id: str, entropy: np.ndarray, skip_mask: np.ndarray) -> 
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", force=True)
     args = _parse_args()
     _validate_args(args)
 
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    _status(f"Loading config: {args.config_name}")
     train_config = _config.get_config(args.config_name)
-    checkpoint_dir = _resolve_checkpoint_dir(train_config, args.checkpoint_dir)
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    checkpoint_dir = None
+    if args.policy_host is None:
+        checkpoint_dir = _resolve_checkpoint_dir(train_config, args.checkpoint_dir)
+    elif args.checkpoint_dir is not None:
+        checkpoint_dir = pathlib.Path(args.checkpoint_dir)
     norm_stats = _load_norm_stats(train_config, checkpoint_dir, data_config)
 
-    LOGGER.info("Loading policy from %s", checkpoint_dir)
-    policy = _policy_config.create_trained_policy(
-        train_config,
-        checkpoint_dir,
-        default_prompt=args.default_prompt,
-        norm_stats=norm_stats,
-    )
+    _status("Creating policy input dataset")
     dataset = _create_policy_dataset(train_config, data_config)
     total_items = min(args.max_items, len(dataset))
+    _status(f"Dataset ready: len={len(dataset)}, export_items={total_items}")
+    if args.dry_run_dataset:
+        _print_dataset_summary(dataset, args.max_items)
+        return
+
+    policy = _create_policy(args, train_config, checkpoint_dir, norm_stats)
     _write_metadata(args, checkpoint_dir, output_dir)
 
     summary_path = output_dir / "summary.csv"
@@ -322,10 +414,13 @@ def main() -> None:
 
         for item_index in range(total_items):
             try:
+                _status(f"Processing item {item_index + 1}/{total_items}")
                 data = dataset[item_index]
                 if data is None:
+                    _status(f"Skipping item {item_index}: dataset returned None")
                     continue
                 sample_id = _sample_id(data, item_index)
+                _status(f"Collecting {args.num_samples} policy samples for sample_id={sample_id}")
                 coarse_samples, actions_full, timing_ms, wall_time_ms = _collect_policy_samples(
                     policy,
                     data,
@@ -382,11 +477,18 @@ def main() -> None:
                 )
                 writer.writerow(_summary_row(sample_id, entropy, skip_mask))
                 processed += 1
+                _status(
+                    f"Wrote {output_path.name}: coarse_samples={coarse_samples.shape}, "
+                    f"num_segments={len(segments)}, skip_ratio={float(np.mean(skip_mask)):.3f}"
+                )
 
                 if processed % 10 == 0:
                     LOGGER.info("Processed %s/%s items", processed, total_items)
             except Exception as exc:
-                LOGGER.warning("Skipping item %s due to export error: %s", item_index, exc)
+                LOGGER.exception("Failed to export item %s", item_index)
+                if not args.continue_on_error:
+                    raise
+                _status(f"Skipping item {item_index} due to export error: {exc}")
 
     if processed == 0:
         raise RuntimeError("No samples were exported. Check the dataset, checkpoint, and policy coarse_actions output.")
