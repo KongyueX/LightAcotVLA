@@ -170,3 +170,9 @@ cython_debug/
 logs/
 *exps*
 .vscode/
+# Local runtime artifacts
+MUJOCO_LOG.TXT
+*.bak
+*.bak.*
+*.orig
+*.rej
