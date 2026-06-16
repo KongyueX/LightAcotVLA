@@ -798,6 +798,7 @@ class ACOT_VLA(_model.BaseModel):
         observation: _model.Observation,
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
+        explicit_action_reason_override: _model.CoarseActions | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
@@ -854,7 +855,11 @@ class ACOT_VLA(_model.BaseModel):
             x_t, time, _ = carry
             return time >= -dt / 2
 
-        if self.adopt_explicit_action_reasoner:
+        if explicit_action_reason_override is not None:
+            if not self.adopt_explicit_action_reasoner:
+                raise ValueError("explicit_action_reason_override requires adopt_explicit_action_reasoner=True.")
+            explicit_action_reason = explicit_action_reason_override
+        elif self.adopt_explicit_action_reasoner:
             explicit_action_reason, _, _ = jax.lax.while_loop(cond_explicit_action_reasoner, step_explicit_action_reasoner, (ref_action_noise, 1.0, 1))
         else:
             explicit_action_reason = None
