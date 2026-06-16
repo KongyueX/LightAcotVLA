@@ -23,11 +23,7 @@ from typing import Any
 import numpy as np
 
 from openpi.action_cot import compression as acot_compression
-from openpi.policies import policy_config as _policy_config
-from openpi.shared import download
-from openpi.training import checkpoints as _checkpoints
-from openpi.training import config as _config
-from openpi.training import data_loader as _data_loader
+from openpi.shared import normalize as _normalize
 
 LOGGER = logging.getLogger("eval_action_cot_pruning")
 
@@ -170,6 +166,8 @@ def _resolve_checkpoint_dir(
     *,
     allow_config_default: bool,
 ) -> pathlib.Path | None:
+    from openpi.shared import download
+
     if checkpoint_dir:
         return download.maybe_download(checkpoint_dir)
     if not allow_config_default:
@@ -191,7 +189,13 @@ def _load_norm_stats(
     if checkpoint_dir is None or data_config.asset_id is None:
         return None
     try:
-        return _checkpoints.load_norm_stats(checkpoint_dir / "assets", data_config.asset_id)
+        if "/" in data_config.asset_id or isinstance(data_config.asset_id, list):
+            norm_stats_dir = checkpoint_dir / "assets"
+        else:
+            norm_stats_dir = checkpoint_dir / "assets" / data_config.asset_id
+        norm_stats = _normalize.load(norm_stats_dir)
+        LOGGER.info("Loaded norm stats from %s", norm_stats_dir)
+        return norm_stats
     except FileNotFoundError:
         LOGGER.warning("No normalization stats found under %s.", checkpoint_dir / "assets")
     except Exception as exc:
@@ -264,7 +268,16 @@ def _zero_action_value(
 def _create_policy_dataset(
     train_config: _config.TrainConfig,
     data_config: _config.DataConfig,
-) -> _data_loader.Dataset:
+) -> Any:
+    try:
+        from openpi.training import data_loader as _data_loader
+    except ImportError as exc:
+        raise ImportError(
+            "Could not import openpi.training.data_loader. This is required for expert-action metrics and "
+            "--enable_action_injection. If the error mentions libavformat/libavcodec, install the server "
+            "FFmpeg/PyAV runtime libraries or rerun without --enable_action_injection."
+        ) from exc
+
     if data_config.rlds_data_dir is not None:
         raise NotImplementedError("Stage B static expert-action lookup supports random-access LeRobot datasets.")
     base_dataset = _data_loader.create_torch_dataset(data_config, train_config.model)
@@ -275,7 +288,7 @@ def _maybe_create_expert_dataset(
     args: argparse.Namespace,
     train_config: _config.TrainConfig,
     data_config: _config.DataConfig,
-) -> _data_loader.Dataset | None:
+) -> Any | None:
     if args.no_expert_actions:
         return None
     try:
@@ -292,7 +305,7 @@ def _maybe_create_injection_policy(
     train_config: _config.TrainConfig,
     checkpoint_dir: pathlib.Path | None,
     norm_stats: dict[str, Any] | None,
-    dataset: _data_loader.Dataset | None,
+    dataset: Any | None,
 ):
     if not args.enable_action_injection:
         return None
@@ -309,6 +322,8 @@ def _maybe_create_injection_policy(
         LOGGER.warning("%s Falling back to static action proxy.", message)
         return None
     try:
+        from openpi.policies import policy_config as _policy_config
+
         _status(f"Loading policy for action injection from {checkpoint_dir}")
         return _policy_config.create_trained_policy(
             train_config,
@@ -316,6 +331,15 @@ def _maybe_create_injection_policy(
             default_prompt=args.default_prompt,
             norm_stats=norm_stats,
         )
+    except ImportError as exc:
+        message = (
+            "Could not import policy loading dependencies. If the error mentions libavformat/libavcodec, "
+            "the server is missing FFmpeg/PyAV shared libraries required by LeRobot/PyAV."
+        )
+        if args.require_action_injection:
+            raise ImportError(message) from exc
+        LOGGER.warning("%s Falling back to static action proxy: %s", message, exc)
+        return None
     except Exception as exc:
         if args.require_action_injection:
             raise
@@ -583,7 +607,7 @@ def _aggregate_std(aggregates: Sequence[dict[str, float]]) -> dict[str, float]:
 
 
 def _expert_actions_for_item(
-    dataset: _data_loader.Dataset | None,
+    dataset: Any | None,
     item_index: int,
     train_config: _config.TrainConfig,
     data_config: _config.DataConfig,
@@ -1070,6 +1094,8 @@ def _run_pruning(
 
 
 def run_evaluation(args: argparse.Namespace) -> dict[str, Any]:
+    from openpi.training import config as _config
+
     _validate_args(args)
     entropy_dir = pathlib.Path(args.entropy_dir)
     output_dir = pathlib.Path(args.output_dir)
