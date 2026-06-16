@@ -42,7 +42,23 @@ class Policy(BasePolicy):
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
         # Make a copy since transformations may modify the inputs in place.
         inputs = jax.tree.map(lambda x: x, obs)
+        coarse_actions_override = inputs.pop("coarse_actions_override", None)
+        transformed_coarse_actions_override = None
+        if coarse_actions_override is not None:
+            override_inputs = jax.tree.map(lambda x: x, obs)
+            override_inputs.pop("coarse_actions_override", None)
+            # Avoid data transforms regenerating coarse_actions from expert actions.
+            override_inputs.pop("actions", None)
+            override_inputs["coarse_actions"] = coarse_actions_override
+            override_inputs = self._input_transform(override_inputs)
+            if "coarse_actions" not in override_inputs:
+                raise KeyError("Input transforms did not preserve coarse_actions_override as coarse_actions.")
+            transformed_coarse_actions_override = override_inputs["coarse_actions"]
+
         inputs = self._input_transform(inputs)
+        if transformed_coarse_actions_override is not None:
+            inputs["coarse_actions_override"] = transformed_coarse_actions_override
+
         # Make a batch and convert to jax.Array.
         inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
 
@@ -51,7 +67,13 @@ class Policy(BasePolicy):
         outputs = {
             "state": inputs["state"]
         }
-        result = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **self._sample_kwargs)
+        sample_kwargs = self._sample_kwargs
+        if "coarse_actions_override" in inputs:
+            sample_kwargs = {
+                **sample_kwargs,
+                "explicit_action_reason_override": inputs.pop("coarse_actions_override"),
+            }
+        result = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **sample_kwargs)
 
         if isinstance(result, dict):
             outputs.update(result)    
