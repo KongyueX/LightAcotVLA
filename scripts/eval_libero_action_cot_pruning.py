@@ -24,12 +24,10 @@ import json
 import logging
 import math
 import pathlib
+import sys
 import time
 from typing import Any
 
-from libero.libero import benchmark
-from libero.libero import get_libero_path
-from libero.libero.envs import OffScreenRenderEnv
 import imageio
 import numpy as np
 from openpi_client import image_tools
@@ -42,6 +40,30 @@ from openpi.shared import normalize as _normalize
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
+
+
+def _ensure_libero_import_path() -> None:
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    local_libero = repo_root / "third_party" / "libero"
+    if (local_libero / "libero").exists():
+        sys.path.insert(0, str(local_libero))
+
+
+_ensure_libero_import_path()
+try:
+    from libero.libero import benchmark
+    from libero.libero import get_libero_path
+    from libero.libero.envs import OffScreenRenderEnv
+except ModuleNotFoundError as exc:
+    if exc.name != "libero":
+        raise
+    raise ModuleNotFoundError(
+        "LIBERO is required for closed-loop rollout evaluation. Install or initialize it on the server:\n"
+        "  cd /root/ACoT-VLA\n"
+        "  git submodule update --init --recursive third_party/libero\n"
+        "  uv pip install -e third_party/libero\n"
+        "Then rerun this script."
+    ) from exc
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
