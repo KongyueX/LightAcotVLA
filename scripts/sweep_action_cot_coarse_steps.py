@@ -1,4 +1,4 @@
-"""Sweep explicit Action-CoT denoising steps for speed or closed-loop quality."""
+"""Sweep explicit Action-CoT denoising steps for speed and closed-loop quality."""
 
 from __future__ import annotations
 
@@ -20,10 +20,11 @@ def _status(message: str) -> None:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("speed", "closed_loop"), default="speed")
+    parser.add_argument("--mode", choices=("speed", "closed_loop", "both"), default="speed")
     parser.add_argument("--output_dir", "--output-dir", required=True)
     parser.add_argument("--coarse_steps", "--coarse-steps", nargs="*", type=int, default=DEFAULT_STEPS)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--no_plots", "--no-plots", action="store_true")
 
     parser.add_argument("--entropy_dir", "--entropy-dir", default=None)
     parser.add_argument("--policy.config", "--policy-config", dest="config_name", default=None)
@@ -59,13 +60,13 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--coarse_steps must contain at least one value.")
     if any(step <= 0 for step in args.coarse_steps):
         raise ValueError("--coarse_steps values must be positive.")
-    if args.mode == "speed":
+    if args.mode in ("speed", "both"):
         if args.entropy_dir is None:
-            raise ValueError("--entropy_dir is required for --mode speed.")
+            raise ValueError("--entropy_dir is required for --mode speed or --mode both.")
         if args.config_name is None:
-            raise ValueError("--policy.config is required for --mode speed.")
+            raise ValueError("--policy.config is required for --mode speed or --mode both.")
         if args.checkpoint_dir is None:
-            raise ValueError("--policy.dir is required for --mode speed.")
+            raise ValueError("--policy.dir is required for --mode speed or --mode both.")
 
 
 def _run(command: list[str]) -> None:
@@ -201,6 +202,7 @@ def _closed_loop_row(step: int, summary: dict[str, Any], target_mode: str, basel
         "avg_wall_inference_ms": wall_ms,
         "avg_policy_inference_ms": _safe_get(mode_metrics, "avg_policy_inference_ms"),
         "avg_server_inference_ms": _safe_get(mode_metrics, "avg_server_inference_ms"),
+        "avg_coarse_num_steps_used": _safe_get(mode_metrics, "avg_coarse_num_steps_used"),
         "speedup_vs_coarse10_pct": speedup,
     }
 
@@ -215,17 +217,135 @@ def _write_csv(path: pathlib.Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def main() -> None:
-    args = _parse_args()
-    _validate_args(args)
-    output_dir = pathlib.Path(args.output_dir)
+def _read_csv(path: pathlib.Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def _float(row: dict[str, Any], key: str) -> float:
+    try:
+        return float(row.get(key, "nan"))
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _setup_matplotlib():
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
+
+
+def _plot_line(rows: list[dict[str, Any]], *, x_key: str, y_key: str, ylabel: str, title: str, path: pathlib.Path) -> None:
+    if not rows:
+        return
+    points = sorted((int(float(row[x_key])), _float(row, y_key)) for row in rows)
+    plt = _setup_matplotlib()
+    fig, ax = plt.subplots(figsize=(6.5, 4))
+    ax.plot([point[0] for point in points], [point[1] for point in points], marker="o", linewidth=2)
+    ax.set_xlabel("Coarse denoising steps")
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def _plot_tradeoff(speed_rows: list[dict[str, Any]], closed_rows: list[dict[str, Any]], path: pathlib.Path) -> None:
+    if not speed_rows or not closed_rows:
+        return
+    speed_by_step = {int(float(row["coarse_num_steps"])): _float(row, "full_acot_ms_mean") for row in speed_rows}
+    points = []
+    for row in closed_rows:
+        step = int(float(row["coarse_num_steps"]))
+        if step in speed_by_step:
+            points.append((step, speed_by_step[step], _float(row, "success_rate")))
+    if not points:
+        return
+
+    plt = _setup_matplotlib()
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    for step, latency, success in sorted(points):
+        ax.scatter(latency, success, s=70)
+        ax.annotate(str(step), (latency, success), xytext=(5, 4), textcoords="offset points")
+    ax.set_xlabel("Open-loop policy latency (ms)")
+    ax.set_ylabel("Closed-loop success rate")
+    ax.set_title("Speed-success tradeoff by coarse denoising steps")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def _write_combined_report(output_dir: pathlib.Path) -> None:
+    speed_rows = _read_csv(output_dir / "speed" / "coarse_steps_speed_summary.csv")
+    closed_rows = _read_csv(output_dir / "closed_loop" / "coarse_steps_closed_loop_summary.csv")
+    if not speed_rows and not closed_rows:
+        return
+
+    speed_by_step = {int(float(row["coarse_num_steps"])): row for row in speed_rows}
+    closed_by_step = {int(float(row["coarse_num_steps"])): row for row in closed_rows}
+    steps = sorted(set(speed_by_step) | set(closed_by_step), reverse=True)
+    combined_rows = []
+    for step in steps:
+        speed = speed_by_step.get(step, {})
+        closed = closed_by_step.get(step, {})
+        combined_rows.append(
+            {
+                "coarse_num_steps": step,
+                "speed_full_acot_ms_mean": speed.get("full_acot_ms_mean", ""),
+                "speedup_vs_coarse10_pct": speed.get("speedup_vs_coarse10_pct", closed.get("speedup_vs_coarse10_pct", "")),
+                "closed_loop_success_rate": closed.get("success_rate", ""),
+                "closed_loop_average_return": closed.get("average_return", ""),
+                "closed_loop_timeout_rate": closed.get("timeout_rate", ""),
+                "closed_loop_avg_wall_inference_ms": closed.get("avg_wall_inference_ms", ""),
+                "avg_coarse_num_steps_used": closed.get("avg_coarse_num_steps_used", ""),
+            }
+        )
+    _write_csv(output_dir / "coarse_steps_systematic_summary.csv", combined_rows)
+
+    plot_dir = output_dir / "plots"
+    _plot_line(
+        speed_rows,
+        x_key="coarse_num_steps",
+        y_key="full_acot_ms_mean",
+        ylabel="Open-loop latency (ms)",
+        title="Latency vs coarse denoising steps",
+        path=plot_dir / "latency_vs_steps.png",
+    )
+    _plot_line(
+        speed_rows,
+        x_key="coarse_num_steps",
+        y_key="speedup_vs_coarse10_pct",
+        ylabel="Speedup vs 10 steps (%)",
+        title="Speedup vs coarse denoising steps",
+        path=plot_dir / "speedup_vs_steps.png",
+    )
+    _plot_line(
+        closed_rows,
+        x_key="coarse_num_steps",
+        y_key="success_rate",
+        ylabel="Success rate",
+        title="Closed-loop success vs coarse denoising steps",
+        path=plot_dir / "success_vs_steps.png",
+    )
+    _plot_tradeoff(speed_rows, closed_rows, plot_dir / "speed_success_tradeoff.png")
+
+
+def _run_mode(args: argparse.Namespace, mode: str, output_dir: pathlib.Path) -> pathlib.Path:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = []
     summaries: dict[int, dict[str, Any]] = {}
     for step in args.coarse_steps:
         run_dir = output_dir / f"coarse_steps_{step}"
-        if args.mode == "speed":
+        if mode == "speed":
             command = _speed_command(args, step, run_dir)
         else:
             command = _closed_loop_command(args, step, run_dir)
@@ -237,7 +357,7 @@ def main() -> None:
         summaries[step] = _load_summary(run_dir)
 
     baseline_summary = summaries.get(10)
-    if args.mode == "speed":
+    if mode == "speed":
         baseline_ms = None
         if baseline_summary is not None:
             baseline_ms = float(baseline_summary.get("aggregate", {}).get("full_acot_ms_mean", float("nan")))
@@ -255,6 +375,27 @@ def main() -> None:
 
     _write_csv(csv_path, rows)
     _status(f"Wrote {csv_path}")
+    return csv_path
+
+
+def main() -> None:
+    args = _parse_args()
+    _validate_args(args)
+    output_dir = pathlib.Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.mode == "both":
+        _run_mode(args, "speed", output_dir / "speed")
+        _run_mode(args, "closed_loop", output_dir / "closed_loop")
+        if not args.no_plots:
+            _write_combined_report(output_dir)
+            _status(f"Wrote combined report to {output_dir}")
+        return
+
+    _run_mode(args, args.mode, output_dir)
+    if not args.no_plots:
+        report_dir = output_dir.parent if output_dir.name in ("speed", "closed_loop") else output_dir
+        _write_combined_report(report_dir)
 
 
 if __name__ == "__main__":
