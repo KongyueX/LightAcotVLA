@@ -23,6 +23,7 @@ import csv
 import json
 import logging
 import math
+import os
 import pathlib
 import sys
 import time
@@ -44,9 +45,20 @@ LIBERO_ENV_RESOLUTION = 256
 
 def _ensure_libero_import_path() -> None:
     repo_root = pathlib.Path(__file__).resolve().parents[1]
-    local_libero = repo_root / "third_party" / "libero"
-    if (local_libero / "libero").exists():
-        sys.path.insert(0, str(local_libero))
+    candidates = [
+        os.environ.get("LIBERO_ROOT"),
+        repo_root / "third_party" / "libero",
+        repo_root / "LIBERO-plus",
+        repo_root / "LIBERO",
+        repo_root.parent / "LIBERO-plus",
+        repo_root.parent / "LIBERO",
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        path = pathlib.Path(candidate)
+        if (path / "libero" / "libero").exists() or (path / "libero").exists():
+            sys.path.insert(0, str(path))
 
 
 _ensure_libero_import_path()
@@ -58,7 +70,12 @@ except ModuleNotFoundError as exc:
     if exc.name != "libero":
         raise
     raise ModuleNotFoundError(
-        "LIBERO is required for closed-loop rollout evaluation. Install or initialize it on the server:\n"
+        "The current Python process cannot import LIBERO. If LIBERO is already available on this server, "
+        "run with the same PYTHONPATH/environment used by the old LIBERO eval, or set LIBERO_ROOT to the "
+        "directory that contains the top-level libero package, for example:\n"
+        "  export LIBERO_ROOT=/root/ACoT-VLA/LIBERO-plus\n"
+        "  export PYTHONPATH=$LIBERO_ROOT:$PYTHONPATH\n"
+        "If the repo submodule is actually missing, initialize it with:\n"
         "  cd /root/ACoT-VLA\n"
         "  git submodule update --init --recursive third_party/libero\n"
         "  uv pip install -e third_party/libero\n"
