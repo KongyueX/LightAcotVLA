@@ -50,6 +50,11 @@ class Policy(BasePolicy):
             action_cot_coarse_num_steps = inputs.pop("coarse_num_steps", None)
         else:
             inputs.pop("coarse_num_steps", None)
+        action_cot_dynamic_coarse_steps = inputs.pop("action_cot_dynamic_coarse_steps", None)
+        if action_cot_dynamic_coarse_steps is None:
+            action_cot_dynamic_coarse_steps = inputs.pop("dynamic_coarse_steps", None)
+        else:
+            inputs.pop("dynamic_coarse_steps", None)
         transformed_coarse_actions_override = None
         if coarse_actions_override is not None:
             override_inputs = jax.tree.map(lambda x: x, obs)
@@ -58,6 +63,8 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_skip_segment", None)
             override_inputs.pop("action_cot_coarse_num_steps", None)
             override_inputs.pop("coarse_num_steps", None)
+            override_inputs.pop("action_cot_dynamic_coarse_steps", None)
+            override_inputs.pop("dynamic_coarse_steps", None)
             # Avoid data transforms regenerating coarse_actions from expert actions.
             override_inputs.pop("actions", None)
             override_inputs["coarse_actions"] = coarse_actions_override
@@ -96,6 +103,11 @@ class Policy(BasePolicy):
             sample_kwargs = {
                 **sample_kwargs,
                 "coarse_num_steps": np.asarray(action_cot_coarse_num_steps, dtype=np.int32).reshape(()),
+            }
+        if action_cot_dynamic_coarse_steps is not None:
+            sample_kwargs = {
+                **sample_kwargs,
+                "dynamic_coarse_steps": bool(np.asarray(action_cot_dynamic_coarse_steps).item()),
             }
         result = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **sample_kwargs)
 

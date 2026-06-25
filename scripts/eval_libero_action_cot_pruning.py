@@ -112,6 +112,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Denoising steps for explicit coarse Action-CoT only. Defaults to the policy server sample default.",
     )
+    parser.add_argument(
+        "--dynamic_coarse_steps",
+        "--dynamic-coarse-steps",
+        action="store_true",
+        help="Use the trained Action-CoT step head to choose coarse denoising steps.",
+    )
 
     parser.add_argument(
         "--mode",
@@ -183,6 +189,8 @@ def _with_coarse_num_steps(element: dict[str, Any], args: argparse.Namespace) ->
     request = dict(element)
     if args.coarse_num_steps is not None:
         request["action_cot_coarse_num_steps"] = np.asarray(args.coarse_num_steps, dtype=np.int32)
+    if args.dynamic_coarse_steps:
+        request["action_cot_dynamic_coarse_steps"] = np.asarray(True)
     return request
 
 
@@ -360,6 +368,15 @@ def _infer(client, element: dict[str, Any], *, seed: int) -> tuple[dict[str, Any
     return result, wall_ms, policy_ms, server_ms
 
 
+def _coarse_steps_from_result(result: dict[str, Any]) -> float:
+    if "coarse_num_steps" not in result:
+        return float("nan")
+    value = np.asarray(result["coarse_num_steps"])
+    if value.size == 0:
+        return float("nan")
+    return float(value.reshape(-1)[0])
+
+
 def _query_action(
     client,
     element: dict[str, Any],
@@ -385,6 +402,7 @@ def _query_action(
             "full_calls": 1,
             "override_calls": 0,
             "true_skip_calls": 0,
+            "coarse_num_steps_used": _coarse_steps_from_result(result),
         }
 
     if mode == "true_segment_skip":
@@ -404,6 +422,7 @@ def _query_action(
             "full_calls": 0,
             "override_calls": 0,
             "true_skip_calls": 1,
+            "coarse_num_steps_used": _coarse_steps_from_result(result),
         }
 
     entropy_samples = 1 if mode == "cached_override" else args.entropy_samples
@@ -411,6 +430,7 @@ def _query_action(
     full_wall_ms = []
     full_policy_ms = []
     full_server_ms = []
+    full_coarse_steps = []
     full_element = _with_coarse_num_steps(element, args)
     for sample_idx in range(entropy_samples):
         result, wall_ms, policy_ms, server_ms = _infer(client, full_element, seed=seed + sample_idx)
@@ -420,6 +440,7 @@ def _query_action(
         full_wall_ms.append(wall_ms)
         full_policy_ms.append(policy_ms)
         full_server_ms.append(server_ms)
+        full_coarse_steps.append(_coarse_steps_from_result(result))
 
     if mode == "cached_override":
         coarse_override = coarse_samples[0]
@@ -450,6 +471,7 @@ def _query_action(
             "full_calls": entropy_samples,
             "override_calls": 0,
             "true_skip_calls": 1,
+            "coarse_num_steps_used": _coarse_steps_from_result(result),
         }
     else:
         coarse_override, skip_ratio, skipped_segments, num_segments = _prune_online_coarse(
@@ -478,6 +500,7 @@ def _query_action(
         "full_calls": entropy_samples,
         "override_calls": 1,
         "true_skip_calls": 0,
+        "coarse_num_steps_used": _mean(full_coarse_steps),
     }
 
 
@@ -532,6 +555,7 @@ def _run_mode(
             deployable_policy_ms = []
             deployable_server_ms = []
             skip_ratios = []
+            coarse_steps_used = []
             full_calls = 0
             override_calls = 0
             true_skip_calls = 0
@@ -569,6 +593,8 @@ def _run_mode(
                     deployable_server_ms.append(float(timing.get("deployable_server_ms", timing["server_ms"])))
                     if np.isfinite(float(timing["skip_ratio"])):
                         skip_ratios.append(float(timing["skip_ratio"]))
+                    if np.isfinite(float(timing.get("coarse_num_steps_used", float("nan")))):
+                        coarse_steps_used.append(float(timing["coarse_num_steps_used"]))
                     full_calls += int(timing["full_calls"])
                     override_calls += int(timing["override_calls"])
                     true_skip_calls += int(timing.get("true_skip_calls", 0))
@@ -600,6 +626,7 @@ def _run_mode(
                 "avg_deployable_policy_inference_ms": _mean(deployable_policy_ms),
                 "avg_deployable_server_inference_ms": _mean(deployable_server_ms),
                 "avg_skip_ratio": _mean(skip_ratios),
+                "avg_coarse_num_steps_used": _mean(coarse_steps_used),
                 "num_replans": len(infer_wall_ms),
                 "full_calls": full_calls,
                 "override_calls": override_calls,
@@ -647,6 +674,7 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_deployable_policy_inference_ms",
         "avg_deployable_server_inference_ms",
         "avg_skip_ratio",
+        "avg_coarse_num_steps_used",
         "num_replans",
         "full_calls",
         "override_calls",
@@ -678,6 +706,7 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 [float(row["avg_deployable_server_inference_ms"]) for row in subset]
             ),
             "avg_skip_ratio": _mean([float(row["avg_skip_ratio"]) for row in subset]),
+            "avg_coarse_num_steps_used": _mean([float(row["avg_coarse_num_steps_used"]) for row in subset]),
             "avg_full_calls_per_episode": _mean([float(row["full_calls"]) for row in subset]),
             "avg_override_calls_per_episode": _mean([float(row["override_calls"]) for row in subset]),
             "avg_true_skip_calls_per_episode": _mean([float(row["true_skip_calls"]) for row in subset]),
@@ -693,6 +722,7 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "task_start": args.task_start,
             "mode": args.mode,
             "coarse_num_steps": args.coarse_num_steps,
+            "dynamic_coarse_steps": args.dynamic_coarse_steps,
             "entropy_samples": args.entropy_samples,
             "strategy": args.strategy,
             "segment_mode": args.segment_mode,

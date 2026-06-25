@@ -288,6 +288,9 @@ class ACOTConfig(_model.BaseModelConfig):
 
     action_cot_max_segments: int = 0
     action_cot_skip_loss_weight: float = 0.0
+    action_cot_step_values: tuple[int, ...] = (3, 5, 10)
+    action_cot_step_loss_weight: float = 0.0
+    action_cot_dynamic_steps: bool = False
 
     def __post_init__(self):
         if self.max_token_len is None:
@@ -296,6 +299,10 @@ class ACOTConfig(_model.BaseModelConfig):
             object.__setattr__(self, "discrete_state_input", self.pi05)
         if self.action_cot_skip_loss_weight > 0 and self.action_cot_max_segments <= 0:
             raise ValueError("action_cot_max_segments must be positive when action_cot_skip_loss_weight > 0.")
+        if any(value <= 0 for value in self.action_cot_step_values):
+            raise ValueError(f"action_cot_step_values must be positive, got {self.action_cot_step_values}.")
+        if (self.action_cot_step_loss_weight > 0 or self.action_cot_dynamic_steps) and len(self.action_cot_step_values) < 2:
+            raise ValueError("action_cot_step_values must contain at least two values when step head is enabled.")
 
     @property
     @override
@@ -425,10 +432,19 @@ class ACOT_VLA(_model.BaseModel):
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
         self.action_cot_max_segments = config.action_cot_max_segments
         self.action_cot_skip_loss_weight = config.action_cot_skip_loss_weight
+        self.action_cot_step_values = tuple(config.action_cot_step_values)
+        self.action_cot_step_loss_weight = config.action_cot_step_loss_weight
+        self.action_cot_dynamic_steps = config.action_cot_dynamic_steps
         if self.action_cot_max_segments > 0:
             self.action_cot_skip_head = nnx.Linear(
                 paligemma_config.width,
                 self.action_cot_max_segments,
+                rngs=rngs,
+            )
+        if self.action_cot_step_loss_weight > 0 or self.action_cot_dynamic_steps:
+            self.action_cot_step_head = nnx.Linear(
+                paligemma_config.width,
+                len(self.action_cot_step_values),
                 rngs=rngs,
             )
         
@@ -704,17 +720,32 @@ class ACOT_VLA(_model.BaseModel):
 
         return tokens, input_mask, ar_mask, adarms_cond
 
-    def _action_cot_skip_logits(
+    def _pool_prefix(
         self,
         prefix_out: jax.Array,
         prefix_mask: jax.Array,
     ) -> jax.Array:
         mask = prefix_mask.astype(prefix_out.dtype)
-        pooled = jnp.sum(prefix_out * mask[..., None], axis=1) / jnp.maximum(
+        return jnp.sum(prefix_out * mask[..., None], axis=1) / jnp.maximum(
             jnp.sum(mask, axis=1, keepdims=True),
             1.0,
         )
+
+    def _action_cot_skip_logits(
+        self,
+        prefix_out: jax.Array,
+        prefix_mask: jax.Array,
+    ) -> jax.Array:
+        pooled = self._pool_prefix(prefix_out, prefix_mask)
         return self.action_cot_skip_head(pooled)
+
+    def _action_cot_step_logits(
+        self,
+        prefix_out: jax.Array,
+        prefix_mask: jax.Array,
+    ) -> jax.Array:
+        pooled = self._pool_prefix(prefix_out, prefix_mask)
+        return self.action_cot_step_head(pooled)
 
     def _action_cot_skip_loss(
         self,
@@ -731,6 +762,19 @@ class ACOT_VLA(_model.BaseModel):
 
         bce = jnp.maximum(logits, 0) - logits * labels + jnp.log1p(jnp.exp(-jnp.abs(logits)))
         return jnp.sum(bce * valid) / jnp.maximum(jnp.sum(valid), 1.0)
+
+    def _action_cot_step_loss(
+        self,
+        prefix_out: jax.Array,
+        prefix_mask: jax.Array,
+        step_label: jax.Array,
+    ) -> jax.Array:
+        logits = self._action_cot_step_logits(prefix_out, prefix_mask)
+        labels = jnp.reshape(jnp.asarray(step_label, dtype=jnp.int32), (-1,))
+        labels = jnp.clip(labels, 0, logits.shape[-1] - 1)
+        log_probs = jax.nn.log_softmax(logits, axis=-1)
+        nll = -jnp.take_along_axis(log_probs, labels[:, None], axis=-1)[:, 0]
+        return jnp.mean(nll)
 
     def _fixed_l5_keep_indices(self, skip_segment: jax.Array) -> jax.Array:
         skip_segment = jnp.reshape(jnp.asarray(skip_segment, dtype=jnp.int32), ())
@@ -774,6 +818,7 @@ class ACOT_VLA(_model.BaseModel):
         coarse_actions: _model.CoarseActions,
         action_cot_skip_mask=None,
         action_cot_skip_valid_mask=None,
+        action_cot_step_label=None,
         *,
         train: bool = False,
     ) -> at.Float[at.Array, "*b ah"]:
@@ -874,6 +919,7 @@ class ACOT_VLA(_model.BaseModel):
             action_diff_expert = u_expert_t - v_expert_t
             flow_loss = jnp.mean(jnp.square(action_diff_expert))
 
+        total_loss = flow_loss
         if (
             self.action_cot_skip_loss_weight > 0
             and action_cot_skip_mask is not None
@@ -885,9 +931,13 @@ class ACOT_VLA(_model.BaseModel):
                 action_cot_skip_mask,
                 action_cot_skip_valid_mask,
             )
-            return flow_loss + self.action_cot_skip_loss_weight * skip_loss
+            total_loss = total_loss + self.action_cot_skip_loss_weight * skip_loss
 
-        return flow_loss
+        if self.action_cot_step_loss_weight > 0 and action_cot_step_label is not None:
+            step_loss = self._action_cot_step_loss(prefix_out, prefix_mask, action_cot_step_label)
+            total_loss = total_loss + self.action_cot_step_loss_weight * step_loss
+
+        return total_loss
 
     @override
     def sample_actions(
@@ -897,15 +947,13 @@ class ACOT_VLA(_model.BaseModel):
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
         coarse_num_steps: int | at.Int[at.Array, ""] | None = None,
+        dynamic_coarse_steps: bool | None = None,
         explicit_action_reason_override: _model.CoarseActions | None = None,
         explicit_action_skip_segment: int | at.Int[at.Array, ""] | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
-        coarse_num_steps = num_steps if coarse_num_steps is None else coarse_num_steps
-        coarse_dt = -1.0 / coarse_num_steps
-        action_dt = -1.0 / num_steps
         batch_size = observation.state.shape[0]
 
         ref_action_rng, expert_action_rng = jax.random.split(rng, 2)
@@ -916,7 +964,22 @@ class ACOT_VLA(_model.BaseModel):
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None, None], mask=prefix_attn_mask, positions=positions)
+        (prefix_out, _, _), kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None, None],
+            mask=prefix_attn_mask,
+            positions=positions,
+        )
+
+        use_dynamic_coarse_steps = self.action_cot_dynamic_steps if dynamic_coarse_steps is None else dynamic_coarse_steps
+        if coarse_num_steps is None and use_dynamic_coarse_steps:
+            logits = self._action_cot_step_logits(prefix_out, prefix_mask)
+            step_values = jnp.asarray(self.action_cot_step_values, dtype=jnp.int32)
+            coarse_num_steps = step_values[jnp.argmax(logits, axis=-1)[0]]
+        if coarse_num_steps is None:
+            coarse_num_steps = num_steps
+        coarse_num_steps = jnp.maximum(jnp.asarray(coarse_num_steps, dtype=jnp.float32), 1.0)
+        coarse_dt = -1.0 / coarse_num_steps
+        action_dt = -1.0 / num_steps
 
         if self.adopt_implicit_action_reasoner:
             K_all, V_all = kv_cache
@@ -1020,6 +1083,10 @@ class ACOT_VLA(_model.BaseModel):
         x_0_expert, _, _ = jax.lax.while_loop(cond_expert, step_expert, (expert_action_noise, 1.0, 1))
 
         if self.adopt_explicit_action_reasoner:
-            return {"actions": x_0_expert, "coarse_actions": explicit_action_reason}
+            return {
+                "actions": x_0_expert,
+                "coarse_actions": explicit_action_reason,
+                "coarse_num_steps": jnp.broadcast_to(jnp.asarray(coarse_num_steps), (batch_size,)),
+            }
         else:
             return {"actions": x_0_expert}
