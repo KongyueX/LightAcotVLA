@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import functools
+import collections
 import pathlib
 from typing import Any
 
@@ -70,10 +70,24 @@ class ActionCotLabelLoader:
         self.entropy_dir = pathlib.Path(entropy_dir)
         self.max_segments = max_segments
         self.max_skip_segments = max_skip_segments
-        self._load_cached = functools.lru_cache(maxsize=cache_size)(self._load_uncached)
+        self.cache_size = cache_size
+        self._cache: collections.OrderedDict[int, dict[str, np.ndarray]] = collections.OrderedDict()
 
     def load(self, index: int) -> dict[str, np.ndarray]:
-        return self._load_cached(int(index))
+        index = int(index)
+        if self.cache_size <= 0:
+            return self._load_uncached(index)
+
+        cached = self._cache.get(index)
+        if cached is not None:
+            self._cache.move_to_end(index)
+            return cached
+
+        item = self._load_uncached(index)
+        self._cache[index] = item
+        if len(self._cache) > self.cache_size:
+            self._cache.popitem(last=False)
+        return item
 
     def _load_uncached(self, index: int) -> dict[str, np.ndarray]:
         path = self.entropy_dir / f"sample_{index:06d}.npz"
