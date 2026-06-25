@@ -104,6 +104,11 @@ class DataConfig:
     # Action space for DROID dataset.
     action_space: droid_rlds_dataset.DroidActionSpace | None = None
 
+    # Optional Stage C Action-CoT skip-label settings.
+    action_cot_entropy_dir: str | None = None
+    action_cot_label_max_segments: int = 5
+    action_cot_max_skip_segments: int | None = None
+
 
 class GroupFactory(Protocol):
     def __call__(self, model_config: _model.BaseModelConfig) -> _transforms.Group:
@@ -1173,6 +1178,13 @@ class TrainConfig:
     # Determines the data to be trained on.
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
 
+    # Optional Stage C Action-CoT skip-label settings. These are copied into
+    # DataConfig at data-loader construction time to avoid changing every data
+    # config factory.
+    action_cot_entropy_dir: str | None = None
+    action_cot_label_max_segments: int = 5
+    action_cot_max_skip_segments: int | None = None
+
     # Base directory for config assets (e.g., norm stats).
     assets_base_dir: str = "./assets"
     # Base directory for checkpoints.
@@ -1606,6 +1618,52 @@ _CONFIGS = [
         num_workers=48 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
         batch_size=16,
         freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(freeze_vision = False, freeze_llm = True, freeze_dual_ae=[False, False]),
+    ),
+    TrainConfig(
+        name="acot_libero_action_cot_adaptive_skip_stage_c",
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=15,
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            coarse_action_expert_variant="gemma_300m",
+            action_expert_variant="gemma_300m",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+            action_cot_max_segments=5,
+            action_cot_skip_loss_weight=0.1,
+        ),
+        data=LeRobotACOTLiberoDataConfig(
+            repo_id="your_hf_username/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=(False, False),
+            joint_action_shifts=(2, 1),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999/params",
+            missing_regex=".*action_cot_skip_head.*|.*lora.*",
+        ),
+        num_train_steps=51_000,
+        save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1000,
+        num_workers=48 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
+        batch_size=16,
+        freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(
+            freeze_vision=False,
+            freeze_llm=True,
+            freeze_dual_ae=[False, False],
+        ),
+        action_cot_entropy_dir="/root/autodl-tmp/acotvla/action_cot_entropy_labels/adaptive_full_k8",
+        action_cot_label_max_segments=5,
+        action_cot_max_skip_segments=1,
     ),
     # VLABench configs
     TrainConfig(

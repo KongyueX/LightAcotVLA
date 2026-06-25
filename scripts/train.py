@@ -195,7 +195,7 @@ def acot_train_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
-    batch: tuple[_model.Observation, _model.Actions, _model.CoarseActions],
+    batch,
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -203,16 +203,37 @@ def acot_train_step(
     @at.typecheck
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions,
-        coarse_actions: _model.CoarseActions
+        coarse_actions: _model.CoarseActions, action_cot_skip_mask=None, action_cot_skip_valid_mask=None
     ):
-        return model.compute_loss(rng, observation, actions, coarse_actions, train=True)
+        return model.compute_loss(
+            rng,
+            observation,
+            actions,
+            coarse_actions,
+            action_cot_skip_mask=action_cot_skip_mask,
+            action_cot_skip_valid_mask=action_cot_skip_valid_mask,
+            train=True,
+        )
 
     train_rng = jax.random.fold_in(rng, state.step)
-    observation, actions, coarse_actions = batch
+    if len(batch) == 5:
+        observation, actions, coarse_actions, action_cot_skip_mask, action_cot_skip_valid_mask = batch
+    else:
+        observation, actions, coarse_actions = batch
+        action_cot_skip_mask = None
+        action_cot_skip_valid_mask = None
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions, coarse_actions)
+    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(
+        model,
+        train_rng,
+        observation,
+        actions,
+        coarse_actions,
+        action_cot_skip_mask,
+        action_cot_skip_valid_mask,
+    )
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)

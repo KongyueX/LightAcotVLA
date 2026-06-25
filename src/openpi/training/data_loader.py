@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 import openpi.models.model as _model
+import openpi.action_cot.labels as _action_cot_labels
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
@@ -304,6 +305,9 @@ def create_data_loader(
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training."""
     data_config = config.data.create(config.assets_dirs, config.model)
+    object.__setattr__(data_config, "action_cot_entropy_dir", config.action_cot_entropy_dir)
+    object.__setattr__(data_config, "action_cot_label_max_segments", config.action_cot_label_max_segments)
+    object.__setattr__(data_config, "action_cot_max_skip_segments", config.action_cot_max_skip_segments)
 
     if data_config.rlds_data_dir is not None:
         return create_rlds_data_loader(
@@ -361,6 +365,13 @@ def create_torch_data_loader(
     """
     dataset = create_torch_dataset(data_config, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
+    if data_config.action_cot_entropy_dir is not None:
+        dataset = _action_cot_labels.ActionCotLabelDataset(
+            dataset,
+            data_config.action_cot_entropy_dir,
+            max_segments=data_config.action_cot_label_max_segments,
+            max_skip_segments=data_config.action_cot_max_skip_segments,
+        )
 
     sampler = None
     if data_config.dataloader_sampler != '':
@@ -606,4 +617,13 @@ class DataLoaderACOTImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"], batch["coarse_actions"]
+            if "action_cot_skip_mask" in batch:
+                yield (
+                    _model.Observation.from_dict(batch),
+                    batch["actions"],
+                    batch["coarse_actions"],
+                    batch["action_cot_skip_mask"],
+                    batch["action_cot_skip_valid_mask"],
+                )
+            else:
+                yield _model.Observation.from_dict(batch), batch["actions"], batch["coarse_actions"]

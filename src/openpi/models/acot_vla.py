@@ -286,11 +286,16 @@ class ACOTConfig(_model.BaseModelConfig):
     attention_pooling_implicit_extractor: bool = False  # type: ignore
     downsample_based_implicit_extractor: bool = False  # type: ignore
 
+    action_cot_max_segments: int = 0
+    action_cot_skip_loss_weight: float = 0.0
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if self.action_cot_skip_loss_weight > 0 and self.action_cot_max_segments <= 0:
+            raise ValueError("action_cot_max_segments must be positive when action_cot_skip_loss_weight > 0.")
 
     @property
     @override
@@ -418,6 +423,14 @@ class ACOT_VLA(_model.BaseModel):
 
         self.coarse_action_out_proj = nnx.Linear(coarse_action_expert_config.width, config.action_dim, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+        self.action_cot_max_segments = config.action_cot_max_segments
+        self.action_cot_skip_loss_weight = config.action_cot_skip_loss_weight
+        if self.action_cot_max_segments > 0:
+            self.action_cot_skip_head = nnx.Linear(
+                paligemma_config.width,
+                self.action_cot_max_segments,
+                rngs=rngs,
+            )
         
         self.adopt_explicit_action_reasoner = config.adopt_explicit_action_reasoner
         if self.adopt_explicit_action_reasoner:
@@ -691,12 +704,44 @@ class ACOT_VLA(_model.BaseModel):
 
         return tokens, input_mask, ar_mask, adarms_cond
 
+    def _action_cot_skip_logits(
+        self,
+        prefix_out: jax.Array,
+        prefix_mask: jax.Array,
+    ) -> jax.Array:
+        mask = prefix_mask.astype(prefix_out.dtype)
+        pooled = jnp.sum(prefix_out * mask[..., None], axis=1) / jnp.maximum(
+            jnp.sum(mask, axis=1, keepdims=True),
+            1.0,
+        )
+        return self.action_cot_skip_head(pooled)
+
+    def _action_cot_skip_loss(
+        self,
+        prefix_out: jax.Array,
+        prefix_mask: jax.Array,
+        skip_mask: jax.Array,
+        valid_mask: jax.Array,
+    ) -> jax.Array:
+        logits = self._action_cot_skip_logits(prefix_out, prefix_mask)
+        labels = jnp.asarray(skip_mask, dtype=logits.dtype)
+        valid = jnp.asarray(valid_mask, dtype=logits.dtype)
+        labels = labels[..., : self.action_cot_max_segments]
+        valid = valid[..., : self.action_cot_max_segments]
+
+        bce = jnp.maximum(logits, 0) - logits * labels + jnp.log1p(jnp.exp(-jnp.abs(logits)))
+        return jnp.sum(bce * valid) / jnp.maximum(jnp.sum(valid), 1.0)
+
     @override
     def compute_loss(
         self, rng: at.KeyArrayLike,
         observation: _model.Observation,
         actions: _model.Actions,
-        coarse_actions: _model.CoarseActions, *, train: bool = False
+        coarse_actions: _model.CoarseActions,
+        action_cot_skip_mask=None,
+        action_cot_skip_valid_mask=None,
+        *,
+        train: bool = False,
     ) -> at.Float[at.Array, "*b ah"]:
 
         # preprocess_rng, _, time_rng, coarse_action_noise_rng, _, expert_action_noise_rng = jax.random.split(rng, 6)
@@ -723,7 +768,11 @@ class ACOT_VLA(_model.BaseModel):
 
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions_prefix = jnp.cumsum(prefix_mask, axis=1) - 1
-        _, kv_cache = self.PaliGemma.llm([prefix_tokens, None, None], mask=prefix_attn_mask, positions=positions_prefix)
+        (prefix_out, _, _), kv_cache = self.PaliGemma.llm(
+            [prefix_tokens, None, None],
+            mask=prefix_attn_mask,
+            positions=positions_prefix,
+        )
 
         if self.adopt_explicit_action_reasoner:
             # suffix forward to get explicit action reference
@@ -783,13 +832,28 @@ class ACOT_VLA(_model.BaseModel):
 
             action_diff_ref = u_ref_t - v_ref_t
             action_diff_expert = u_expert_t - v_expert_t
-            # Since we set the balance factor as 0.5, the following loss is equal
-            return jnp.mean(jnp.square(action_diff_ref)) + jnp.mean(jnp.square(action_diff_expert))
+            # Since we set the balance factor as 0.5, the following loss is equal.
+            flow_loss = jnp.mean(jnp.square(action_diff_ref)) + jnp.mean(jnp.square(action_diff_expert))
 
         else:
             v_expert_t = self.action_out_proj(suffix_expert_out[:, -self.action_horizon :])
             action_diff_expert = u_expert_t - v_expert_t
-            return jnp.mean(jnp.square(action_diff_expert))
+            flow_loss = jnp.mean(jnp.square(action_diff_expert))
+
+        if (
+            self.action_cot_skip_loss_weight > 0
+            and action_cot_skip_mask is not None
+            and action_cot_skip_valid_mask is not None
+        ):
+            skip_loss = self._action_cot_skip_loss(
+                prefix_out,
+                prefix_mask,
+                action_cot_skip_mask,
+                action_cot_skip_valid_mask,
+            )
+            return flow_loss + self.action_cot_skip_loss_weight * skip_loss
+
+        return flow_loss
 
     @override
     def sample_actions(
