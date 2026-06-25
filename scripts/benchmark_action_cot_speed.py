@@ -11,6 +11,10 @@ This script measures the speed budget that Stage B/Stage C can actually target:
    reuses a pruned/interpolated coarse trajectory as an override; this is the
    current Stage B injection path. It skips the whole explicit Action-CoT
    generation loop, but it does not yet reduce the final action-head token length.
+4. true_entropy_segment_skip:
+   selects one fixed L=5 segment by entropy, asks the model to generate only the
+   kept explicit Action-CoT tokens, and restores the skipped frames before the
+   final action head.
 
 If cached_coarse_override is faster than full_acot, explicit Action-CoT generation
 has a real latency budget. If pruned_coarse_override is not faster than
@@ -71,6 +75,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_len", "--max-len", type=int, default=6)
     parser.add_argument("--max_segments", "--max-segments", type=int, default=5)
     parser.add_argument("--gripper_indices", "--gripper-indices", nargs="*", type=int, default=None)
+    parser.add_argument(
+        "--true_skip_chunk_size",
+        "--true-skip-chunk-size",
+        type=int,
+        default=5,
+        help="Fixed chunk size used by the true segment-skip path. The current model path supports L=5.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     return parser
 
@@ -86,6 +97,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--num_steps must be positive.")
     if not 0.0 <= args.prune_ratio <= 1.0:
         raise ValueError("--prune_ratio must be in [0, 1].")
+    if args.true_skip_chunk_size != 5:
+        raise ValueError("The current true segment-skip model path supports --true_skip_chunk_size 5 only.")
 
 
 def _status(message: str) -> None:
@@ -138,6 +151,48 @@ def _make_pruned_coarse(
     return coarse_pruned, skip_mask, float(np.mean(frame_skip_mask)) if frame_skip_mask.size else 0.0
 
 
+def _select_true_skip_segment(
+    sample: dict[str, Any],
+    *,
+    args: argparse.Namespace,
+    norm_stats: dict[str, Any] | None,
+    data_config: _config.DataConfig,
+    rng: np.random.Generator,
+) -> tuple[int, float, np.ndarray]:
+    coarse_samples = np.asarray(sample["coarse_samples"], dtype=np.float64)
+    if coarse_samples.ndim != 3:
+        raise ValueError(f"coarse_samples must have shape [K, T, D], got {coarse_samples.shape}.")
+    if coarse_samples.shape[1] != 15:
+        raise ValueError(f"true segment-skip currently requires a 15-frame coarse horizon, got {coarse_samples.shape[1]}.")
+
+    coarse_normalized, _ = stage_b._normalize_actions(
+        coarse_samples,
+        norm_stats,
+        use_quantiles=data_config.use_quantile_norm,
+        preferred_key="coarse_actions",
+    )
+    coarse_mean_normalized = np.mean(coarse_normalized, axis=0)
+    segments = acot_compression.segment_fixed(coarse_mean_normalized, chunk_size=args.true_skip_chunk_size)
+    if len(segments) != 3 or any((end - start) != args.true_skip_chunk_size for start, end in segments):
+        raise ValueError(f"true segment-skip expects three L=5 segments, got {segments}.")
+
+    entropy = acot_compression.compute_mc_predictive_entropy(coarse_normalized, segments)
+    skip_mask = stage_b._select_skip_mask(
+        entropy,
+        strategy=args.strategy,
+        prune_ratio=args.prune_ratio,
+        min_keep_segments=args.min_keep_segments,
+        rng=rng,
+    )
+    skipped_segments = np.flatnonzero(skip_mask)
+    if skipped_segments.size != 1:
+        raise ValueError(
+            "true segment-skip currently supports exactly one skipped L=5 segment. "
+            f"Got {skipped_segments.size}; use prune_ratio in (0, 1/3] with three segments."
+        )
+    return int(skipped_segments[0]), float(args.true_skip_chunk_size / coarse_samples.shape[1]), entropy
+
+
 def _mean(values: list[float]) -> float:
     return float(statistics.fmean(values)) if values else float("nan")
 
@@ -165,10 +220,15 @@ def _write_outputs(output_dir: pathlib.Path, rows: list[dict[str, Any]], summary
                 "full_ms",
                 "cached_override_ms",
                 "pruned_override_ms",
+                "true_entropy_segment_skip_ms",
                 "full_wall_ms",
                 "cached_override_wall_ms",
                 "pruned_override_wall_ms",
+                "true_entropy_segment_skip_wall_ms",
                 "skip_ratio",
+                "true_skip_ratio",
+                "true_skip_segment",
+                "true_skip_segment_entropy",
                 "num_segments",
                 "skipped_segments",
             ],
@@ -231,6 +291,18 @@ def main() -> None:
     warmup_override_input["coarse_actions_override"] = np.asarray(warmup_full["coarse_actions"], dtype=np.float32)
     for i in range(args.warmup):
         _infer_timed(policy, dict(warmup_override_input), seed=warmup_seed + args.warmup + i)
+    warmup_rng = np.random.default_rng(args.seed + 20_000_000)
+    warmup_skip_segment, _, _ = _select_true_skip_segment(
+        warmup_sample,
+        args=args,
+        norm_stats=norm_stats,
+        data_config=data_config,
+        rng=warmup_rng,
+    )
+    warmup_true_skip_input = dict(warmup_input)
+    warmup_true_skip_input["action_cot_skip_segment"] = np.asarray(warmup_skip_segment, dtype=np.int32)
+    for i in range(args.warmup):
+        _infer_timed(policy, dict(warmup_true_skip_input), seed=warmup_seed + 2 * args.warmup + i)
 
     rows: list[dict[str, Any]] = []
     rng = np.random.default_rng(args.seed)
@@ -264,6 +336,17 @@ def main() -> None:
             pruned_input["coarse_actions_override"] = coarse_pruned.astype(np.float32)
             _, pruned_ms, pruned_wall_ms = _infer_timed(policy, pruned_input, seed=seed_base)
 
+            true_skip_segment, true_skip_ratio, true_skip_entropy = _select_true_skip_segment(
+                sample,
+                args=args,
+                norm_stats=norm_stats,
+                data_config=data_config,
+                rng=rng,
+            )
+            true_skip_input = dict(policy_input)
+            true_skip_input["action_cot_skip_segment"] = np.asarray(true_skip_segment, dtype=np.int32)
+            _, true_skip_ms, true_skip_wall_ms = _infer_timed(policy, true_skip_input, seed=seed_base)
+
             rows.append(
                 {
                     "sample_id": sample["sample_id"],
@@ -272,10 +355,15 @@ def main() -> None:
                     "full_ms": full_ms,
                     "cached_override_ms": cached_ms,
                     "pruned_override_ms": pruned_ms,
+                    "true_entropy_segment_skip_ms": true_skip_ms,
                     "full_wall_ms": full_wall_ms,
                     "cached_override_wall_ms": cached_wall_ms,
                     "pruned_override_wall_ms": pruned_wall_ms,
+                    "true_entropy_segment_skip_wall_ms": true_skip_wall_ms,
                     "skip_ratio": skip_ratio,
+                    "true_skip_ratio": true_skip_ratio,
+                    "true_skip_segment": true_skip_segment,
+                    "true_skip_segment_entropy": float(true_skip_entropy[true_skip_segment]),
                     "num_segments": len(sample["segments"]),
                     "skipped_segments": ";".join(str(i) for i, value in enumerate(skip_mask.tolist()) if value),
                 }
@@ -284,9 +372,11 @@ def main() -> None:
     full_values = [float(row["full_ms"]) for row in rows]
     cached_values = [float(row["cached_override_ms"]) for row in rows]
     pruned_values = [float(row["pruned_override_ms"]) for row in rows]
+    true_skip_values = [float(row["true_entropy_segment_skip_ms"]) for row in rows]
     full_mean = _mean(full_values)
     cached_mean = _mean(cached_values)
     pruned_mean = _mean(pruned_values)
+    true_skip_mean = _mean(true_skip_values)
     summary = {
         "config": {
             "entropy_dir": str(entropy_dir),
@@ -301,6 +391,8 @@ def main() -> None:
             "chunk_size": args.chunk_size,
             "prune_ratio": args.prune_ratio,
             "replacement": args.replacement,
+            "true_skip_selector": "fixed_l5_entropy",
+            "true_skip_chunk_size": args.true_skip_chunk_size,
         },
         "aggregate": {
             "num_measurements": len(rows),
@@ -310,10 +402,15 @@ def main() -> None:
             "cached_coarse_override_ms_std": _std(cached_values),
             "pruned_coarse_override_ms_mean": pruned_mean,
             "pruned_coarse_override_ms_std": _std(pruned_values),
+            "true_entropy_segment_skip_ms_mean": true_skip_mean,
+            "true_entropy_segment_skip_ms_std": _std(true_skip_values),
             "skip_ratio_mean": _mean([float(row["skip_ratio"]) for row in rows]),
+            "true_skip_ratio_mean": _mean([float(row["true_skip_ratio"]) for row in rows]),
             "full_to_cached_speedup_pct": (1.0 - _ratio(cached_mean, full_mean)) * 100.0,
             "full_to_pruned_speedup_pct": (1.0 - _ratio(pruned_mean, full_mean)) * 100.0,
+            "full_to_true_entropy_segment_skip_speedup_pct": (1.0 - _ratio(true_skip_mean, full_mean)) * 100.0,
             "cached_to_pruned_speedup_pct": (1.0 - _ratio(pruned_mean, cached_mean)) * 100.0,
+            "cached_to_true_entropy_segment_skip_gap_pct": (_ratio(true_skip_mean, cached_mean) - 1.0) * 100.0,
         },
         "interpretation": {
             "full_to_cached": "Latency saved by bypassing the entire explicit Action-CoT generation loop.",
@@ -324,6 +421,10 @@ def main() -> None:
             "next_requirement": (
                 "If cached_to_pruned is near zero, real segment-level speedup requires a model path that generates "
                 "or consumes fewer explicit Action-CoT tokens, not just masked values."
+            ),
+            "true_entropy_segment_skip": (
+                "This path selects one fixed L=5 segment by entropy, generates only the remaining 10 explicit "
+                "Action-CoT tokens, restores the skipped frames, then runs the unchanged final action head."
             ),
         },
     }

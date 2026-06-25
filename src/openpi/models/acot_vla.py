@@ -600,7 +600,7 @@ class ACOT_VLA(_model.BaseModel):
                 adarms_cond = time_emb
             else:
                 # mix timestep + action information using an MLP (no adaRMS)
-                time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=self.coarse_action_horizon)
+                time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=noisy_actions.shape[1])
                 action_time_tokens = jnp.concatenate([action_tokens, time_tokens], axis=-1)
                 action_time_tokens = self.coarse_action_time_mlp_in(action_time_tokens)
                 action_time_tokens = nnx.swish(action_time_tokens)
@@ -622,7 +622,7 @@ class ACOT_VLA(_model.BaseModel):
                 adarms_cond = time_emb
             else:
                 # mix timestep + action information using an MLP (no adaRMS)
-                time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=self.action_horizon)
+                time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=noisy_actions.shape[1])
                 action_time_tokens = jnp.concatenate([action_tokens, time_tokens], axis=-1)
                 action_time_tokens = self.action_time_mlp_in(action_time_tokens)
                 action_time_tokens = nnx.swish(action_time_tokens)
@@ -691,9 +691,9 @@ class ACOT_VLA(_model.BaseModel):
 
         # image/language/state inputs do not attend to action tokens
         if suf_type == "reasoner":
-            ar_mask += [True] + ([False] * (self.coarse_action_horizon - 1))
+            ar_mask += [True] + ([False] * (action_expert_tokens.shape[1] - 1))
         elif suf_type == "expert":
-            ar_mask += [True] + ([False] * (self.action_horizon - 1))
+            ar_mask += [True] + ([False] * (action_expert_tokens.shape[1] - 1))
         else:
             raise ValueError(f"Unknown suffix type: {suf_type}")
 
@@ -731,6 +731,40 @@ class ACOT_VLA(_model.BaseModel):
 
         bce = jnp.maximum(logits, 0) - logits * labels + jnp.log1p(jnp.exp(-jnp.abs(logits)))
         return jnp.sum(bce * valid) / jnp.maximum(jnp.sum(valid), 1.0)
+
+    def _fixed_l5_keep_indices(self, skip_segment: jax.Array) -> jax.Array:
+        skip_segment = jnp.reshape(jnp.asarray(skip_segment, dtype=jnp.int32), ())
+        skip_segment = jnp.clip(skip_segment, 0, 2)
+        keep_indices = jnp.asarray(
+            [
+                [5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+                [0, 1, 2, 3, 4, 10, 11, 12, 13, 14],
+                [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+            ],
+            dtype=jnp.int32,
+        )
+        return keep_indices[skip_segment]
+
+    def _restore_fixed_l5_skip(self, kept_actions: jax.Array, skip_segment: jax.Array) -> jax.Array:
+        skip_segment = jnp.reshape(jnp.asarray(skip_segment, dtype=jnp.int32), ())
+        skip_segment = jnp.clip(skip_segment, 0, 2)
+
+        def skip_first(actions):
+            prefix = jnp.repeat(actions[:, :1, :], 5, axis=1)
+            return jnp.concatenate([prefix, actions], axis=1)
+
+        def skip_middle(actions):
+            left = actions[:, 4:5, :]
+            right = actions[:, 5:6, :]
+            alpha = jnp.arange(1, 6, dtype=actions.dtype).reshape(1, 5, 1) / 6.0
+            middle = (1.0 - alpha) * left + alpha * right
+            return jnp.concatenate([actions[:, :5, :], middle, actions[:, 5:, :]], axis=1)
+
+        def skip_last(actions):
+            suffix = jnp.repeat(actions[:, -1:, :], 5, axis=1)
+            return jnp.concatenate([actions, suffix], axis=1)
+
+        return jax.lax.switch(skip_segment, (skip_first, skip_middle, skip_last), kept_actions)
 
     @override
     def compute_loss(
@@ -863,6 +897,7 @@ class ACOT_VLA(_model.BaseModel):
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
         explicit_action_reason_override: _model.CoarseActions | None = None,
+        explicit_action_skip_segment: int | at.Int[at.Array, ""] | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
@@ -911,7 +946,7 @@ class ACOT_VLA(_model.BaseModel):
                 kv_cache=kv_cache,
                 adarms_cond=[None, adarms_cond, None],
             )
-            v_t = self.coarse_action_out_proj(suffix_out[:, -self.coarse_action_horizon :])
+            v_t = self.coarse_action_out_proj(suffix_out[:, -x_t.shape[1] :])
 
             return x_t + dt * v_t, time + dt, step_idx + 1
         
@@ -922,9 +957,26 @@ class ACOT_VLA(_model.BaseModel):
         if explicit_action_reason_override is not None:
             if not self.adopt_explicit_action_reasoner:
                 raise ValueError("explicit_action_reason_override requires adopt_explicit_action_reasoner=True.")
+            if explicit_action_skip_segment is not None:
+                raise ValueError("explicit_action_skip_segment cannot be combined with explicit_action_reason_override.")
             explicit_action_reason = explicit_action_reason_override
         elif self.adopt_explicit_action_reasoner:
-            explicit_action_reason, _, _ = jax.lax.while_loop(cond_explicit_action_reasoner, step_explicit_action_reasoner, (ref_action_noise, 1.0, 1))
+            if explicit_action_skip_segment is not None:
+                if self.coarse_action_horizon != 15:
+                    raise ValueError("explicit_action_skip_segment currently supports coarse_action_horizon=15 only.")
+                keep_indices = self._fixed_l5_keep_indices(explicit_action_skip_segment)
+                ref_action_noise_kept = jnp.take(ref_action_noise, keep_indices, axis=1)
+                explicit_action_reason_kept, _, _ = jax.lax.while_loop(
+                    cond_explicit_action_reasoner,
+                    step_explicit_action_reasoner,
+                    (ref_action_noise_kept, 1.0, 1),
+                )
+                explicit_action_reason = self._restore_fixed_l5_skip(
+                    explicit_action_reason_kept,
+                    explicit_action_skip_segment,
+                )
+            else:
+                explicit_action_reason, _, _ = jax.lax.while_loop(cond_explicit_action_reasoner, step_explicit_action_reasoner, (ref_action_noise, 1.0, 1))
         else:
             explicit_action_reason = None
 
