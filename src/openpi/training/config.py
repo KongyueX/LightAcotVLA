@@ -1654,7 +1654,7 @@ _CONFIGS = [
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader(
             "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999/params",
-            missing_regex=".*action_cot_skip_head.*|implicit_action_reasoner/.*|.*lora.*",
+            missing_regex=".*action_cot_skip_head.*|.*lora.*",
         ),
         num_train_steps=51_000,
         save_interval=10000 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1000,

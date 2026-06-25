@@ -119,6 +119,7 @@ def _align_param(expected, loaded, init_method):
     return new_param
 
 def _merge_params(loaded_params: at.Params, params: at.Params, *, missing_regex: str, init="random") -> at.Params:
+    loaded_params = _model.convert_str_keys_to_int(loaded_params)
 
     flat_ref = flax.traverse_util.flatten_dict(params, sep=None)
     flat_loaded = flax.traverse_util.flatten_dict(loaded_params, sep=None)
