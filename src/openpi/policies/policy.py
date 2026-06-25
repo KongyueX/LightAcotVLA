@@ -44,11 +44,13 @@ class Policy(BasePolicy):
         inputs = jax.tree.map(lambda x: x, obs)
         policy_seed = inputs.pop("policy_seed", None)
         coarse_actions_override = inputs.pop("coarse_actions_override", None)
+        action_cot_skip_segment = inputs.pop("action_cot_skip_segment", None)
         transformed_coarse_actions_override = None
         if coarse_actions_override is not None:
             override_inputs = jax.tree.map(lambda x: x, obs)
             override_inputs.pop("coarse_actions_override", None)
             override_inputs.pop("policy_seed", None)
+            override_inputs.pop("action_cot_skip_segment", None)
             # Avoid data transforms regenerating coarse_actions from expert actions.
             override_inputs.pop("actions", None)
             override_inputs["coarse_actions"] = coarse_actions_override
@@ -77,6 +79,11 @@ class Policy(BasePolicy):
             sample_kwargs = {
                 **sample_kwargs,
                 "explicit_action_reason_override": inputs.pop("coarse_actions_override"),
+            }
+        if action_cot_skip_segment is not None:
+            sample_kwargs = {
+                **sample_kwargs,
+                "explicit_action_skip_segment": np.asarray(action_cot_skip_segment, dtype=np.int32).reshape(()),
             }
         result = self._sample_actions(sample_rng, _model.Observation.from_dict(inputs), **sample_kwargs)
 
