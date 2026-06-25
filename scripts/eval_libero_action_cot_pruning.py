@@ -110,7 +110,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--mode",
         choices=("full", "cached_override", "pruned_override", "true_segment_skip", "true_entropy_skip", "all"),
         default="all",
-        help="Use all to run full, cached_override, and pruned_override on the same task initial states.",
+        help=(
+            "Use all to run full, cached_override, pruned_override, and true_entropy_skip "
+            "on the same task initial states."
+        ),
     )
     parser.add_argument("--entropy_samples", "--entropy-samples", type=int, default=4)
     parser.add_argument("--strategy", choices=("low_entropy", "high_entropy", "random"), default="low_entropy")
@@ -463,7 +466,7 @@ def _query_action(
 
 def _modes(args: argparse.Namespace) -> list[str]:
     if args.mode == "all":
-        return ["full", "cached_override", "pruned_override"]
+        return ["full", "cached_override", "pruned_override", "true_entropy_skip"]
     return [args.mode]
 
 
