@@ -203,7 +203,8 @@ def acot_train_step(
     @at.typecheck
     def loss_fn(
         model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions,
-        coarse_actions: _model.CoarseActions, action_cot_skip_mask=None, action_cot_skip_valid_mask=None
+        coarse_actions: _model.CoarseActions, action_cot_skip_mask=None, action_cot_skip_valid_mask=None,
+        action_cot_step_label=None
     ):
         return model.compute_loss(
             rng,
@@ -212,16 +213,28 @@ def acot_train_step(
             coarse_actions,
             action_cot_skip_mask=action_cot_skip_mask,
             action_cot_skip_valid_mask=action_cot_skip_valid_mask,
+            action_cot_step_label=action_cot_step_label,
             train=True,
         )
 
     train_rng = jax.random.fold_in(rng, state.step)
-    if len(batch) == 5:
+    if len(batch) == 6:
+        (
+            observation,
+            actions,
+            coarse_actions,
+            action_cot_skip_mask,
+            action_cot_skip_valid_mask,
+            action_cot_step_label,
+        ) = batch
+    elif len(batch) == 5:
         observation, actions, coarse_actions, action_cot_skip_mask, action_cot_skip_valid_mask = batch
+        action_cot_step_label = None
     else:
         observation, actions, coarse_actions = batch
         action_cot_skip_mask = None
         action_cot_skip_valid_mask = None
+        action_cot_step_label = None
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
@@ -233,6 +246,7 @@ def acot_train_step(
         coarse_actions,
         action_cot_skip_mask,
         action_cot_skip_valid_mask,
+        action_cot_step_label,
     )
 
     params = state.params.filter(config.trainable_filter)

@@ -71,6 +71,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Denoising steps for explicit coarse Action-CoT only. Defaults to --num_steps.",
     )
+    parser.add_argument(
+        "--dynamic_coarse_steps",
+        "--dynamic-coarse-steps",
+        action="store_true",
+        help="Use the trained Action-CoT step head to choose coarse denoising steps.",
+    )
 
     parser.add_argument("--strategy", choices=("low_entropy", "high_entropy", "random"), default="low_entropy")
     parser.add_argument("--segment_mode", "--segment-mode", choices=("fixed", "adaptive"), default="adaptive")
@@ -115,6 +121,8 @@ def _status(message: str) -> None:
 
 
 def _effective_coarse_num_steps(args: argparse.Namespace) -> int:
+    if args.dynamic_coarse_steps and args.coarse_num_steps is None:
+        return -1
     return int(args.num_steps if args.coarse_num_steps is None else args.coarse_num_steps)
 
 
@@ -126,6 +134,15 @@ def _infer_timed(policy: Any, policy_input: dict[str, Any], *, seed: int) -> tup
     policy_timing = result.get("policy_timing", {}) if isinstance(result, dict) else {}
     infer_ms = float(policy_timing.get("infer_ms", wall_ms))
     return result, infer_ms, wall_ms
+
+
+def _coarse_steps_from_result(result: dict[str, Any]) -> float:
+    if "coarse_num_steps" not in result:
+        return float("nan")
+    value = np.asarray(result["coarse_num_steps"])
+    if value.size == 0:
+        return float("nan")
+    return float(value.reshape(-1)[0])
 
 
 def _make_pruned_coarse(
@@ -242,6 +259,7 @@ def _write_outputs(output_dir: pathlib.Path, rows: list[dict[str, Any]], summary
                 "true_skip_ratio",
                 "true_skip_segment",
                 "true_skip_segment_entropy",
+                "coarse_num_steps_used",
                 "num_segments",
                 "skipped_segments",
             ],
@@ -271,6 +289,8 @@ def main() -> None:
     sample_kwargs = {"num_steps": args.num_steps}
     if args.coarse_num_steps is not None:
         sample_kwargs["coarse_num_steps"] = args.coarse_num_steps
+    if args.dynamic_coarse_steps:
+        sample_kwargs["dynamic_coarse_steps"] = True
     policy = _policy_config.create_trained_policy(
         train_config,
         checkpoint_dir,
@@ -380,6 +400,7 @@ def main() -> None:
                     "true_skip_ratio": true_skip_ratio,
                     "true_skip_segment": true_skip_segment,
                     "true_skip_segment_entropy": float(true_skip_entropy[true_skip_segment]),
+                    "coarse_num_steps_used": _coarse_steps_from_result(full_result),
                     "num_segments": len(sample["segments"]),
                     "skipped_segments": ";".join(str(i) for i, value in enumerate(skip_mask.tolist()) if value),
                 }
@@ -400,6 +421,7 @@ def main() -> None:
             "policy_config": args.config_name,
             "num_steps": args.num_steps,
             "coarse_num_steps": _effective_coarse_num_steps(args),
+            "dynamic_coarse_steps": args.dynamic_coarse_steps,
             "max_items": args.max_items,
             "warmup": args.warmup,
             "repeat": args.repeat,
@@ -423,6 +445,7 @@ def main() -> None:
             "true_entropy_segment_skip_ms_std": _std(true_skip_values),
             "skip_ratio_mean": _mean([float(row["skip_ratio"]) for row in rows]),
             "true_skip_ratio_mean": _mean([float(row["true_skip_ratio"]) for row in rows]),
+            "coarse_num_steps_used_mean": _mean([float(row["coarse_num_steps_used"]) for row in rows]),
             "full_to_cached_speedup_pct": (1.0 - _ratio(cached_mean, full_mean)) * 100.0,
             "full_to_pruned_speedup_pct": (1.0 - _ratio(pruned_mean, full_mean)) * 100.0,
             "full_to_true_entropy_segment_skip_speedup_pct": (1.0 - _ratio(true_skip_mean, full_mean)) * 100.0,

@@ -308,6 +308,9 @@ def create_data_loader(
     object.__setattr__(data_config, "action_cot_entropy_dir", config.action_cot_entropy_dir)
     object.__setattr__(data_config, "action_cot_label_max_segments", config.action_cot_label_max_segments)
     object.__setattr__(data_config, "action_cot_max_skip_segments", config.action_cot_max_skip_segments)
+    object.__setattr__(data_config, "action_cot_step_values", config.action_cot_step_values)
+    object.__setattr__(data_config, "action_cot_step_quantiles", config.action_cot_step_quantiles)
+    object.__setattr__(data_config, "action_cot_step_thresholds", config.action_cot_step_thresholds)
 
     if data_config.rlds_data_dir is not None:
         return create_rlds_data_loader(
@@ -371,6 +374,9 @@ def create_torch_data_loader(
             data_config.action_cot_entropy_dir,
             max_segments=data_config.action_cot_label_max_segments,
             max_skip_segments=data_config.action_cot_max_skip_segments,
+            step_values=data_config.action_cot_step_values,
+            step_quantiles=data_config.action_cot_step_quantiles,
+            step_thresholds=data_config.action_cot_step_thresholds,
         )
 
     sampler = None
@@ -617,7 +623,16 @@ class DataLoaderACOTImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            if "action_cot_skip_mask" in batch:
+            if "action_cot_skip_mask" in batch and "action_cot_step_label" in batch:
+                yield (
+                    _model.Observation.from_dict(batch),
+                    batch["actions"],
+                    batch["coarse_actions"],
+                    batch["action_cot_skip_mask"],
+                    batch["action_cot_skip_valid_mask"],
+                    batch["action_cot_step_label"],
+                )
+            elif "action_cot_skip_mask" in batch:
                 yield (
                     _model.Observation.from_dict(batch),
                     batch["actions"],

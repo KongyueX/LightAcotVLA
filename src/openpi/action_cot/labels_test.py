@@ -43,6 +43,34 @@ def test_action_cot_label_loader_reads_npz(tmp_path: pathlib.Path):
     )
 
 
+def test_step_label_from_entropy_thresholds():
+    thresholds = (-3.0, -1.0)
+
+    assert labels.step_label_from_entropy_score(-4.0, thresholds) == 0
+    assert labels.step_label_from_entropy_score(-2.0, thresholds) == 1
+    assert labels.step_label_from_entropy_score(0.0, thresholds) == 2
+
+
+def test_action_cot_label_loader_adds_step_label(tmp_path: pathlib.Path):
+    np.savez_compressed(
+        tmp_path / "sample_000000.npz",
+        skip_mask=np.asarray([0, 1, 0], dtype=np.int8),
+        entropy=np.asarray([-5.0, -4.0, -3.0], dtype=np.float32),
+    )
+    loader = labels.ActionCotLabelLoader(
+        tmp_path,
+        max_segments=5,
+        max_skip_segments=1,
+        step_values=(3, 5, 10),
+        step_thresholds=(-3.0, -1.0),
+    )
+
+    item = loader.load(0)
+
+    assert int(item["action_cot_step_label"]) == 0
+    assert int(item["action_cot_step_value"]) == 3
+
+
 def test_action_cot_label_dataset_adds_labels(tmp_path: pathlib.Path):
     np.savez_compressed(
         tmp_path / "sample_000000.npz",
