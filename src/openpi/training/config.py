@@ -1637,6 +1637,10 @@ _CONFIGS = [
         data=LeRobotACOTLiberoDataConfig(
             repo_id="your_hf_username/libero",
             base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir="/root/autodl-tmp/acotvla/assets/acot_libero_action_cot_explicit_implicit_co_fusion",
+                asset_id="your_hf_username/libero",
+            ),
             extra_delta_transform=(False, False),
             joint_action_shifts=(2, 1),
         ),
