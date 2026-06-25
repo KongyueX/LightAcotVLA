@@ -64,6 +64,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--num_steps", "--num-steps", type=int, default=10)
+    parser.add_argument(
+        "--coarse_num_steps",
+        "--coarse-num-steps",
+        type=int,
+        default=None,
+        help="Denoising steps for explicit coarse Action-CoT only. Defaults to --num_steps.",
+    )
 
     parser.add_argument("--strategy", choices=("low_entropy", "high_entropy", "random"), default="low_entropy")
     parser.add_argument("--segment_mode", "--segment-mode", choices=("fixed", "adaptive"), default="adaptive")
@@ -95,6 +102,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--repeat must be positive.")
     if args.num_steps <= 0:
         raise ValueError("--num_steps must be positive.")
+    if args.coarse_num_steps is not None and args.coarse_num_steps <= 0:
+        raise ValueError("--coarse_num_steps must be positive when set.")
     if not 0.0 <= args.prune_ratio <= 1.0:
         raise ValueError("--prune_ratio must be in [0, 1].")
     if args.true_skip_chunk_size != 5:
@@ -103,6 +112,10 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 def _status(message: str) -> None:
     print(f"[benchmark_action_cot_speed] {message}", flush=True)
+
+
+def _effective_coarse_num_steps(args: argparse.Namespace) -> int:
+    return int(args.num_steps if args.coarse_num_steps is None else args.coarse_num_steps)
 
 
 def _infer_timed(policy: Any, policy_input: dict[str, Any], *, seed: int) -> tuple[dict[str, Any], float, float]:
@@ -255,12 +268,15 @@ def main() -> None:
     from openpi.policies import policy_config as _policy_config
 
     _status(f"Loading policy from {checkpoint_dir}")
+    sample_kwargs = {"num_steps": args.num_steps}
+    if args.coarse_num_steps is not None:
+        sample_kwargs["coarse_num_steps"] = args.coarse_num_steps
     policy = _policy_config.create_trained_policy(
         train_config,
         checkpoint_dir,
         default_prompt=args.default_prompt,
         norm_stats=norm_stats,
-        sample_kwargs={"num_steps": args.num_steps},
+        sample_kwargs=sample_kwargs,
     )
 
     files = stage_b._entropy_files(entropy_dir, args.max_items)
@@ -383,6 +399,7 @@ def main() -> None:
             "checkpoint_dir": str(checkpoint_dir),
             "policy_config": args.config_name,
             "num_steps": args.num_steps,
+            "coarse_num_steps": _effective_coarse_num_steps(args),
             "max_items": args.max_items,
             "warmup": args.warmup,
             "repeat": args.repeat,
