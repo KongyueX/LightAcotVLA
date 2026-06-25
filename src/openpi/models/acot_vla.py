@@ -896,13 +896,16 @@ class ACOT_VLA(_model.BaseModel):
         observation: _model.Observation,
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
+        coarse_num_steps: int | at.Int[at.Array, ""] | None = None,
         explicit_action_reason_override: _model.CoarseActions | None = None,
         explicit_action_skip_segment: int | at.Int[at.Array, ""] | None = None,
     ) -> _model.Actions:
         observation = _model.preprocess_observation(None, observation, train=False)
         # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
         # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
-        dt = -1.0 / num_steps
+        coarse_num_steps = num_steps if coarse_num_steps is None else coarse_num_steps
+        coarse_dt = -1.0 / coarse_num_steps
+        action_dt = -1.0 / num_steps
         batch_size = observation.state.shape[0]
 
         ref_action_rng, expert_action_rng = jax.random.split(rng, 2)
@@ -948,11 +951,11 @@ class ACOT_VLA(_model.BaseModel):
             )
             v_t = self.coarse_action_out_proj(suffix_out[:, -x_t.shape[1] :])
 
-            return x_t + dt * v_t, time + dt, step_idx + 1
+            return x_t + coarse_dt * v_t, time + coarse_dt, step_idx + 1
         
         def cond_explicit_action_reasoner(carry):
             x_t, time, _ = carry
-            return time >= -dt / 2
+            return time >= -coarse_dt / 2
 
         if explicit_action_reason_override is not None:
             if not self.adopt_explicit_action_reasoner:
@@ -1008,11 +1011,11 @@ class ACOT_VLA(_model.BaseModel):
                 adarms_cond=[None, None, adarms_cond],
             )
             v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
-            return x_t + dt * v_t, time + dt, step_idx + 1
+            return x_t + action_dt * v_t, time + action_dt, step_idx + 1
 
         def cond_expert(carry):
             x_t, time, _ = carry
-            return time >= -dt / 2
+            return time >= -action_dt / 2
         
         x_0_expert, _, _ = jax.lax.while_loop(cond_expert, step_expert, (expert_action_noise, 1.0, 1))
 

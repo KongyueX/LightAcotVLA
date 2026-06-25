@@ -105,6 +105,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output_dir", "--output-dir", required=True)
     parser.add_argument("--video_out_path", "--video-out-path", default=None)
     parser.add_argument("--save_videos", "--save-videos", action="store_true")
+    parser.add_argument(
+        "--coarse_num_steps",
+        "--coarse-num-steps",
+        type=int,
+        default=None,
+        help="Denoising steps for explicit coarse Action-CoT only. Defaults to the policy server sample default.",
+    )
 
     parser.add_argument(
         "--mode",
@@ -158,6 +165,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max_tasks must be positive when set.")
     if args.entropy_samples <= 0:
         raise ValueError("--entropy_samples must be positive.")
+    if args.coarse_num_steps is not None and args.coarse_num_steps <= 0:
+        raise ValueError("--coarse_num_steps must be positive when set.")
     if not 0.0 <= args.prune_ratio <= 1.0:
         raise ValueError("--prune_ratio must be in [0, 1].")
     if args.true_skip_chunk_size != 5:
@@ -168,6 +177,13 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 def _status(message: str) -> None:
     print(f"[eval_libero_action_cot_pruning] {message}", flush=True)
+
+
+def _with_coarse_num_steps(element: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    request = dict(element)
+    if args.coarse_num_steps is not None:
+        request["action_cot_coarse_num_steps"] = np.asarray(args.coarse_num_steps, dtype=np.int32)
+    return request
 
 
 def _max_steps(task_suite_name: str) -> int:
@@ -355,7 +371,7 @@ def _query_action(
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     if mode == "full":
-        result, wall_ms, policy_ms, server_ms = _infer(client, element, seed=seed)
+        result, wall_ms, policy_ms, server_ms = _infer(client, _with_coarse_num_steps(element, args), seed=seed)
         return np.asarray(result["actions"]), {
             "wall_ms": wall_ms,
             "policy_ms": policy_ms,
@@ -372,7 +388,7 @@ def _query_action(
         }
 
     if mode == "true_segment_skip":
-        true_element = dict(element)
+        true_element = _with_coarse_num_steps(element, args)
         true_element["action_cot_skip_segment"] = np.asarray(args.true_skip_segment, dtype=np.int32)
         result, wall_ms, policy_ms, server_ms = _infer(client, true_element, seed=seed)
         return np.asarray(result["actions"]), {
@@ -395,8 +411,9 @@ def _query_action(
     full_wall_ms = []
     full_policy_ms = []
     full_server_ms = []
+    full_element = _with_coarse_num_steps(element, args)
     for sample_idx in range(entropy_samples):
-        result, wall_ms, policy_ms, server_ms = _infer(client, element, seed=seed + sample_idx)
+        result, wall_ms, policy_ms, server_ms = _infer(client, full_element, seed=seed + sample_idx)
         if "coarse_actions" not in result:
             raise KeyError("Policy output does not contain coarse_actions.")
         coarse_samples.append(np.asarray(result["coarse_actions"], dtype=np.float32))
@@ -416,7 +433,7 @@ def _query_action(
             norm_stats=norm_stats,
             rng=rng,
         )
-        true_element = dict(element)
+        true_element = _with_coarse_num_steps(element, args)
         true_element["action_cot_skip_segment"] = np.asarray(skip_segment, dtype=np.int32)
         result, skip_wall_ms, skip_policy_ms, skip_server_ms = _infer(client, true_element, seed=seed)
         return np.asarray(result["actions"]), {
@@ -442,7 +459,7 @@ def _query_action(
             rng=rng,
         )
 
-    override_element = dict(element)
+    override_element = _with_coarse_num_steps(element, args)
     override_element["coarse_actions_override"] = coarse_override
     result, override_wall_ms, override_policy_ms, override_server_ms = _infer(client, override_element, seed=seed)
     return np.asarray(result["actions"]), {
@@ -675,6 +692,7 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "max_tasks": args.max_tasks,
             "task_start": args.task_start,
             "mode": args.mode,
+            "coarse_num_steps": args.coarse_num_steps,
             "entropy_samples": args.entropy_samples,
             "strategy": args.strategy,
             "segment_mode": args.segment_mode,
