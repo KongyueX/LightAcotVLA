@@ -1,0 +1,26 @@
+{
+  "aggregate": {
+    "coarse_l1_to_full": 0.027234436294403242,
+    "coarse_mse_to_full": 0.01717304574051034,
+    "action_l1_to_full": 0.022247342480734622,
+    "action_mse_to_full": 0.010137461966772673,
+    "action_l1_to_expert": 0.051836182093229086,
+    "action_mse_to_expert": 0.02523600491557843,
+    "trajectory_jerk": 0.1461969128106291,
+    "gripper_error": 0.0846461357757992,
+    "skip_ratio": 0.3699333333333334,
+    "avg_inference_time": 90.0359969874844,
+    "success_rate": NaN,
+    "average_return": NaN,
+    "collision_rate": NaN,
+    "timeout_rate": NaN
+  },
+  "random_trial_aggregates": null,
+  "random_trial_std": null,
+  "action_metrics_source": "model_injected_coarse_actions",
+  "action_injection_available": true,
+  "closed_loop_pruning_rollout_available": false,
+  "outputs": {
+    "per_sample_metrics_csv": "/root/autodl-tmp/acotvla/stage_b_pruning_eval/injection_adaptive_p03_1k/per_sample_metrics.csv"
+  }
+}

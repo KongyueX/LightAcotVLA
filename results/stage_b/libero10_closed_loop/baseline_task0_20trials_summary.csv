@@ -1,0 +1,2 @@
+coarse_num_steps,mode,success_rate,average_return,timeout_rate,avg_wall_inference_ms,avg_policy_inference_ms,avg_server_inference_ms,avg_coarse_num_steps_used,speedup_vs_coarse10_pct
+10,full,0.95,0.95,0.05,92.4216823455168,82.49553051029119,91.4254061563256,nan,0.0
