@@ -565,6 +565,8 @@ def _run_mode(
                     obs, reward, done, _ = env.step(LIBERO_DUMMY_ACTION)
                     total_return += float(reward)
                     t += 1
+                    if done:
+                        break
                     continue
 
                 if not action_plan:
