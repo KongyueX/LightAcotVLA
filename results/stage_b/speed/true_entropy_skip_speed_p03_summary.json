@@ -1,0 +1,45 @@
+{
+  "config": {
+    "entropy_dir": "/root/autodl-tmp/acotvla/action_cot_entropy_labels/adaptive_full_k8",
+    "checkpoint_dir": "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999",
+    "policy_config": "acot_libero_action_cot_explicit_implicit_co_fusion",
+    "num_steps": 10,
+    "max_items": 50,
+    "warmup": 3,
+    "repeat": 3,
+    "strategy": "low_entropy",
+    "segment_mode": "fixed",
+    "chunk_size": 5,
+    "prune_ratio": 0.3,
+    "replacement": "interp",
+    "true_skip_selector": "fixed_l5_entropy",
+    "true_skip_chunk_size": 5
+  },
+  "aggregate": {
+    "num_measurements": 150,
+    "full_acot_ms_mean": 72.74821210031708,
+    "full_acot_ms_std": 1.227647088009921,
+    "cached_coarse_override_ms_mean": 55.65382903441787,
+    "cached_coarse_override_ms_std": 1.286142990284852,
+    "pruned_coarse_override_ms_mean": 55.48750493054589,
+    "pruned_coarse_override_ms_std": 1.0745394198257916,
+    "true_entropy_segment_skip_ms_mean": 73.20423135533929,
+    "true_entropy_segment_skip_ms_std": 1.1685033503774305,
+    "skip_ratio_mean": 0.3333333333333333,
+    "true_skip_ratio_mean": 0.3333333333333333,
+    "full_to_cached_speedup_pct": 23.498011253289206,
+    "full_to_pruned_speedup_pct": 23.726641069844177,
+    "full_to_true_entropy_segment_skip_speedup_pct": -0.6268459964258399,
+    "cached_to_pruned_speedup_pct": 0.298854736066978,
+    "cached_to_true_entropy_segment_skip_gap_pct": 31.53494130667589
+  },
+  "interpretation": {
+    "full_to_cached": "Latency saved by bypassing the entire explicit Action-CoT generation loop.",
+    "cached_to_pruned": "Extra latency saved by changing coarse_actions values only. This should be near zero because the current Stage B injection path keeps the same final action-head token length.",
+    "next_requirement": "If cached_to_pruned is near zero, real segment-level speedup requires a model path that generates or consumes fewer explicit Action-CoT tokens, not just masked values.",
+    "true_entropy_segment_skip": "This path selects one fixed L=5 segment by entropy, generates only the remaining 10 explicit Action-CoT tokens, restores the skipped frames, then runs the unchanged final action head."
+  },
+  "outputs": {
+    "latency_rows_csv": "/root/autodl-tmp/acotvla/stage_b_pruning_eval/true_entropy_skip_speed_p03/latency_rows.csv"
+  }
+}

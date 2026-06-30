@@ -1,0 +1,37 @@
+{
+  "config": {
+    "entropy_dir": "/root/autodl-tmp/acotvla/action_cot_entropy_labels/adaptive_full_k8",
+    "checkpoint_dir": "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999",
+    "policy_config": "acot_libero_action_cot_explicit_implicit_co_fusion",
+    "num_steps": 10,
+    "max_items": 50,
+    "warmup": 3,
+    "repeat": 3,
+    "strategy": "low_entropy",
+    "segment_mode": "adaptive",
+    "chunk_size": 5,
+    "prune_ratio": 0.3,
+    "replacement": "interp"
+  },
+  "aggregate": {
+    "num_measurements": 150,
+    "full_acot_ms_mean": 72.97054733460148,
+    "full_acot_ms_std": 0.8074204252070916,
+    "cached_coarse_override_ms_mean": 55.53876765693227,
+    "cached_coarse_override_ms_std": 0.604953341336001,
+    "pruned_coarse_override_ms_mean": 55.54128849878907,
+    "pruned_coarse_override_ms_std": 0.7189550828269903,
+    "skip_ratio_mean": 0.35866666666666663,
+    "full_to_cached_speedup_pct": 23.888788441913377,
+    "full_to_pruned_speedup_pct": 23.88533384009267,
+    "cached_to_pruned_speedup_pct": -0.004538886912963669
+  },
+  "interpretation": {
+    "full_to_cached": "Latency saved by bypassing the entire explicit Action-CoT generation loop.",
+    "cached_to_pruned": "Extra latency saved by changing coarse_actions values only. This should be near zero because the current Stage B injection path keeps the same final action-head token length.",
+    "next_requirement": "If cached_to_pruned is near zero, real segment-level speedup requires a model path that generates or consumes fewer explicit Action-CoT tokens, not just masked values."
+  },
+  "outputs": {
+    "latency_rows_csv": "/root/autodl-tmp/acotvla/stage_b_pruning_eval/speed_benchmark_adaptive_p03/latency_rows.csv"
+  }
+}

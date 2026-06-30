@@ -1,0 +1,45 @@
+{
+  "config": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "task_suite_name": "libero_10",
+    "num_trials_per_task": 20,
+    "max_tasks": 1,
+    "task_start": 0,
+    "mode": "full",
+    "coarse_num_steps": 3,
+    "dynamic_coarse_steps": false,
+    "entropy_samples": 4,
+    "strategy": "low_entropy",
+    "segment_mode": "fixed",
+    "chunk_size": 5,
+    "prune_ratio": 0.3,
+    "replacement": "interp",
+    "true_skip_segment": 1,
+    "true_skip_chunk_size": 5,
+    "quality_mode": "online_mc_then_override",
+    "note": "pruned_override measures closed-loop quality. It is not a deployable speed path because it first runs full ACoT to estimate online entropy. true_entropy_skip also estimates entropy online here; its deployable timing fields measure only the final true-skip model call."
+  },
+  "aggregate": {
+    "full": {
+      "episodes": 20,
+      "success_rate": 1.0,
+      "average_return": 1.0,
+      "timeout_rate": 0.0,
+      "avg_wall_inference_ms": 81.77470804548531,
+      "avg_policy_inference_ms": 71.05684950548688,
+      "avg_server_inference_ms": 80.71142296003535,
+      "avg_deployable_wall_inference_ms": 81.77470804548531,
+      "avg_deployable_policy_inference_ms": 71.05684950548688,
+      "avg_deployable_server_inference_ms": 80.71142296003535,
+      "avg_skip_ratio": NaN,
+      "avg_coarse_num_steps_used": NaN,
+      "avg_full_calls_per_episode": 57.2,
+      "avg_override_calls_per_episode": 0.0,
+      "avg_true_skip_calls_per_episode": 0.0
+    }
+  },
+  "outputs": {
+    "rollout_rows_csv": "/root/autodl-tmp/acotvla/stage_b_pruning_eval/coarse_steps_libero10_task0_20trials_all_steps/coarse_steps_3/rollout_rows.csv"
+  }
+}
