@@ -171,6 +171,8 @@ logs/
 *exps*
 .vscode/
 # Local runtime artifacts
+outputs/
+work/
 MUJOCO_LOG.TXT
 *.bak
 *.bak.*
