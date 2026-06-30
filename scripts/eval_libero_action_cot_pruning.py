@@ -217,6 +217,34 @@ def _get_libero_env(task, resolution: int, seed: int):
     return env, task_description
 
 
+def _safe_close_env(env) -> None:
+    close = getattr(env, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:
+            pass
+
+
+def _env_success(env) -> bool:
+    candidates = [env, getattr(env, "env", None)]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        for name in ("_check_success", "check_success"):
+            fn = getattr(candidate, name, None)
+            if callable(fn):
+                try:
+                    return bool(fn())
+                except Exception:
+                    continue
+    return False
+
+
+def _is_terminated_episode_error(exc: Exception) -> bool:
+    return isinstance(exc, ValueError) and "executing action in terminated episode" in str(exc)
+
+
 def _quat2axisangle(quat: np.ndarray) -> np.ndarray:
     quat = np.asarray(quat)
     if quat[3] > 1.0:
@@ -537,9 +565,13 @@ def _run_mode(
     for task_id in _task_ids(args, task_suite.n_tasks):
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
-        env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
+        task_description = task.language
+        env = None
 
         for episode_idx in range(args.num_trials_per_task):
+            if env is not None:
+                _safe_close_env(env)
+            env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
             _status(f"mode={mode} task={task_id} episode={episode_idx} task='{task_description}'")
             env.reset()
             action_plan = collections.deque()
@@ -562,7 +594,17 @@ def _run_mode(
 
             while t < max_steps + args.num_steps_wait:
                 if t < args.num_steps_wait:
-                    obs, reward, done, _ = env.step(LIBERO_DUMMY_ACTION)
+                    try:
+                        obs, reward, done, _ = env.step(LIBERO_DUMMY_ACTION)
+                    except Exception as exc:
+                        if not _is_terminated_episode_error(exc):
+                            raise
+                        done = _env_success(env)
+                        _status(
+                            f"WARNING: mode={mode} task={task_id} episode={episode_idx} "
+                            f"ended during wait step; success={done}"
+                        )
+                        break
                     total_return += float(reward)
                     t += 1
                     if done:
@@ -602,7 +644,17 @@ def _run_mode(
                     true_skip_calls += int(timing.get("true_skip_calls", 0))
 
                 action = action_plan.popleft()
-                obs, reward, done, _ = env.step(np.asarray(action).tolist())
+                try:
+                    obs, reward, done, _ = env.step(np.asarray(action).tolist())
+                except Exception as exc:
+                    if not _is_terminated_episode_error(exc):
+                        raise
+                    done = _env_success(env)
+                    _status(
+                        f"WARNING: mode={mode} task={task_id} episode={episode_idx} "
+                        f"ended before action step; success={done}"
+                    )
+                    break
                 total_return += float(reward)
                 if done:
                     break
@@ -651,6 +703,9 @@ def _run_mode(
                 f"mode={mode} task={task_id} episode={episode_idx} "
                 f"success={success} avg_wall_ms={row['avg_wall_inference_ms']:.2f}"
             )
+
+        if env is not None:
+            _safe_close_env(env)
 
     return rows
 
