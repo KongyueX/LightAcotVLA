@@ -47,6 +47,13 @@ from openpi.shared import normalize as _normalize
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
+PROFILE_TIMING_FIELDS = (
+    "vlm_ms",
+    "implicit_action_reasoner_ms",
+    "coarse_action_expert_ms",
+    "action_expert_ms",
+    "profile_overhead_ms",
+)
 
 
 def _ensure_libero_import_path() -> None:
@@ -96,6 +103,99 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy_api_key", "--policy-api-key", default=None)
     parser.add_argument("--resize_size", "--resize-size", type=int, default=224)
     parser.add_argument("--replan_steps", "--replan-steps", type=int, default=5)
+    parser.add_argument(
+        "--adaptive_replanning",
+        "--adaptive-replanning",
+        choices=("none", "action", "entropy", "action_entropy"),
+        default="none",
+        help=(
+            "Dynamically choose how many low-level actions to execute before replanning. "
+            "action uses action-chunk stability, entropy uses Action-CoT uncertainty, and "
+            "action_entropy combines both. The baseline is none, equivalent to fixed --replan_steps."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive_replan_horizons",
+        "--adaptive-replan-horizons",
+        nargs="*",
+        type=int,
+        default=[3, 5, 8, 10],
+        help="Candidate execution horizons H in environment/control steps.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_entropy_mode",
+        "--adaptive-replan-entropy-mode",
+        choices=("none", "coarse_proxy", "online_mc"),
+        default="none",
+        help=(
+            "Entropy source for adaptive replanning. coarse_proxy is a cheap single-sample coarse-action "
+            "variation proxy. online_mc computes Stage-B-style MC predictive entropy and is useful as an oracle, "
+            "but its extra policy calls are included in non-deployable timing."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive_replan_entropy_samples",
+        "--adaptive-replan-entropy-samples",
+        type=int,
+        default=4,
+        help="Number of MC samples for --adaptive_replan_entropy_mode online_mc.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_entropy_low_quantile",
+        "--adaptive-replan-entropy-low-quantile",
+        type=float,
+        default=0.33,
+        help="Running-history quantile below which entropy lengthens the horizon.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_entropy_high_quantile",
+        "--adaptive-replan-entropy-high-quantile",
+        type=float,
+        default=0.67,
+        help="Running-history quantile above which entropy shortens the horizon.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_entropy_warmup",
+        "--adaptive-replan-entropy-warmup",
+        type=int,
+        default=20,
+        help="Number of entropy observations to collect before quantile-based entropy gating affects H.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_entropy_low",
+        "--adaptive-replan-entropy-low",
+        type=float,
+        default=None,
+        help="Optional absolute entropy threshold for lengthening H. Overrides the low quantile when set.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_entropy_high",
+        "--adaptive-replan-entropy-high",
+        type=float,
+        default=None,
+        help="Optional absolute entropy threshold for shortening H. Overrides the high quantile when set.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_jerk_low",
+        "--adaptive-replan-jerk-low",
+        type=float,
+        default=0.25,
+        help="Low action jerk ratio threshold for choosing a long horizon.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_jerk_high",
+        "--adaptive-replan-jerk-high",
+        type=float,
+        default=0.75,
+        help="High action jerk ratio threshold for choosing a short horizon.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_gripper_change_threshold",
+        "--adaptive-replan-gripper-change-threshold",
+        type=float,
+        default=0.25,
+        help="Max gripper change above which the horizon is capped at the default replan horizon.",
+    )
     parser.add_argument("--task_suite_name", "--task-suite-name", default="libero_spatial")
     parser.add_argument("--num_steps_wait", "--num-steps-wait", type=int, default=10)
     parser.add_argument("--num_trials_per_task", "--num-trials-per-task", type=int, default=1)
@@ -165,6 +265,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def _validate_args(args: argparse.Namespace) -> None:
     if args.replan_steps <= 0:
         raise ValueError("--replan_steps must be positive.")
+    if not args.adaptive_replan_horizons:
+        raise ValueError("--adaptive_replan_horizons must contain at least one value.")
+    if any(horizon <= 0 for horizon in args.adaptive_replan_horizons):
+        raise ValueError("--adaptive_replan_horizons values must be positive.")
+    if args.adaptive_replan_entropy_samples <= 0:
+        raise ValueError("--adaptive_replan_entropy_samples must be positive.")
+    if not 0.0 <= args.adaptive_replan_entropy_low_quantile <= 1.0:
+        raise ValueError("--adaptive_replan_entropy_low_quantile must be in [0, 1].")
+    if not 0.0 <= args.adaptive_replan_entropy_high_quantile <= 1.0:
+        raise ValueError("--adaptive_replan_entropy_high_quantile must be in [0, 1].")
+    if args.adaptive_replan_entropy_low_quantile > args.adaptive_replan_entropy_high_quantile:
+        raise ValueError("--adaptive_replan_entropy_low_quantile must be <= high quantile.")
+    if args.adaptive_replan_entropy_warmup < 0:
+        raise ValueError("--adaptive_replan_entropy_warmup must be non-negative.")
+    if args.adaptive_replan_jerk_low < 0 or args.adaptive_replan_jerk_high < 0:
+        raise ValueError("--adaptive_replan_jerk thresholds must be non-negative.")
+    if args.adaptive_replan_jerk_low > args.adaptive_replan_jerk_high:
+        raise ValueError("--adaptive_replan_jerk_low must be <= --adaptive_replan_jerk_high.")
+    if args.adaptive_replanning in ("entropy", "action_entropy") and args.adaptive_replan_entropy_mode == "none":
+        raise ValueError(
+            "--adaptive_replanning entropy/action_entropy requires --adaptive_replan_entropy_mode "
+            "coarse_proxy or online_mc."
+        )
     if args.num_trials_per_task <= 0:
         raise ValueError("--num_trials_per_task must be positive.")
     if args.max_tasks is not None and args.max_tasks <= 0:
@@ -378,22 +501,49 @@ def _select_online_true_skip_segment(
     return int(skipped_segments[0]), float(args.true_skip_chunk_size / coarse_samples.shape[1]), entropy
 
 
-def _timing_ms(result: dict[str, Any], wall_ms: float) -> tuple[float, float]:
+def _timing_ms(result: dict[str, Any], wall_ms: float) -> tuple[float, float, dict[str, float]]:
     policy_timing = result.get("policy_timing", {}) if isinstance(result, dict) else {}
     server_timing = result.get("server_timing", {}) if isinstance(result, dict) else {}
     policy_ms = float(policy_timing.get("infer_ms", np.nan))
     server_ms = float(server_timing.get("infer_ms", wall_ms))
-    return policy_ms, server_ms
+    stage_timing = {field: _timing_float(policy_timing, field) for field in PROFILE_TIMING_FIELDS}
+    return policy_ms, server_ms, stage_timing
 
 
-def _infer(client, element: dict[str, Any], *, seed: int) -> tuple[dict[str, Any], float, float, float]:
+def _timing_float(timing: dict[str, Any], field: str) -> float:
+    value = timing.get(field)
+    if value is None:
+        return float("nan")
+    return float(value)
+
+
+def _sum_stage_timing(timings: list[dict[str, float]]) -> dict[str, float]:
+    result = {}
+    for field in PROFILE_TIMING_FIELDS:
+        values = [float(timing.get(field, float("nan"))) for timing in timings]
+        finite = [value for value in values if np.isfinite(value)]
+        result[field] = float(np.sum(finite)) if finite else float("nan")
+    return result
+
+
+def _prefixed_stage_timing(prefix: str, timing: dict[str, float]) -> dict[str, float]:
+    return {f"{prefix}_{field}": float(timing.get(field, float("nan"))) for field in PROFILE_TIMING_FIELDS}
+
+
+def _infer(
+    client,
+    element: dict[str, Any],
+    *,
+    seed: int,
+) -> tuple[dict[str, Any], float, float, float, dict[str, float]]:
     request = dict(element)
     request["policy_seed"] = np.asarray(seed, dtype=np.int64)
+    request["profile_policy_timing"] = np.asarray(True)
     start = time.perf_counter()
     result = client.infer(request)
     wall_ms = (time.perf_counter() - start) * 1000.0
-    policy_ms, server_ms = _timing_ms(result, wall_ms)
-    return result, wall_ms, policy_ms, server_ms
+    policy_ms, server_ms, stage_timing = _timing_ms(result, wall_ms)
+    return result, wall_ms, policy_ms, server_ms, stage_timing
 
 
 def _coarse_steps_from_result(result: dict[str, Any]) -> float:
@@ -403,6 +553,254 @@ def _coarse_steps_from_result(result: dict[str, Any]) -> float:
     if value.size == 0:
         return float("nan")
     return float(value.reshape(-1)[0])
+
+
+def _adaptive_replanning_enabled(args: argparse.Namespace) -> bool:
+    return args.adaptive_replanning != "none"
+
+
+def _adaptive_uses_entropy(args: argparse.Namespace) -> bool:
+    return args.adaptive_replanning in ("entropy", "action_entropy") and args.adaptive_replan_entropy_mode != "none"
+
+
+def _adaptive_uses_action(args: argparse.Namespace) -> bool:
+    return args.adaptive_replanning in ("action", "action_entropy")
+
+
+def _candidate_horizons(args: argparse.Namespace, action_len: int) -> list[int]:
+    horizons = sorted(set(int(value) for value in args.adaptive_replan_horizons + [args.replan_steps]))
+    horizons = [value for value in horizons if value > 0 and value <= action_len]
+    if horizons:
+        return horizons
+    return [min(args.replan_steps, action_len)]
+
+
+def _nearest_horizon_index(horizons: list[int], target: int) -> int:
+    return min(range(len(horizons)), key=lambda idx: (abs(horizons[idx] - target), horizons[idx]))
+
+
+def _gripper_action_indices(action_dim: int, args: argparse.Namespace) -> np.ndarray:
+    if args.gripper_indices:
+        indices = np.asarray(args.gripper_indices, dtype=np.int64)
+        indices = np.where(indices < 0, indices + action_dim, indices)
+        indices = indices[(0 <= indices) & (indices < action_dim)]
+        if indices.size:
+            return indices
+    return np.asarray([action_dim - 1], dtype=np.int64)
+
+
+def _action_stability_metrics(action_chunk: np.ndarray, args: argparse.Namespace) -> dict[str, float]:
+    actions = np.asarray(action_chunk, dtype=np.float64)
+    if actions.ndim != 2 or actions.shape[0] == 0:
+        return {
+            "action_delta": float("nan"),
+            "action_jerk": float("nan"),
+            "action_jerk_ratio": float("nan"),
+            "gripper_change": float("nan"),
+            "gripper_event": 0.0,
+        }
+
+    action_dim = actions.shape[-1]
+    gripper_indices = _gripper_action_indices(action_dim, args)
+    non_gripper_mask = np.ones(action_dim, dtype=bool)
+    non_gripper_mask[gripper_indices] = False
+    body_actions = actions[:, non_gripper_mask] if np.any(non_gripper_mask) else actions
+
+    if body_actions.shape[0] >= 2:
+        deltas = body_actions[1:] - body_actions[:-1]
+        delta_norm = np.linalg.norm(deltas, axis=-1)
+        action_delta = float(np.mean(delta_norm))
+    else:
+        deltas = np.zeros((0, body_actions.shape[-1]), dtype=np.float64)
+        action_delta = 0.0
+
+    if deltas.shape[0] >= 2:
+        curvature = deltas[1:] - deltas[:-1]
+        jerk_norm = np.linalg.norm(curvature, axis=-1)
+        action_jerk = float(np.mean(jerk_norm))
+    else:
+        action_jerk = 0.0
+
+    action_jerk_ratio = float(action_jerk / (action_delta + 1e-6))
+
+    if gripper_indices.size and actions.shape[0] >= 2:
+        gripper = actions[:, gripper_indices]
+        gripper_change = float(np.max(np.abs(gripper[1:] - gripper[:-1])))
+    else:
+        gripper_change = 0.0
+
+    return {
+        "action_delta": action_delta,
+        "action_jerk": action_jerk,
+        "action_jerk_ratio": action_jerk_ratio,
+        "gripper_change": gripper_change,
+        "gripper_event": float(gripper_change >= args.adaptive_replan_gripper_change_threshold),
+    }
+
+
+def _coarse_variation_proxy(
+    coarse_actions: np.ndarray,
+    *,
+    args: argparse.Namespace,
+    norm_stats: dict[str, Any] | None,
+) -> dict[str, Any]:
+    coarse_actions = np.asarray(coarse_actions, dtype=np.float64)
+    coarse_normalized, _ = stage_b._normalize_actions(
+        coarse_actions[None, ...],
+        norm_stats,
+        use_quantiles=False,
+        preferred_key="coarse_actions",
+    )
+    coarse = coarse_normalized[0]
+    segments = _segment(coarse, args)
+    scores = []
+    for start, end in segments:
+        segment = coarse[start:end]
+        if segment.shape[0] <= 1:
+            scores.append(0.0)
+            continue
+        deltas = segment[1:] - segment[:-1]
+        delta_score = float(np.mean(np.linalg.norm(deltas, axis=-1)))
+        if deltas.shape[0] >= 2:
+            curvature = deltas[1:] - deltas[:-1]
+            curve_score = float(np.mean(np.linalg.norm(curvature, axis=-1)))
+        else:
+            curve_score = 0.0
+        scores.append(delta_score + 0.5 * curve_score)
+
+    values = np.asarray(scores, dtype=np.float64)
+    return {
+        "adaptive_entropy_source": "coarse_proxy",
+        "adaptive_entropy_score": float(np.max(values)) if values.size else float("nan"),
+        "adaptive_entropy_mean": float(np.mean(values)) if values.size else float("nan"),
+        "adaptive_entropy_max": float(np.max(values)) if values.size else float("nan"),
+        "adaptive_entropy_std": float(np.std(values)) if values.size else float("nan"),
+        "adaptive_entropy_num_segments": int(len(segments)),
+    }
+
+
+def _mc_entropy_info(
+    coarse_samples: np.ndarray,
+    *,
+    args: argparse.Namespace,
+    norm_stats: dict[str, Any] | None,
+) -> dict[str, Any]:
+    coarse_samples = np.asarray(coarse_samples, dtype=np.float64)
+    coarse_normalized, _ = stage_b._normalize_actions(
+        coarse_samples,
+        norm_stats,
+        use_quantiles=False,
+        preferred_key="coarse_actions",
+    )
+    coarse_mean = np.mean(coarse_normalized, axis=0)
+    segments = _segment(coarse_mean, args)
+    entropy = acot_compression.compute_mc_predictive_entropy(coarse_normalized, segments)
+    return {
+        "adaptive_entropy_source": "online_mc",
+        "adaptive_entropy_score": float(np.max(entropy)) if entropy.size else float("nan"),
+        "adaptive_entropy_mean": float(np.mean(entropy)) if entropy.size else float("nan"),
+        "adaptive_entropy_max": float(np.max(entropy)) if entropy.size else float("nan"),
+        "adaptive_entropy_std": float(np.std(entropy)) if entropy.size else float("nan"),
+        "adaptive_entropy_num_segments": int(len(segments)),
+    }
+
+
+def _entropy_thresholds(
+    entropy_history: list[float],
+    args: argparse.Namespace,
+) -> tuple[float, float, str]:
+    if args.adaptive_replan_entropy_low is not None and args.adaptive_replan_entropy_high is not None:
+        return float(args.adaptive_replan_entropy_low), float(args.adaptive_replan_entropy_high), "absolute"
+
+    if len(entropy_history) < args.adaptive_replan_entropy_warmup:
+        return float("nan"), float("nan"), "warmup"
+
+    values = np.asarray(entropy_history, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return float("nan"), float("nan"), "missing"
+
+    low = float(np.quantile(values, args.adaptive_replan_entropy_low_quantile))
+    high = float(np.quantile(values, args.adaptive_replan_entropy_high_quantile))
+    return low, high, "running_quantile"
+
+
+def _select_replan_horizon(
+    action_chunk: np.ndarray,
+    *,
+    timing: dict[str, Any],
+    args: argparse.Namespace,
+    entropy_history: list[float],
+) -> tuple[int, dict[str, Any]]:
+    action_len = int(np.asarray(action_chunk).shape[0])
+    if not _adaptive_replanning_enabled(args):
+        horizon = min(args.replan_steps, action_len)
+        return horizon, {
+            "adaptive_replan_horizon": horizon,
+            "adaptive_replan_reason": "fixed",
+            "adaptive_entropy_decision": 0,
+        }
+
+    horizons = _candidate_horizons(args, action_len)
+    default_idx = _nearest_horizon_index(horizons, args.replan_steps)
+    bucket_idx = default_idx
+    reasons = []
+
+    metrics = _action_stability_metrics(action_chunk, args)
+    if _adaptive_uses_action(args):
+        jerk_ratio = float(metrics["action_jerk_ratio"])
+        if np.isfinite(jerk_ratio) and jerk_ratio <= args.adaptive_replan_jerk_low:
+            bucket_idx = len(horizons) - 1
+            reasons.append("action_low_jerk")
+        elif np.isfinite(jerk_ratio) and jerk_ratio >= args.adaptive_replan_jerk_high:
+            bucket_idx = 0
+            reasons.append("action_high_jerk")
+        else:
+            bucket_idx = default_idx
+            reasons.append("action_mid_jerk")
+
+        if bool(metrics["gripper_event"]):
+            bucket_idx = min(bucket_idx, default_idx)
+            reasons.append("gripper_guard")
+
+    entropy_score = float(timing.get("adaptive_entropy_score", float("nan")))
+    entropy_low, entropy_high, entropy_threshold_source = _entropy_thresholds(entropy_history, args)
+    entropy_decision = 0
+    if _adaptive_uses_entropy(args) and np.isfinite(entropy_score):
+        if np.isfinite(entropy_low) and np.isfinite(entropy_high):
+            if entropy_score <= entropy_low:
+                entropy_decision = 1
+                bucket_idx = min(bucket_idx + 1, len(horizons) - 1)
+                reasons.append("entropy_low")
+            elif entropy_score >= entropy_high:
+                entropy_decision = -1
+                bucket_idx = max(bucket_idx - 1, 0)
+                reasons.append("entropy_high")
+            else:
+                reasons.append("entropy_mid")
+        else:
+            reasons.append(f"entropy_{entropy_threshold_source}")
+
+    horizon = horizons[bucket_idx]
+    info = {
+        "adaptive_replan_horizon": horizon,
+        "adaptive_replan_reason": "+".join(reasons) if reasons else "default",
+        "adaptive_action_delta": float(metrics["action_delta"]),
+        "adaptive_action_jerk": float(metrics["action_jerk"]),
+        "adaptive_action_jerk_ratio": float(metrics["action_jerk_ratio"]),
+        "adaptive_gripper_change": float(metrics["gripper_change"]),
+        "adaptive_gripper_event": float(metrics["gripper_event"]),
+        "adaptive_entropy_score": entropy_score,
+        "adaptive_entropy_mean": float(timing.get("adaptive_entropy_mean", float("nan"))),
+        "adaptive_entropy_max": float(timing.get("adaptive_entropy_max", float("nan"))),
+        "adaptive_entropy_std": float(timing.get("adaptive_entropy_std", float("nan"))),
+        "adaptive_entropy_num_segments": int(timing.get("adaptive_entropy_num_segments", 0) or 0),
+        "adaptive_entropy_low_threshold": entropy_low,
+        "adaptive_entropy_high_threshold": entropy_high,
+        "adaptive_entropy_threshold_source": entropy_threshold_source,
+        "adaptive_entropy_decision": entropy_decision,
+    }
+    return horizon, info
 
 
 def _query_action(
@@ -416,27 +814,68 @@ def _query_action(
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     if mode == "full":
-        result, wall_ms, policy_ms, server_ms = _infer(client, _with_coarse_num_steps(element, args), seed=seed)
+        result, wall_ms, policy_ms, server_ms, stage_timing = _infer(
+            client,
+            _with_coarse_num_steps(element, args),
+            seed=seed,
+        )
+        full_wall_ms = [wall_ms]
+        full_policy_ms = [policy_ms]
+        full_server_ms = [server_ms]
+        full_stage_timings = [stage_timing]
+        full_coarse_steps = [_coarse_steps_from_result(result)]
+        entropy_info: dict[str, Any] = {}
+        coarse_actions = np.asarray(result["coarse_actions"], dtype=np.float32) if "coarse_actions" in result else None
+
+        if _adaptive_uses_entropy(args) and coarse_actions is not None:
+            if args.adaptive_replan_entropy_mode == "coarse_proxy":
+                entropy_info = _coarse_variation_proxy(coarse_actions, args=args, norm_stats=norm_stats)
+            elif args.adaptive_replan_entropy_mode == "online_mc":
+                coarse_samples = [coarse_actions]
+                full_element = _with_coarse_num_steps(element, args)
+                for sample_idx in range(1, args.adaptive_replan_entropy_samples):
+                    extra_result, extra_wall_ms, extra_policy_ms, extra_server_ms, extra_stage_timing = _infer(
+                        client,
+                        full_element,
+                        seed=seed + sample_idx,
+                    )
+                    if "coarse_actions" not in extra_result:
+                        raise KeyError("Policy output does not contain coarse_actions for online entropy sampling.")
+                    coarse_samples.append(np.asarray(extra_result["coarse_actions"], dtype=np.float32))
+                    full_wall_ms.append(extra_wall_ms)
+                    full_policy_ms.append(extra_policy_ms)
+                    full_server_ms.append(extra_server_ms)
+                    full_stage_timings.append(extra_stage_timing)
+                    full_coarse_steps.append(_coarse_steps_from_result(extra_result))
+                entropy_info = _mc_entropy_info(np.stack(coarse_samples, axis=0), args=args, norm_stats=norm_stats)
+
+        total_wall_ms = float(np.nansum(full_wall_ms))
+        total_policy_ms = float(np.nansum(full_policy_ms))
+        total_server_ms = float(np.nansum(full_server_ms))
+        total_stage_timing = _sum_stage_timing(full_stage_timings)
         return np.asarray(result["actions"]), {
-            "wall_ms": wall_ms,
-            "policy_ms": policy_ms,
-            "server_ms": server_ms,
+            "wall_ms": total_wall_ms,
+            "policy_ms": total_policy_ms,
+            "server_ms": total_server_ms,
             "deployable_wall_ms": wall_ms,
             "deployable_policy_ms": policy_ms,
             "deployable_server_ms": server_ms,
+            **_prefixed_stage_timing("policy", total_stage_timing),
+            **_prefixed_stage_timing("deployable_policy", stage_timing),
             "skip_ratio": float("nan"),
             "num_segments": 0,
             "skipped_segments": "",
-            "full_calls": 1,
+            "full_calls": len(full_wall_ms),
             "override_calls": 0,
             "true_skip_calls": 0,
-            "coarse_num_steps_used": _coarse_steps_from_result(result),
+            "coarse_num_steps_used": _mean(full_coarse_steps),
+            **entropy_info,
         }
 
     if mode == "true_segment_skip":
         true_element = _with_coarse_num_steps(element, args)
         true_element["action_cot_skip_segment"] = np.asarray(args.true_skip_segment, dtype=np.int32)
-        result, wall_ms, policy_ms, server_ms = _infer(client, true_element, seed=seed)
+        result, wall_ms, policy_ms, server_ms, stage_timing = _infer(client, true_element, seed=seed)
         return np.asarray(result["actions"]), {
             "wall_ms": wall_ms,
             "policy_ms": policy_ms,
@@ -444,6 +883,8 @@ def _query_action(
             "deployable_wall_ms": wall_ms,
             "deployable_policy_ms": policy_ms,
             "deployable_server_ms": server_ms,
+            **_prefixed_stage_timing("policy", stage_timing),
+            **_prefixed_stage_timing("deployable_policy", stage_timing),
             "skip_ratio": float(args.true_skip_chunk_size / 15),
             "num_segments": 3,
             "skipped_segments": str(args.true_skip_segment),
@@ -458,16 +899,18 @@ def _query_action(
     full_wall_ms = []
     full_policy_ms = []
     full_server_ms = []
+    full_stage_timings = []
     full_coarse_steps = []
     full_element = _with_coarse_num_steps(element, args)
     for sample_idx in range(entropy_samples):
-        result, wall_ms, policy_ms, server_ms = _infer(client, full_element, seed=seed + sample_idx)
+        result, wall_ms, policy_ms, server_ms, stage_timing = _infer(client, full_element, seed=seed + sample_idx)
         if "coarse_actions" not in result:
             raise KeyError("Policy output does not contain coarse_actions.")
         coarse_samples.append(np.asarray(result["coarse_actions"], dtype=np.float32))
         full_wall_ms.append(wall_ms)
         full_policy_ms.append(policy_ms)
         full_server_ms.append(server_ms)
+        full_stage_timings.append(stage_timing)
         full_coarse_steps.append(_coarse_steps_from_result(result))
 
     if mode == "cached_override":
@@ -484,7 +927,11 @@ def _query_action(
         )
         true_element = _with_coarse_num_steps(element, args)
         true_element["action_cot_skip_segment"] = np.asarray(skip_segment, dtype=np.int32)
-        result, skip_wall_ms, skip_policy_ms, skip_server_ms = _infer(client, true_element, seed=seed)
+        result, skip_wall_ms, skip_policy_ms, skip_server_ms, skip_stage_timing = _infer(
+            client,
+            true_element,
+            seed=seed,
+        )
         return np.asarray(result["actions"]), {
             "wall_ms": float(np.nansum(full_wall_ms) + skip_wall_ms),
             "policy_ms": float(np.nansum(full_policy_ms) + skip_policy_ms),
@@ -492,6 +939,8 @@ def _query_action(
             "deployable_wall_ms": skip_wall_ms,
             "deployable_policy_ms": skip_policy_ms,
             "deployable_server_ms": skip_server_ms,
+            **_prefixed_stage_timing("policy", _sum_stage_timing([*full_stage_timings, skip_stage_timing])),
+            **_prefixed_stage_timing("deployable_policy", skip_stage_timing),
             "skip_ratio": skip_ratio,
             "num_segments": 3,
             "skipped_segments": str(skip_segment),
@@ -511,7 +960,11 @@ def _query_action(
 
     override_element = _with_coarse_num_steps(element, args)
     override_element["coarse_actions_override"] = coarse_override
-    result, override_wall_ms, override_policy_ms, override_server_ms = _infer(client, override_element, seed=seed)
+    result, override_wall_ms, override_policy_ms, override_server_ms, override_stage_timing = _infer(
+        client,
+        override_element,
+        seed=seed,
+    )
     return np.asarray(result["actions"]), {
         "wall_ms": float(np.nansum(full_wall_ms) + override_wall_ms),
         "policy_ms": float(np.nansum(full_policy_ms) + override_policy_ms),
@@ -519,6 +972,8 @@ def _query_action(
         "deployable_wall_ms": override_wall_ms,
         "deployable_policy_ms": override_policy_ms,
         "deployable_server_ms": override_server_ms,
+        **_prefixed_stage_timing("policy", _sum_stage_timing([*full_stage_timings, override_stage_timing])),
+        **_prefixed_stage_timing("deployable_policy", override_stage_timing),
         "override_wall_ms": override_wall_ms,
         "override_policy_ms": override_policy_ms,
         "override_server_ms": override_server_ms,
@@ -561,6 +1016,7 @@ def _run_mode(
     rng = np.random.default_rng(args.seed)
     max_steps = _max_steps(args.task_suite_name)
     video_root = pathlib.Path(args.video_out_path) if args.video_out_path else output_dir / "videos"
+    entropy_history: list[float] = []
 
     for task_id in _task_ids(args, task_suite.n_tasks):
         task = task_suite.get_task(task_id)
@@ -586,8 +1042,21 @@ def _run_mode(
             deployable_wall_ms = []
             deployable_policy_ms = []
             deployable_server_ms = []
+            policy_stage_ms = {field: [] for field in PROFILE_TIMING_FIELDS}
+            deployable_policy_stage_ms = {field: [] for field in PROFILE_TIMING_FIELDS}
             skip_ratios = []
             coarse_steps_used = []
+            replan_horizons = []
+            adaptive_action_delta = []
+            adaptive_action_jerk = []
+            adaptive_action_jerk_ratio = []
+            adaptive_gripper_change = []
+            adaptive_entropy_scores = []
+            adaptive_entropy_means = []
+            adaptive_entropy_maxes = []
+            adaptive_entropy_stds = []
+            adaptive_entropy_decisions = []
+            adaptive_replan_reasons = []
             full_calls = 0
             override_calls = 0
             true_skip_calls = 0
@@ -624,17 +1093,53 @@ def _run_mode(
                         seed=seed,
                         rng=rng,
                     )
-                    if len(action_chunk) < args.replan_steps:
+                    if not _adaptive_replanning_enabled(args) and len(action_chunk) < args.replan_steps:
                         raise ValueError(
                             f"Need at least {args.replan_steps} actions, got {len(action_chunk)} for mode={mode}."
                         )
-                    action_plan.extend(action_chunk[: args.replan_steps])
+                    if len(action_chunk) <= 0:
+                        raise ValueError(f"Policy returned an empty action chunk for mode={mode}.")
+                    replan_horizon, replan_info = _select_replan_horizon(
+                        action_chunk,
+                        timing=timing,
+                        args=args,
+                        entropy_history=entropy_history,
+                    )
+                    replan_horizon = min(int(replan_horizon), len(action_chunk))
+                    action_plan.extend(action_chunk[:replan_horizon])
+                    replan_horizons.append(float(replan_horizon))
+                    adaptive_replan_reasons.append(str(replan_info.get("adaptive_replan_reason", "")))
+                    for key, target in (
+                        ("adaptive_action_delta", adaptive_action_delta),
+                        ("adaptive_action_jerk", adaptive_action_jerk),
+                        ("adaptive_action_jerk_ratio", adaptive_action_jerk_ratio),
+                        ("adaptive_gripper_change", adaptive_gripper_change),
+                        ("adaptive_entropy_score", adaptive_entropy_scores),
+                        ("adaptive_entropy_mean", adaptive_entropy_means),
+                        ("adaptive_entropy_max", adaptive_entropy_maxes),
+                        ("adaptive_entropy_std", adaptive_entropy_stds),
+                        ("adaptive_entropy_decision", adaptive_entropy_decisions),
+                    ):
+                        value = float(replan_info.get(key, float("nan")))
+                        if np.isfinite(value):
+                            target.append(value)
+                    entropy_score = float(replan_info.get("adaptive_entropy_score", float("nan")))
+                    if _adaptive_uses_entropy(args) and np.isfinite(entropy_score):
+                        entropy_history.append(entropy_score)
+
                     infer_wall_ms.append(float(timing["wall_ms"]))
                     infer_policy_ms.append(float(timing["policy_ms"]))
                     infer_server_ms.append(float(timing["server_ms"]))
                     deployable_wall_ms.append(float(timing.get("deployable_wall_ms", timing["wall_ms"])))
                     deployable_policy_ms.append(float(timing.get("deployable_policy_ms", timing["policy_ms"])))
                     deployable_server_ms.append(float(timing.get("deployable_server_ms", timing["server_ms"])))
+                    for field in PROFILE_TIMING_FIELDS:
+                        value = float(timing.get(f"policy_{field}", float("nan")))
+                        if np.isfinite(value):
+                            policy_stage_ms[field].append(value)
+                        deployable_value = float(timing.get(f"deployable_policy_{field}", float("nan")))
+                        if np.isfinite(deployable_value):
+                            deployable_policy_stage_ms[field].append(deployable_value)
                     if np.isfinite(float(timing["skip_ratio"])):
                         skip_ratios.append(float(timing["skip_ratio"]))
                     if np.isfinite(float(timing.get("coarse_num_steps_used", float("nan")))):
@@ -676,11 +1181,35 @@ def _run_mode(
                 "avg_wall_inference_ms": _mean(infer_wall_ms),
                 "avg_policy_inference_ms": _mean(infer_policy_ms),
                 "avg_server_inference_ms": _mean(infer_server_ms),
+                "total_wall_inference_ms": float(np.nansum(infer_wall_ms)),
+                "total_policy_inference_ms": float(np.nansum(infer_policy_ms)),
+                "total_server_inference_ms": float(np.nansum(infer_server_ms)),
                 "avg_deployable_wall_inference_ms": _mean(deployable_wall_ms),
                 "avg_deployable_policy_inference_ms": _mean(deployable_policy_ms),
                 "avg_deployable_server_inference_ms": _mean(deployable_server_ms),
+                "total_deployable_wall_inference_ms": float(np.nansum(deployable_wall_ms)),
+                "total_deployable_policy_inference_ms": float(np.nansum(deployable_policy_ms)),
+                "total_deployable_server_inference_ms": float(np.nansum(deployable_server_ms)),
+                **{f"avg_policy_{field}": _mean(policy_stage_ms[field]) for field in PROFILE_TIMING_FIELDS},
+                **{
+                    f"avg_deployable_policy_{field}": _mean(deployable_policy_stage_ms[field])
+                    for field in PROFILE_TIMING_FIELDS
+                },
                 "avg_skip_ratio": _mean(skip_ratios),
                 "avg_coarse_num_steps_used": _mean(coarse_steps_used),
+                "avg_replan_horizon": _mean(replan_horizons),
+                "min_replan_horizon": float(np.min(replan_horizons)) if replan_horizons else float("nan"),
+                "max_replan_horizon": float(np.max(replan_horizons)) if replan_horizons else float("nan"),
+                "avg_adaptive_action_delta": _mean(adaptive_action_delta),
+                "avg_adaptive_action_jerk": _mean(adaptive_action_jerk),
+                "avg_adaptive_action_jerk_ratio": _mean(adaptive_action_jerk_ratio),
+                "avg_adaptive_gripper_change": _mean(adaptive_gripper_change),
+                "avg_adaptive_entropy_score": _mean(adaptive_entropy_scores),
+                "avg_adaptive_entropy_mean": _mean(adaptive_entropy_means),
+                "avg_adaptive_entropy_max": _mean(adaptive_entropy_maxes),
+                "avg_adaptive_entropy_std": _mean(adaptive_entropy_stds),
+                "avg_adaptive_entropy_decision": _mean(adaptive_entropy_decisions),
+                "adaptive_replan_reasons": ";".join(adaptive_replan_reasons),
                 "num_replans": len(infer_wall_ms),
                 "full_calls": full_calls,
                 "override_calls": override_calls,
@@ -727,11 +1256,32 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_wall_inference_ms",
         "avg_policy_inference_ms",
         "avg_server_inference_ms",
+        "total_wall_inference_ms",
+        "total_policy_inference_ms",
+        "total_server_inference_ms",
         "avg_deployable_wall_inference_ms",
         "avg_deployable_policy_inference_ms",
         "avg_deployable_server_inference_ms",
+        "total_deployable_wall_inference_ms",
+        "total_deployable_policy_inference_ms",
+        "total_deployable_server_inference_ms",
+        *[f"avg_policy_{field}" for field in PROFILE_TIMING_FIELDS],
+        *[f"avg_deployable_policy_{field}" for field in PROFILE_TIMING_FIELDS],
         "avg_skip_ratio",
         "avg_coarse_num_steps_used",
+        "avg_replan_horizon",
+        "min_replan_horizon",
+        "max_replan_horizon",
+        "avg_adaptive_action_delta",
+        "avg_adaptive_action_jerk",
+        "avg_adaptive_action_jerk_ratio",
+        "avg_adaptive_gripper_change",
+        "avg_adaptive_entropy_score",
+        "avg_adaptive_entropy_mean",
+        "avg_adaptive_entropy_max",
+        "avg_adaptive_entropy_std",
+        "avg_adaptive_entropy_decision",
+        "adaptive_replan_reasons",
         "num_replans",
         "full_calls",
         "override_calls",
@@ -753,6 +1303,15 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "avg_wall_inference_ms": _mean([float(row["avg_wall_inference_ms"]) for row in subset]),
             "avg_policy_inference_ms": _mean([float(row["avg_policy_inference_ms"]) for row in subset]),
             "avg_server_inference_ms": _mean([float(row["avg_server_inference_ms"]) for row in subset]),
+            "avg_total_wall_inference_ms_per_episode": _mean(
+                [float(row["total_wall_inference_ms"]) for row in subset]
+            ),
+            "avg_total_policy_inference_ms_per_episode": _mean(
+                [float(row["total_policy_inference_ms"]) for row in subset]
+            ),
+            "avg_total_server_inference_ms_per_episode": _mean(
+                [float(row["total_server_inference_ms"]) for row in subset]
+            ),
             "avg_deployable_wall_inference_ms": _mean(
                 [float(row["avg_deployable_wall_inference_ms"]) for row in subset]
             ),
@@ -762,8 +1321,44 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "avg_deployable_server_inference_ms": _mean(
                 [float(row["avg_deployable_server_inference_ms"]) for row in subset]
             ),
+            "avg_total_deployable_wall_inference_ms_per_episode": _mean(
+                [float(row["total_deployable_wall_inference_ms"]) for row in subset]
+            ),
+            "avg_total_deployable_policy_inference_ms_per_episode": _mean(
+                [float(row["total_deployable_policy_inference_ms"]) for row in subset]
+            ),
+            "avg_total_deployable_server_inference_ms_per_episode": _mean(
+                [float(row["total_deployable_server_inference_ms"]) for row in subset]
+            ),
+            **{
+                f"avg_policy_{field}": _mean([float(row[f"avg_policy_{field}"]) for row in subset])
+                for field in PROFILE_TIMING_FIELDS
+            },
+            **{
+                f"avg_deployable_policy_{field}": _mean(
+                    [float(row[f"avg_deployable_policy_{field}"]) for row in subset]
+                )
+                for field in PROFILE_TIMING_FIELDS
+            },
             "avg_skip_ratio": _mean([float(row["avg_skip_ratio"]) for row in subset]),
             "avg_coarse_num_steps_used": _mean([float(row["avg_coarse_num_steps_used"]) for row in subset]),
+            "avg_replan_horizon": _mean([float(row["avg_replan_horizon"]) for row in subset]),
+            "avg_min_replan_horizon": _mean([float(row["min_replan_horizon"]) for row in subset]),
+            "avg_max_replan_horizon": _mean([float(row["max_replan_horizon"]) for row in subset]),
+            "avg_adaptive_action_delta": _mean([float(row["avg_adaptive_action_delta"]) for row in subset]),
+            "avg_adaptive_action_jerk": _mean([float(row["avg_adaptive_action_jerk"]) for row in subset]),
+            "avg_adaptive_action_jerk_ratio": _mean(
+                [float(row["avg_adaptive_action_jerk_ratio"]) for row in subset]
+            ),
+            "avg_adaptive_gripper_change": _mean([float(row["avg_adaptive_gripper_change"]) for row in subset]),
+            "avg_adaptive_entropy_score": _mean([float(row["avg_adaptive_entropy_score"]) for row in subset]),
+            "avg_adaptive_entropy_mean": _mean([float(row["avg_adaptive_entropy_mean"]) for row in subset]),
+            "avg_adaptive_entropy_max": _mean([float(row["avg_adaptive_entropy_max"]) for row in subset]),
+            "avg_adaptive_entropy_std": _mean([float(row["avg_adaptive_entropy_std"]) for row in subset]),
+            "avg_adaptive_entropy_decision": _mean(
+                [float(row["avg_adaptive_entropy_decision"]) for row in subset]
+            ),
+            "avg_num_replans_per_episode": _mean([float(row["num_replans"]) for row in subset]),
             "avg_full_calls_per_episode": _mean([float(row["full_calls"]) for row in subset]),
             "avg_override_calls_per_episode": _mean([float(row["override_calls"]) for row in subset]),
             "avg_true_skip_calls_per_episode": _mean([float(row["true_skip_calls"]) for row in subset]),
@@ -778,6 +1373,19 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "max_tasks": args.max_tasks,
             "task_start": args.task_start,
             "mode": args.mode,
+            "replan_steps": args.replan_steps,
+            "adaptive_replanning": args.adaptive_replanning,
+            "adaptive_replan_horizons": args.adaptive_replan_horizons,
+            "adaptive_replan_entropy_mode": args.adaptive_replan_entropy_mode,
+            "adaptive_replan_entropy_samples": args.adaptive_replan_entropy_samples,
+            "adaptive_replan_entropy_low_quantile": args.adaptive_replan_entropy_low_quantile,
+            "adaptive_replan_entropy_high_quantile": args.adaptive_replan_entropy_high_quantile,
+            "adaptive_replan_entropy_warmup": args.adaptive_replan_entropy_warmup,
+            "adaptive_replan_entropy_low": args.adaptive_replan_entropy_low,
+            "adaptive_replan_entropy_high": args.adaptive_replan_entropy_high,
+            "adaptive_replan_jerk_low": args.adaptive_replan_jerk_low,
+            "adaptive_replan_jerk_high": args.adaptive_replan_jerk_high,
+            "adaptive_replan_gripper_change_threshold": args.adaptive_replan_gripper_change_threshold,
             "coarse_num_steps": args.coarse_num_steps,
             "dynamic_coarse_steps": args.dynamic_coarse_steps,
             "entropy_samples": args.entropy_samples,

@@ -39,6 +39,21 @@ from openpi.action_cot import compression as acot_compression
 from openpi.training import config as _config
 
 
+PROFILE_TIMING_FIELDS = (
+    "vlm_ms",
+    "implicit_action_reasoner_ms",
+    "coarse_action_expert_ms",
+    "action_expert_ms",
+    "profile_overhead_ms",
+)
+PROFILE_TIMING_PREFIXES = (
+    "full",
+    "cached_override",
+    "pruned_override",
+    "true_entropy_segment_skip",
+)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--entropy_dir", "--entropy-dir", required=True)
@@ -126,14 +141,33 @@ def _effective_coarse_num_steps(args: argparse.Namespace) -> int:
     return int(args.num_steps if args.coarse_num_steps is None else args.coarse_num_steps)
 
 
-def _infer_timed(policy: Any, policy_input: dict[str, Any], *, seed: int) -> tuple[dict[str, Any], float, float]:
+def _infer_timed(
+    policy: Any,
+    policy_input: dict[str, Any],
+    *,
+    seed: int,
+) -> tuple[dict[str, Any], float, float, dict[str, float]]:
     stage_b._set_policy_seed(policy, seed)
+    policy_input = dict(policy_input)
+    policy_input["profile_policy_timing"] = np.asarray(True)
     start = time.perf_counter()
     result = policy.infer(policy_input)
     wall_ms = (time.perf_counter() - start) * 1000.0
     policy_timing = result.get("policy_timing", {}) if isinstance(result, dict) else {}
     infer_ms = float(policy_timing.get("infer_ms", wall_ms))
-    return result, infer_ms, wall_ms
+    detailed_timing = {field: _timing_float(policy_timing, field) for field in PROFILE_TIMING_FIELDS}
+    return result, infer_ms, wall_ms, detailed_timing
+
+
+def _timing_float(timing: dict[str, Any], field: str) -> float:
+    value = timing.get(field)
+    if value is None:
+        return float("nan")
+    return float(value)
+
+
+def _prefixed_timing(prefix: str, timing: dict[str, float]) -> dict[str, float]:
+    return {f"{prefix}_{field}": float(timing.get(field, float("nan"))) for field in PROFILE_TIMING_FIELDS}
 
 
 def _coarse_steps_from_result(result: dict[str, Any]) -> float:
@@ -255,6 +289,11 @@ def _write_outputs(output_dir: pathlib.Path, rows: list[dict[str, Any]], summary
                 "cached_override_wall_ms",
                 "pruned_override_wall_ms",
                 "true_entropy_segment_skip_wall_ms",
+                *[
+                    f"{prefix}_{field}"
+                    for prefix in PROFILE_TIMING_PREFIXES
+                    for field in PROFILE_TIMING_FIELDS
+                ],
                 "skip_ratio",
                 "true_skip_ratio",
                 "true_skip_segment",
@@ -320,7 +359,7 @@ def main() -> None:
     warmup_seed = args.seed + 10_000_000
     warmup_full = None
     for i in range(args.warmup):
-        warmup_full, _, _ = _infer_timed(policy, dict(warmup_input), seed=warmup_seed + i)
+        warmup_full, _, _, _ = _infer_timed(policy, dict(warmup_input), seed=warmup_seed + i)
     if warmup_full is None or "coarse_actions" not in warmup_full:
         raise RuntimeError("Policy output did not include coarse_actions.")
     warmup_override_input = dict(warmup_input)
@@ -351,14 +390,14 @@ def main() -> None:
         for repeat_idx in range(args.repeat):
             seed_base = args.seed + sample["item_index"] * max(args.repeat, 1) + repeat_idx
 
-            full_result, full_ms, full_wall_ms = _infer_timed(policy, dict(policy_input), seed=seed_base)
+            full_result, full_ms, full_wall_ms, full_timing = _infer_timed(policy, dict(policy_input), seed=seed_base)
             if "coarse_actions" not in full_result:
                 raise RuntimeError("Policy output did not include coarse_actions.")
             coarse_full = np.asarray(full_result["coarse_actions"], dtype=np.float32)
 
             cached_input = dict(policy_input)
             cached_input["coarse_actions_override"] = coarse_full
-            _, cached_ms, cached_wall_ms = _infer_timed(policy, cached_input, seed=seed_base)
+            _, cached_ms, cached_wall_ms, cached_timing = _infer_timed(policy, cached_input, seed=seed_base)
 
             coarse_pruned, skip_mask, skip_ratio = _make_pruned_coarse(
                 sample,
@@ -370,7 +409,7 @@ def main() -> None:
             )
             pruned_input = dict(policy_input)
             pruned_input["coarse_actions_override"] = coarse_pruned.astype(np.float32)
-            _, pruned_ms, pruned_wall_ms = _infer_timed(policy, pruned_input, seed=seed_base)
+            _, pruned_ms, pruned_wall_ms, pruned_timing = _infer_timed(policy, pruned_input, seed=seed_base)
 
             true_skip_segment, true_skip_ratio, true_skip_entropy = _select_true_skip_segment(
                 sample,
@@ -381,7 +420,11 @@ def main() -> None:
             )
             true_skip_input = dict(policy_input)
             true_skip_input["action_cot_skip_segment"] = np.asarray(true_skip_segment, dtype=np.int32)
-            _, true_skip_ms, true_skip_wall_ms = _infer_timed(policy, true_skip_input, seed=seed_base)
+            _, true_skip_ms, true_skip_wall_ms, true_skip_timing = _infer_timed(
+                policy,
+                true_skip_input,
+                seed=seed_base,
+            )
 
             rows.append(
                 {
@@ -396,6 +439,10 @@ def main() -> None:
                     "cached_override_wall_ms": cached_wall_ms,
                     "pruned_override_wall_ms": pruned_wall_ms,
                     "true_entropy_segment_skip_wall_ms": true_skip_wall_ms,
+                    **_prefixed_timing("full", full_timing),
+                    **_prefixed_timing("cached_override", cached_timing),
+                    **_prefixed_timing("pruned_override", pruned_timing),
+                    **_prefixed_timing("true_entropy_segment_skip", true_skip_timing),
                     "skip_ratio": skip_ratio,
                     "true_skip_ratio": true_skip_ratio,
                     "true_skip_segment": true_skip_segment,
@@ -414,6 +461,12 @@ def main() -> None:
     cached_mean = _mean(cached_values)
     pruned_mean = _mean(pruned_values)
     true_skip_mean = _mean(true_skip_values)
+    profile_aggregate = {}
+    for prefix in PROFILE_TIMING_PREFIXES:
+        for field in PROFILE_TIMING_FIELDS:
+            values = [float(row[f"{prefix}_{field}"]) for row in rows]
+            profile_aggregate[f"{prefix}_{field}_mean"] = _mean(values)
+            profile_aggregate[f"{prefix}_{field}_std"] = _std(values)
     summary = {
         "config": {
             "entropy_dir": str(entropy_dir),
@@ -443,6 +496,7 @@ def main() -> None:
             "pruned_coarse_override_ms_std": _std(pruned_values),
             "true_entropy_segment_skip_ms_mean": true_skip_mean,
             "true_entropy_segment_skip_ms_std": _std(true_skip_values),
+            **profile_aggregate,
             "skip_ratio_mean": _mean([float(row["skip_ratio"]) for row in rows]),
             "true_skip_ratio_mean": _mean([float(row["true_skip_ratio"]) for row in rows]),
             "coarse_num_steps_used_mean": _mean([float(row["coarse_num_steps_used"]) for row in rows]),

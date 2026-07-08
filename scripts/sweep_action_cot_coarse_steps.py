@@ -52,6 +52,43 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--rollout_mode", "--rollout-mode", default="full")
     parser.add_argument("--entropy_samples", "--entropy-samples", type=int, default=4)
     parser.add_argument("--norm_stats_dir", "--norm-stats-dir", default=None)
+    parser.add_argument(
+        "--adaptive_replanning",
+        "--adaptive-replanning",
+        choices=("none", "action", "entropy", "action_entropy"),
+        default="none",
+    )
+    parser.add_argument("--adaptive_replan_horizons", "--adaptive-replan-horizons", nargs="*", type=int, default=None)
+    parser.add_argument(
+        "--adaptive_replan_entropy_mode",
+        "--adaptive-replan-entropy-mode",
+        choices=("none", "coarse_proxy", "online_mc"),
+        default="none",
+    )
+    parser.add_argument("--adaptive_replan_entropy_samples", "--adaptive-replan-entropy-samples", type=int, default=4)
+    parser.add_argument(
+        "--adaptive_replan_entropy_low_quantile",
+        "--adaptive-replan-entropy-low-quantile",
+        type=float,
+        default=0.33,
+    )
+    parser.add_argument(
+        "--adaptive_replan_entropy_high_quantile",
+        "--adaptive-replan-entropy-high-quantile",
+        type=float,
+        default=0.67,
+    )
+    parser.add_argument("--adaptive_replan_entropy_warmup", "--adaptive-replan-entropy-warmup", type=int, default=20)
+    parser.add_argument("--adaptive_replan_entropy_low", "--adaptive-replan-entropy-low", type=float, default=None)
+    parser.add_argument("--adaptive_replan_entropy_high", "--adaptive-replan-entropy-high", type=float, default=None)
+    parser.add_argument("--adaptive_replan_jerk_low", "--adaptive-replan-jerk-low", type=float, default=0.25)
+    parser.add_argument("--adaptive_replan_jerk_high", "--adaptive-replan-jerk-high", type=float, default=0.75)
+    parser.add_argument(
+        "--adaptive_replan_gripper_change_threshold",
+        "--adaptive-replan-gripper-change-threshold",
+        type=float,
+        default=0.25,
+    )
     return parser.parse_args()
 
 
@@ -60,6 +97,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--coarse_steps must contain at least one value.")
     if any(step <= 0 for step in args.coarse_steps):
         raise ValueError("--coarse_steps values must be positive.")
+    if args.adaptive_replan_horizons is not None and any(horizon <= 0 for horizon in args.adaptive_replan_horizons):
+        raise ValueError("--adaptive_replan_horizons values must be positive.")
     if args.mode in ("speed", "both"):
         if args.entropy_dir is None:
             raise ValueError("--entropy_dir is required for --mode speed or --mode both.")
@@ -159,6 +198,28 @@ def _closed_loop_command(args: argparse.Namespace, step: int, run_dir: pathlib.P
         command.extend(["--policy_api_key", args.policy_api_key])
     if args.norm_stats_dir is not None:
         command.extend(["--norm_stats_dir", args.norm_stats_dir])
+    if args.adaptive_replanning != "none":
+        command.extend(["--adaptive_replanning", args.adaptive_replanning])
+        command.extend(["--adaptive_replan_entropy_mode", args.adaptive_replan_entropy_mode])
+        command.extend(["--adaptive_replan_entropy_samples", str(args.adaptive_replan_entropy_samples)])
+        command.extend(["--adaptive_replan_entropy_low_quantile", str(args.adaptive_replan_entropy_low_quantile)])
+        command.extend(["--adaptive_replan_entropy_high_quantile", str(args.adaptive_replan_entropy_high_quantile)])
+        command.extend(["--adaptive_replan_entropy_warmup", str(args.adaptive_replan_entropy_warmup)])
+        command.extend(["--adaptive_replan_jerk_low", str(args.adaptive_replan_jerk_low)])
+        command.extend(["--adaptive_replan_jerk_high", str(args.adaptive_replan_jerk_high)])
+        command.extend(
+            [
+                "--adaptive_replan_gripper_change_threshold",
+                str(args.adaptive_replan_gripper_change_threshold),
+            ]
+        )
+        if args.adaptive_replan_horizons is not None:
+            command.append("--adaptive_replan_horizons")
+            command.extend(str(horizon) for horizon in args.adaptive_replan_horizons)
+        if args.adaptive_replan_entropy_low is not None:
+            command.extend(["--adaptive_replan_entropy_low", str(args.adaptive_replan_entropy_low)])
+        if args.adaptive_replan_entropy_high is not None:
+            command.extend(["--adaptive_replan_entropy_high", str(args.adaptive_replan_entropy_high)])
     return command
 
 
@@ -202,6 +263,16 @@ def _closed_loop_row(step: int, summary: dict[str, Any], target_mode: str, basel
         "avg_wall_inference_ms": wall_ms,
         "avg_policy_inference_ms": _safe_get(mode_metrics, "avg_policy_inference_ms"),
         "avg_server_inference_ms": _safe_get(mode_metrics, "avg_server_inference_ms"),
+        "avg_total_wall_inference_ms_per_episode": _safe_get(
+            mode_metrics,
+            "avg_total_wall_inference_ms_per_episode",
+        ),
+        "avg_total_policy_inference_ms_per_episode": _safe_get(
+            mode_metrics,
+            "avg_total_policy_inference_ms_per_episode",
+        ),
+        "avg_num_replans_per_episode": _safe_get(mode_metrics, "avg_num_replans_per_episode"),
+        "avg_replan_horizon": _safe_get(mode_metrics, "avg_replan_horizon"),
         "avg_coarse_num_steps_used": _safe_get(mode_metrics, "avg_coarse_num_steps_used"),
         "speedup_vs_coarse10_pct": speedup,
     }

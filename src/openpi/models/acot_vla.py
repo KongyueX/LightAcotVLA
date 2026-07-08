@@ -951,16 +951,42 @@ class ACOT_VLA(_model.BaseModel):
         explicit_action_reason_override: _model.CoarseActions | None = None,
         explicit_action_skip_segment: int | at.Int[at.Array, ""] | None = None,
     ) -> _model.Actions:
+        prefix_state = self.sample_actions_profile_prefix(rng, observation)
+        implicit_outputs = self.sample_actions_profile_implicit(prefix_state)
+        coarse_outputs = self.sample_actions_profile_coarse(
+            prefix_state,
+            num_steps=num_steps,
+            coarse_num_steps=coarse_num_steps,
+            dynamic_coarse_steps=dynamic_coarse_steps,
+            explicit_action_reason_override=explicit_action_reason_override,
+            explicit_action_skip_segment=explicit_action_skip_segment,
+        )
+        expert_outputs = self.sample_actions_profile_expert(
+            prefix_state,
+            coarse_outputs["explicit_action_reason"],
+            implicit_outputs["implicit_action_reason"],
+            num_steps=num_steps,
+        )
+        if self.adopt_explicit_action_reasoner:
+            return {
+                "actions": expert_outputs["actions"],
+                "coarse_actions": coarse_outputs["explicit_action_reason"],
+                "coarse_num_steps": coarse_outputs["coarse_num_steps"],
+            }
+        return expert_outputs
+
+    def sample_actions_profile_prefix(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+    ) -> dict[str, Any]:
         observation = _model.preprocess_observation(None, observation, train=False)
-        # note that we use the convention more common in diffusion literature, where t=1 is noise and t=0 is the target
-        # distribution. yes, this is the opposite of the pi0 paper, and I'm sorry.
         batch_size = observation.state.shape[0]
 
         ref_action_rng, expert_action_rng = jax.random.split(rng, 2)
         ref_action_noise = jax.random.normal(ref_action_rng, (batch_size, self.coarse_action_horizon, self.action_dim))
         expert_action_noise = jax.random.normal(expert_action_rng, (batch_size, self.action_horizon, self.action_dim))
 
-        # first fill KV cache with a forward pass of the prefix
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
@@ -970,7 +996,48 @@ class ACOT_VLA(_model.BaseModel):
             positions=positions,
         )
 
-        use_dynamic_coarse_steps = self.action_cot_dynamic_steps if dynamic_coarse_steps is None else dynamic_coarse_steps
+        return {
+            "observation": observation,
+            "prefix_tokens": prefix_tokens,
+            "prefix_mask": prefix_mask,
+            "prefix_ar_mask": prefix_ar_mask,
+            "prefix_out": prefix_out,
+            "kv_cache": kv_cache,
+            "ref_action_noise": ref_action_noise,
+            "expert_action_noise": expert_action_noise,
+        }
+
+    def sample_actions_profile_implicit(self, prefix_state: dict[str, Any]) -> dict[str, Any]:
+        if self.adopt_implicit_action_reasoner:
+            K_all, V_all = prefix_state["kv_cache"]
+            K_rearranged = einops.rearrange(K_all, 'L B T 1 D -> B L T D')
+            V_rearranged = einops.rearrange(V_all, 'L B T 1 D -> B L T D')
+            implicit_action_reason = self.implicit_action_reasoner(K_rearranged, V_rearranged)
+        else:
+            implicit_action_reason = None
+        return {"implicit_action_reason": implicit_action_reason}
+
+    def sample_actions_profile_coarse(
+        self,
+        prefix_state: dict[str, Any],
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        coarse_num_steps: int | at.Int[at.Array, ""] | None = None,
+        dynamic_coarse_steps: bool | None = None,
+        explicit_action_reason_override: _model.CoarseActions | None = None,
+        explicit_action_skip_segment: int | at.Int[at.Array, ""] | None = None,
+    ) -> dict[str, Any]:
+        observation = prefix_state["observation"]
+        prefix_tokens = prefix_state["prefix_tokens"]
+        prefix_mask = prefix_state["prefix_mask"]
+        prefix_out = prefix_state["prefix_out"]
+        kv_cache = prefix_state["kv_cache"]
+        ref_action_noise = prefix_state["ref_action_noise"]
+        batch_size = observation.state.shape[0]
+
+        use_dynamic_coarse_steps = (
+            self.action_cot_dynamic_steps if dynamic_coarse_steps is None else dynamic_coarse_steps
+        )
         if coarse_num_steps is None and use_dynamic_coarse_steps:
             logits = self._action_cot_step_logits(prefix_out, prefix_mask)
             step_values = jnp.asarray(self.action_cot_step_values, dtype=jnp.int32)
@@ -979,15 +1046,6 @@ class ACOT_VLA(_model.BaseModel):
             coarse_num_steps = num_steps
         coarse_num_steps = jnp.maximum(jnp.asarray(coarse_num_steps, dtype=jnp.float32), 1.0)
         coarse_dt = -1.0 / coarse_num_steps
-        action_dt = -1.0 / num_steps
-
-        if self.adopt_implicit_action_reasoner:
-            K_all, V_all = kv_cache
-            K_rearranged = einops.rearrange(K_all, 'L B T 1 D -> B L T D')
-            V_rearranged = einops.rearrange(V_all, 'L B T 1 D -> B L T D')
-            implicit_action_reason = self.implicit_action_reasoner(K_rearranged, V_rearranged)
-        else:
-            implicit_action_reason = None
 
         def step_explicit_action_reasoner(carry):
             x_t, time, step_idx = carry
@@ -1015,7 +1073,7 @@ class ACOT_VLA(_model.BaseModel):
             v_t = self.coarse_action_out_proj(suffix_out[:, -x_t.shape[1] :])
 
             return x_t + coarse_dt * v_t, time + coarse_dt, step_idx + 1
-        
+
         def cond_explicit_action_reasoner(carry):
             x_t, time, _ = carry
             return time >= -coarse_dt / 2
@@ -1024,7 +1082,9 @@ class ACOT_VLA(_model.BaseModel):
             if not self.adopt_explicit_action_reasoner:
                 raise ValueError("explicit_action_reason_override requires adopt_explicit_action_reasoner=True.")
             if explicit_action_skip_segment is not None:
-                raise ValueError("explicit_action_skip_segment cannot be combined with explicit_action_reason_override.")
+                raise ValueError(
+                    "explicit_action_skip_segment cannot be combined with explicit_action_reason_override."
+                )
             explicit_action_reason = explicit_action_reason_override
         elif self.adopt_explicit_action_reasoner:
             if explicit_action_skip_segment is not None:
@@ -1042,10 +1102,34 @@ class ACOT_VLA(_model.BaseModel):
                     explicit_action_skip_segment,
                 )
             else:
-                explicit_action_reason, _, _ = jax.lax.while_loop(cond_explicit_action_reasoner, step_explicit_action_reasoner, (ref_action_noise, 1.0, 1))
+                explicit_action_reason, _, _ = jax.lax.while_loop(
+                    cond_explicit_action_reasoner,
+                    step_explicit_action_reasoner,
+                    (ref_action_noise, 1.0, 1),
+                )
         else:
             explicit_action_reason = None
 
+        return {
+            "explicit_action_reason": explicit_action_reason,
+            "coarse_num_steps": jnp.broadcast_to(jnp.asarray(coarse_num_steps), (batch_size,)),
+        }
+
+    def sample_actions_profile_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+    ) -> dict[str, Any]:
+        observation = prefix_state["observation"]
+        prefix_tokens = prefix_state["prefix_tokens"]
+        prefix_mask = prefix_state["prefix_mask"]
+        kv_cache = prefix_state["kv_cache"]
+        expert_action_noise = prefix_state["expert_action_noise"]
+        batch_size = observation.state.shape[0]
+        action_dt = -1.0 / num_steps
 
         def step_expert(carry):
             x_t, time, step_idx = carry
@@ -1079,14 +1163,6 @@ class ACOT_VLA(_model.BaseModel):
         def cond_expert(carry):
             x_t, time, _ = carry
             return time >= -action_dt / 2
-        
-        x_0_expert, _, _ = jax.lax.while_loop(cond_expert, step_expert, (expert_action_noise, 1.0, 1))
 
-        if self.adopt_explicit_action_reasoner:
-            return {
-                "actions": x_0_expert,
-                "coarse_actions": explicit_action_reason,
-                "coarse_num_steps": jnp.broadcast_to(jnp.asarray(coarse_num_steps), (batch_size,)),
-            }
-        else:
-            return {"actions": x_0_expert}
+        x_0_expert, _, _ = jax.lax.while_loop(cond_expert, step_expert, (expert_action_noise, 1.0, 1))
+        return {"actions": x_0_expert}

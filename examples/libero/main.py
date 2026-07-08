@@ -180,6 +180,8 @@ def eval_libero(args: Args) -> None:
                             ),
                             "prompt": str(task_description),
                         }
+                        if timing_root is not None:
+                            element["profile_policy_timing"] = np.asarray(True)
 
                         # Query model to get action
                         ret_result = client.infer(element)
@@ -274,10 +276,8 @@ def _new_timing_stats():
             "task_description": None,
             "infer_idx": None,
             "num_trials_with_this_inference": 0,
-            "server_infer_ms_sum": 0.0,
-            "server_infer_ms_count": 0,
-            "policy_infer_ms_sum": 0.0,
-            "policy_infer_ms_count": 0,
+            "timing_sums": collections.defaultdict(float),
+            "timing_counts": collections.defaultdict(int),
         }
     )
 
@@ -300,12 +300,8 @@ def _make_timing_record(
         "episode_idx": episode_idx,
         "init_state_idx": init_state_idx,
         "infer_idx": infer_idx,
-        "server_timing": {
-            "infer_ms": _as_float(response.get("server_timing", {}).get("infer_ms")),
-        },
-        "policy_timing": {
-            "infer_ms": _as_float(response.get("policy_timing", {}).get("infer_ms")),
-        },
+        "server_timing": _float_timing_dict(response.get("server_timing", {})),
+        "policy_timing": _float_timing_dict(response.get("policy_timing", {})),
     }
 
 
@@ -345,15 +341,16 @@ def _accumulate_timing(timing_stats, record: dict) -> None:
     bucket["infer_idx"] = record["infer_idx"]
     bucket["num_trials_with_this_inference"] += 1
 
-    server_infer_ms = record["server_timing"]["infer_ms"]
-    if server_infer_ms is not None:
-        bucket["server_infer_ms_sum"] += server_infer_ms
-        bucket["server_infer_ms_count"] += 1
-
-    policy_infer_ms = record["policy_timing"]["infer_ms"]
-    if policy_infer_ms is not None:
-        bucket["policy_infer_ms_sum"] += policy_infer_ms
-        bucket["policy_infer_ms_count"] += 1
+    for scope, timing_values in (
+        ("server", record["server_timing"]),
+        ("policy", record["policy_timing"]),
+    ):
+        for timing_name, timing_value in timing_values.items():
+            if timing_value is None:
+                continue
+            summary_key = f"{scope}_{timing_name}"
+            bucket["timing_sums"][summary_key] += timing_value
+            bucket["timing_counts"][summary_key] += 1
 
 
 def _finish_episode_timing_records(records: list[dict], *, success: bool, episode_steps: int) -> None:
@@ -389,23 +386,21 @@ def _write_timing_summary(*, timing_root: pathlib.Path | None, args: Args, timin
 
     rows = []
     for _, bucket in sorted(timing_stats.items(), key=lambda item: (item[0][0], item[0][1])):
-        rows.append(
-            {
-                "task_suite_name": args.task_suite_name,
-                "exp_name": args.exp_name,
-                "task_id": bucket["task_id"],
-                "task_description": bucket["task_description"],
-                "infer_idx": bucket["infer_idx"],
-                "num_trials_requested": args.num_trials_per_task,
-                "num_trials_with_this_inference": bucket["num_trials_with_this_inference"],
-                "server_infer_ms_mean": _mean_or_none(
-                    bucket["server_infer_ms_sum"], bucket["server_infer_ms_count"]
-                ),
-                "policy_infer_ms_mean": _mean_or_none(
-                    bucket["policy_infer_ms_sum"], bucket["policy_infer_ms_count"]
-                ),
-            }
-        )
+        row = {
+            "task_suite_name": args.task_suite_name,
+            "exp_name": args.exp_name,
+            "task_id": bucket["task_id"],
+            "task_description": bucket["task_description"],
+            "infer_idx": bucket["infer_idx"],
+            "num_trials_requested": args.num_trials_per_task,
+            "num_trials_with_this_inference": bucket["num_trials_with_this_inference"],
+        }
+        for timing_key in sorted(bucket["timing_sums"]):
+            row[f"{timing_key}_mean"] = _mean_or_none(
+                bucket["timing_sums"][timing_key],
+                bucket["timing_counts"][timing_key],
+            )
+        rows.append(row)
 
     jsonl_path = timing_root / "summary_by_inference_index.jsonl"
     csv_path = timing_root / "summary_by_inference_index.csv"
@@ -414,6 +409,14 @@ def _write_timing_summary(*, timing_root: pathlib.Path | None, args: Args, timin
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=True) + "\n")
 
+    timing_fieldnames = sorted(
+        {
+            key
+            for row in rows
+            for key in row
+            if key.startswith(("server_", "policy_")) and key.endswith("_mean")
+        }
+    )
     fieldnames = [
         "task_suite_name",
         "exp_name",
@@ -422,14 +425,13 @@ def _write_timing_summary(*, timing_root: pathlib.Path | None, args: Args, timin
         "infer_idx",
         "num_trials_requested",
         "num_trials_with_this_inference",
-        "server_infer_ms_mean",
-        "policy_infer_ms_mean",
+        *timing_fieldnames,
     ]
     with csv_path.open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow({key: "" if row[key] is None else row[key] for key in fieldnames})
+            writer.writerow({key: "" if row.get(key) is None else row.get(key, "") for key in fieldnames})
 
     logging.info("Wrote timing summary to %s and %s", jsonl_path, csv_path)
 
@@ -447,6 +449,10 @@ def _as_float(value) -> float | None:
     if array.size != 1:
         return None
     return float(array.reshape(()))
+
+
+def _float_timing_dict(timing: dict) -> dict[str, float | None]:
+    return {key: _as_float(value) for key, value in timing.items()}
 
 
 def _sanitize_filename(value: str, *, max_len: int = 96) -> str:

@@ -173,6 +173,10 @@ logs/
 # Local runtime artifacts
 outputs/
 work/
+
+# Local report context and generated report outputs
+reports/context/
+reports/outputs/
 MUJOCO_LOG.TXT
 *.bak
 *.bak.*

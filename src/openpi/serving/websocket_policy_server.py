@@ -99,12 +99,8 @@ class WebsocketPolicyServer:
 
         record = {
             "request_index": self._request_index,
-            "server_timing": {
-                "infer_ms": action.get("server_timing", {}).get("infer_ms"),
-            },
-            "policy_timing": {
-                "infer_ms": action.get("policy_timing", {}).get("infer_ms"),
-            },
+            "server_timing": action.get("server_timing", {}),
+            "policy_timing": action.get("policy_timing", {}),
         }
 
         with log_path.open("a") as f:
