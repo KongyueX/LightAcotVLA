@@ -271,7 +271,24 @@ def _closed_loop_row(step: int, summary: dict[str, Any], target_mode: str, basel
             mode_metrics,
             "avg_total_policy_inference_ms_per_episode",
         ),
+        "avg_total_deployable_wall_inference_ms_per_episode": _safe_get(
+            mode_metrics,
+            "avg_total_deployable_wall_inference_ms_per_episode",
+        ),
+        "avg_total_deployable_policy_inference_ms_per_episode": _safe_get(
+            mode_metrics,
+            "avg_total_deployable_policy_inference_ms_per_episode",
+        ),
         "avg_num_replans_per_episode": _safe_get(mode_metrics, "avg_num_replans_per_episode"),
+        "avg_total_policy_calls_per_episode": _safe_get(mode_metrics, "avg_total_policy_calls_per_episode"),
+        "avg_deployable_policy_calls_per_episode": _safe_get(
+            mode_metrics,
+            "avg_deployable_policy_calls_per_episode",
+        ),
+        "avg_entropy_oracle_extra_calls_per_episode": _safe_get(
+            mode_metrics,
+            "avg_entropy_oracle_extra_calls_per_episode",
+        ),
         "avg_replan_horizon": _safe_get(mode_metrics, "avg_replan_horizon"),
         "avg_coarse_num_steps_used": _safe_get(mode_metrics, "avg_coarse_num_steps_used"),
         "speedup_vs_coarse10_pct": speedup,

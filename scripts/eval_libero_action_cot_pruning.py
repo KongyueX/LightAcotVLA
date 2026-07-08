@@ -1167,6 +1167,8 @@ def _run_mode(
 
             success = bool(done)
             timeout = not success
+            total_policy_calls = full_calls + override_calls + true_skip_calls
+            deployable_policy_calls = len(deployable_wall_ms)
             row = {
                 "mode": mode,
                 "task_suite": args.task_suite_name,
@@ -1211,6 +1213,9 @@ def _run_mode(
                 "avg_adaptive_entropy_decision": _mean(adaptive_entropy_decisions),
                 "adaptive_replan_reasons": ";".join(adaptive_replan_reasons),
                 "num_replans": len(infer_wall_ms),
+                "total_policy_calls": total_policy_calls,
+                "deployable_policy_calls": deployable_policy_calls,
+                "entropy_oracle_extra_calls": max(total_policy_calls - deployable_policy_calls, 0),
                 "full_calls": full_calls,
                 "override_calls": override_calls,
                 "true_skip_calls": true_skip_calls,
@@ -1283,6 +1288,9 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_adaptive_entropy_decision",
         "adaptive_replan_reasons",
         "num_replans",
+        "total_policy_calls",
+        "deployable_policy_calls",
+        "entropy_oracle_extra_calls",
         "full_calls",
         "override_calls",
         "true_skip_calls",
@@ -1359,6 +1367,13 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 [float(row["avg_adaptive_entropy_decision"]) for row in subset]
             ),
             "avg_num_replans_per_episode": _mean([float(row["num_replans"]) for row in subset]),
+            "avg_total_policy_calls_per_episode": _mean([float(row["total_policy_calls"]) for row in subset]),
+            "avg_deployable_policy_calls_per_episode": _mean(
+                [float(row["deployable_policy_calls"]) for row in subset]
+            ),
+            "avg_entropy_oracle_extra_calls_per_episode": _mean(
+                [float(row["entropy_oracle_extra_calls"]) for row in subset]
+            ),
             "avg_full_calls_per_episode": _mean([float(row["full_calls"]) for row in subset]),
             "avg_override_calls_per_episode": _mean([float(row["override_calls"]) for row in subset]),
             "avg_true_skip_calls_per_episode": _mean([float(row["true_skip_calls"]) for row in subset]),
@@ -1400,7 +1415,10 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "note": (
                 "pruned_override measures closed-loop quality. It is not a deployable speed path because it first "
                 "runs full ACoT to estimate online entropy. true_entropy_skip also estimates entropy online here; "
-                "its deployable timing fields measure only the final true-skip model call."
+                "its deployable timing fields measure only the final true-skip model call. For adaptive replanning "
+                "with online_mc entropy, avg_total_* includes the Stage-B entropy MC calls, while "
+                "avg_total_deployable_* treats entropy as an oracle/predicted signal and counts only the optimized "
+                "action-producing policy calls after the entropy decision."
             ),
         },
         "aggregate": by_mode,
