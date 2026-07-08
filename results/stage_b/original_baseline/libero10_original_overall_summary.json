@@ -1,0 +1,36 @@
+{
+  "source_dir": "/Users/kongyue/Downloads/libero_long_timing_logs/aligned_eval/acot_libero_long_timing_50/libero_10/episodes",
+  "num_trial_files": 500,
+  "num_parsed_trials": 500,
+  "num_tasks": 10,
+  "overall": {
+    "task_id": "all",
+    "task_description": "all libero_10 tasks",
+    "num_trials": 500,
+    "success_count": 483,
+    "success_rate": 0.966,
+    "episode_steps_mean": 299.536,
+    "episode_steps_std": 153.3061143725194,
+    "inference_calls_mean_per_episode": 58.502,
+    "inference_calls_std_per_episode": 30.726503152815813,
+    "effective_env_steps_per_inference_mean": 5.137316871002548,
+    "first_policy_ms_mean": 139.0579585954547,
+    "first_server_ms_mean": 144.7301444336772,
+    "policy_ms_mean_per_call_weighted": 78.95576717063093,
+    "server_ms_mean_per_call_weighted": 84.30598865029052,
+    "policy_ms_total_mean_per_episode": 4619.070291016251,
+    "server_ms_total_mean_per_episode": 4932.068948019296,
+    "policy_ms_mean_per_call_weighted_excluding_infer0": 77.91054802303913,
+    "server_ms_mean_per_call_weighted_excluding_infer0": 83.25517031730408,
+    "policy_ms_total_mean_per_episode_excluding_infer0": 4480.012332420796,
+    "server_ms_total_mean_per_episode_excluding_infer0": 4787.338803585619,
+    "total_observed_inference_rows": 29251,
+    "total_observed_inference_rows_excluding_infer0": 28751
+  },
+  "errors": [],
+  "outputs": {
+    "per_trial_csv": "/Users/kongyue/LightAcotVLA/results/stage_b/original_baseline/libero10_original_per_trial.csv",
+    "per_task_summary_csv": "/Users/kongyue/LightAcotVLA/results/stage_b/original_baseline/libero10_original_per_task_summary.csv",
+    "overall_summary_json": "/Users/kongyue/LightAcotVLA/results/stage_b/original_baseline/libero10_original_overall_summary.json"
+  }
+}

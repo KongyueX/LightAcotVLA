@@ -1,0 +1,24 @@
+{
+  "excluded": "task_00 trial_000 because infer_idx=0 policy_timing.infer_ms=30065.45ms/server_timing.infer_ms=30129.33ms",
+  "overall": {
+    "task_id": "all",
+    "task_description": "all libero_10 tasks excluding task0 trial0 warmup outlier",
+    "num_trials": 499,
+    "success_count": 482,
+    "success_rate": 0.9659318637274549,
+    "episode_steps_mean": 299.62525050100203,
+    "episode_steps_std": 153.446673495717,
+    "inference_calls_mean_per_episode": 58.519038076152306,
+    "inference_calls_std_per_episode": 30.7549161600642,
+    "effective_env_steps_per_inference_mean": 5.13739165431117,
+    "policy_ms_mean_per_call_weighted": 77.92870427975956,
+    "server_ms_mean_per_call_weighted": 83.27843883167917,
+    "policy_ms_total_mean_per_episode": 4560.312812972463,
+    "server_ms_total_mean_per_episode": 4873.374132913554,
+    "total_observed_inference_rows": 29201,
+    "excluded_warmup_outlier": "task0 trial0"
+  },
+  "outputs": {
+    "per_task_summary_csv": "/Users/kongyue/LightAcotVLA/results/stage_b/original_baseline/libero10_original_per_task_summary_excluding_task0_trial0_warmup.csv"
+  }
+}

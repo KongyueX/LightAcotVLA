@@ -83,8 +83,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--action_cot_denoising_steps",
         "--action-cot-denoising-steps",
         type=int,
-        default=None,
-        help="Denoising iterations for explicit Action-CoT coarse-action generation. Defaults to --num_steps.",
+        default=10,
+        help="Denoising iterations for explicit Action-CoT coarse-action generation.",
     )
     parser.add_argument(
         "--action_cot_dynamic_denoising_steps",
@@ -135,9 +135,9 @@ def _status(message: str) -> None:
 
 
 def _effective_action_cot_denoising_steps(args: argparse.Namespace) -> int:
-    if args.action_cot_dynamic_denoising_steps and args.action_cot_denoising_steps is None:
+    if args.action_cot_dynamic_denoising_steps:
         return -1
-    return int(args.num_steps if args.action_cot_denoising_steps is None else args.action_cot_denoising_steps)
+    return int(args.action_cot_denoising_steps)
 
 
 def _infer_timed(
@@ -325,7 +325,7 @@ def main() -> None:
 
     _status(f"Loading policy from {checkpoint_dir}")
     sample_kwargs = {"num_steps": args.num_steps}
-    if args.action_cot_denoising_steps is not None:
+    if args.action_cot_denoising_steps is not None and not args.action_cot_dynamic_denoising_steps:
         sample_kwargs["action_cot_denoising_steps"] = args.action_cot_denoising_steps
     if args.action_cot_dynamic_denoising_steps:
         sample_kwargs["action_cot_dynamic_denoising_steps"] = True

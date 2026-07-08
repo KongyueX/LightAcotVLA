@@ -1,0 +1,11 @@
+{
+  "comparison_note": "Baseline is clean per-task original baseline excluding only task0 trial0 warmup outlier. Adaptive values are user-provided per-task deployable metrics from online_mc entropy oracle run. Baseline wall timing is unavailable, so speedup is computed for policy/server totals only.",
+  "num_tasks": 10,
+  "policy_total_speedup_positive_tasks": 7,
+  "server_total_speedup_positive_tasks": 7,
+  "calls_reduction_positive_tasks": 5,
+  "success_drop_within_3pp_tasks": 6,
+  "policy_speedup_and_success_drop_within_3pp_tasks": 5,
+  "server_speedup_and_success_drop_within_3pp_tasks": 5,
+  "per_task_csv": "/Users/kongyue/LightAcotVLA/results/stage_b/adaptive_replan_entropy_oracle_vs_original/adaptive_entropy_oracle_vs_original_per_task.csv"
+}

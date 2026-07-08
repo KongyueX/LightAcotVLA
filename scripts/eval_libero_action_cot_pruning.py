@@ -119,8 +119,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--adaptive-replan-horizons",
         nargs="*",
         type=int,
-        default=[3, 5, 8, 10],
-        help="Candidate execution horizons H in environment/control steps.",
+        default=[5, 8, 10],
+        help=(
+            "Candidate execution horizons H in environment/control steps. For entropy-based adaptive replanning, "
+            "horizons below --replan_steps are ignored so entropy can only keep or lengthen the baseline horizon."
+        ),
     )
     parser.add_argument(
         "--adaptive_replan_entropy_mode",
@@ -209,7 +212,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--action_cot_denoising_steps",
         "--action-cot-denoising-steps",
         type=int,
-        default=None,
+        default=10,
         help="Denoising iterations for explicit Action-CoT coarse-action generation.",
     )
     parser.add_argument(
@@ -287,6 +290,8 @@ def _validate_args(args: argparse.Namespace) -> None:
             "--adaptive_replanning entropy/action_entropy requires --adaptive_replan_entropy_mode "
             "coarse_proxy or online_mc."
         )
+    if args.adaptive_replanning in ("entropy", "action_entropy") and args.replan_steps < 5:
+        raise ValueError("Entropy adaptive replanning requires --replan_steps >= 5 for speed validation.")
     if args.num_trials_per_task <= 0:
         raise ValueError("--num_trials_per_task must be positive.")
     if args.max_tasks is not None and args.max_tasks <= 0:
@@ -309,7 +314,7 @@ def _status(message: str) -> None:
 
 def _with_action_cot_denoising_steps(element: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     request = dict(element)
-    if args.action_cot_denoising_steps is not None:
+    if args.action_cot_denoising_steps is not None and not args.action_cot_dynamic_denoising_steps:
         request["action_cot_denoising_steps"] = np.asarray(args.action_cot_denoising_steps, dtype=np.int32)
     if args.action_cot_dynamic_denoising_steps:
         request["action_cot_dynamic_denoising_steps"] = np.asarray(True)
@@ -568,6 +573,8 @@ def _adaptive_uses_action(args: argparse.Namespace) -> bool:
 
 def _candidate_horizons(args: argparse.Namespace, action_len: int) -> list[int]:
     horizons = sorted(set(int(value) for value in args.adaptive_replan_horizons + [args.replan_steps]))
+    if _adaptive_uses_entropy(args):
+        horizons = [value for value in horizons if value >= args.replan_steps]
     horizons = [value for value in horizons if value > 0 and value <= action_len]
     if horizons:
         return horizons
@@ -1308,6 +1315,141 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         writer.writeheader()
         writer.writerows(rows)
 
+    per_task_path = output_dir / "per_task_summary.csv"
+    per_task_fieldnames = [
+        "mode",
+        "task_suite",
+        "task_id",
+        "task_name",
+        "task_description",
+        "episodes",
+        "success_rate",
+        "average_return",
+        "timeout_rate",
+        "avg_steps",
+        "sum_steps",
+        "avg_wall_inference_ms",
+        "avg_policy_inference_ms",
+        "avg_server_inference_ms",
+        "avg_total_wall_inference_ms_per_episode",
+        "avg_total_policy_inference_ms_per_episode",
+        "avg_total_server_inference_ms_per_episode",
+        "sum_total_wall_inference_ms",
+        "sum_total_policy_inference_ms",
+        "sum_total_server_inference_ms",
+        "avg_deployable_wall_inference_ms",
+        "avg_deployable_policy_inference_ms",
+        "avg_deployable_server_inference_ms",
+        "avg_total_deployable_wall_inference_ms_per_episode",
+        "avg_total_deployable_policy_inference_ms_per_episode",
+        "avg_total_deployable_server_inference_ms_per_episode",
+        "sum_total_deployable_wall_inference_ms",
+        "sum_total_deployable_policy_inference_ms",
+        "sum_total_deployable_server_inference_ms",
+        "avg_num_replans_per_episode",
+        "avg_total_policy_calls_per_episode",
+        "avg_deployable_policy_calls_per_episode",
+        "avg_entropy_oracle_extra_calls_per_episode",
+        "avg_replan_horizon",
+        "avg_min_replan_horizon",
+        "avg_max_replan_horizon",
+        "avg_adaptive_entropy_score",
+        "avg_adaptive_entropy_decision",
+    ]
+    per_task_rows = []
+    task_keys = sorted(
+        {(row["mode"], row["task_id"]) for row in rows},
+        key=lambda item: (str(item[0]), int(item[1])),
+    )
+    for mode, task_id in task_keys:
+        subset = [row for row in rows if row["mode"] == mode and row["task_id"] == task_id]
+        per_task_rows.append(
+            {
+                "mode": mode,
+                "task_suite": subset[0]["task_suite"],
+                "task_id": task_id,
+                "task_name": subset[0]["task_name"],
+                "task_description": subset[0]["task_description"],
+                "episodes": len(subset),
+                "success_rate": _mean([float(row["success"]) for row in subset]),
+                "average_return": _mean([float(row["return"]) for row in subset]),
+                "timeout_rate": _mean([float(row["timeout"]) for row in subset]),
+                "avg_steps": _mean([float(row["steps"]) for row in subset]),
+                "sum_steps": float(np.nansum([float(row["steps"]) for row in subset])),
+                "avg_wall_inference_ms": _mean([float(row["avg_wall_inference_ms"]) for row in subset]),
+                "avg_policy_inference_ms": _mean([float(row["avg_policy_inference_ms"]) for row in subset]),
+                "avg_server_inference_ms": _mean([float(row["avg_server_inference_ms"]) for row in subset]),
+                "avg_total_wall_inference_ms_per_episode": _mean(
+                    [float(row["total_wall_inference_ms"]) for row in subset]
+                ),
+                "avg_total_policy_inference_ms_per_episode": _mean(
+                    [float(row["total_policy_inference_ms"]) for row in subset]
+                ),
+                "avg_total_server_inference_ms_per_episode": _mean(
+                    [float(row["total_server_inference_ms"]) for row in subset]
+                ),
+                "sum_total_wall_inference_ms": float(
+                    np.nansum([float(row["total_wall_inference_ms"]) for row in subset])
+                ),
+                "sum_total_policy_inference_ms": float(
+                    np.nansum([float(row["total_policy_inference_ms"]) for row in subset])
+                ),
+                "sum_total_server_inference_ms": float(
+                    np.nansum([float(row["total_server_inference_ms"]) for row in subset])
+                ),
+                "avg_deployable_wall_inference_ms": _mean(
+                    [float(row["avg_deployable_wall_inference_ms"]) for row in subset]
+                ),
+                "avg_deployable_policy_inference_ms": _mean(
+                    [float(row["avg_deployable_policy_inference_ms"]) for row in subset]
+                ),
+                "avg_deployable_server_inference_ms": _mean(
+                    [float(row["avg_deployable_server_inference_ms"]) for row in subset]
+                ),
+                "avg_total_deployable_wall_inference_ms_per_episode": _mean(
+                    [float(row["total_deployable_wall_inference_ms"]) for row in subset]
+                ),
+                "avg_total_deployable_policy_inference_ms_per_episode": _mean(
+                    [float(row["total_deployable_policy_inference_ms"]) for row in subset]
+                ),
+                "avg_total_deployable_server_inference_ms_per_episode": _mean(
+                    [float(row["total_deployable_server_inference_ms"]) for row in subset]
+                ),
+                "sum_total_deployable_wall_inference_ms": float(
+                    np.nansum([float(row["total_deployable_wall_inference_ms"]) for row in subset])
+                ),
+                "sum_total_deployable_policy_inference_ms": float(
+                    np.nansum([float(row["total_deployable_policy_inference_ms"]) for row in subset])
+                ),
+                "sum_total_deployable_server_inference_ms": float(
+                    np.nansum([float(row["total_deployable_server_inference_ms"]) for row in subset])
+                ),
+                "avg_num_replans_per_episode": _mean([float(row["num_replans"]) for row in subset]),
+                "avg_total_policy_calls_per_episode": _mean(
+                    [float(row["total_policy_calls"]) for row in subset]
+                ),
+                "avg_deployable_policy_calls_per_episode": _mean(
+                    [float(row["deployable_policy_calls"]) for row in subset]
+                ),
+                "avg_entropy_oracle_extra_calls_per_episode": _mean(
+                    [float(row["entropy_oracle_extra_calls"]) for row in subset]
+                ),
+                "avg_replan_horizon": _mean([float(row["avg_replan_horizon"]) for row in subset]),
+                "avg_min_replan_horizon": _mean([float(row["min_replan_horizon"]) for row in subset]),
+                "avg_max_replan_horizon": _mean([float(row["max_replan_horizon"]) for row in subset]),
+                "avg_adaptive_entropy_score": _mean(
+                    [float(row["avg_adaptive_entropy_score"]) for row in subset]
+                ),
+                "avg_adaptive_entropy_decision": _mean(
+                    [float(row["avg_adaptive_entropy_decision"]) for row in subset]
+                ),
+            }
+        )
+    with per_task_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=per_task_fieldnames)
+        writer.writeheader()
+        writer.writerows(per_task_rows)
+
     by_mode = {}
     for mode in sorted({row["mode"] for row in rows}):
         subset = [row for row in rows if row["mode"] == mode]
@@ -1445,7 +1587,7 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             ),
         },
         "aggregate": by_mode,
-        "outputs": {"rollout_rows_csv": str(rows_path)},
+        "outputs": {"rollout_rows_csv": str(rows_path), "per_task_summary_csv": str(per_task_path)},
     }
     if "full" in by_mode and "pruned_override" in by_mode:
         summary["comparison"] = {
