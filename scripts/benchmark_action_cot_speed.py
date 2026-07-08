@@ -15,6 +15,10 @@ This script measures the speed budget that Stage B/Stage C can actually target:
    selects one fixed L=5 segment by entropy, asks the model to generate only the
    kept explicit Action-CoT tokens, and restores the skipped frames before the
    final action head.
+5. gated_k{K}_override:
+   reuses only K selected full coarse_actions as a short override; skips the
+   explicit Action-CoT generation loop and lets the final action head consume the
+   short explicit Action-CoT sequence without restoring it to the full horizon.
 
 If cached_coarse_override is faster than full_acot, explicit Action-CoT generation
 has a real latency budget. If pruned_coarse_override is not faster than
@@ -52,6 +56,7 @@ PROFILE_TIMING_PREFIXES = (
     "pruned_override",
     "true_entropy_segment_skip",
 )
+GATED_DEFAULT_BUDGETS = (10, 5)
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -109,6 +114,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=5,
         help="Fixed chunk size used by the true segment-skip path. The current model path supports L=5.",
     )
+    parser.add_argument(
+        "--gated_budgets",
+        "--gated-budgets",
+        nargs="*",
+        type=int,
+        default=list(GATED_DEFAULT_BUDGETS),
+        help="Short Action-CoT token budgets to benchmark as direct final-expert overrides.",
+    )
+    parser.add_argument(
+        "--gated_selection",
+        "--gated-selection",
+        choices=("high_entropy", "low_entropy", "uniform", "random"),
+        default="high_entropy",
+        help=(
+            "How to select K coarse tokens for gated_k{K}_override. Entropy modes use fixed L=5 segments; "
+            "uniform selects evenly spaced frames."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=0)
     return parser
 
@@ -128,10 +151,28 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--prune_ratio must be in [0, 1].")
     if args.true_skip_chunk_size != 5:
         raise ValueError("The current true segment-skip model path supports --true_skip_chunk_size 5 only.")
+    if not args.gated_budgets:
+        raise ValueError("--gated_budgets must contain at least one budget.")
+    if any(budget <= 0 for budget in args.gated_budgets):
+        raise ValueError("--gated_budgets values must be positive.")
 
 
 def _status(message: str) -> None:
     print(f"[benchmark_action_cot_speed] {message}", flush=True)
+
+
+def _ordered_unique_budgets(budgets: list[int]) -> list[int]:
+    seen = set()
+    ordered = []
+    for budget in budgets:
+        if budget not in seen:
+            seen.add(budget)
+            ordered.append(budget)
+    return ordered
+
+
+def _gated_prefix(budget: int) -> str:
+    return f"gated_k{budget}_override"
 
 
 def _effective_action_cot_denoising_steps(args: argparse.Namespace) -> int:
@@ -252,8 +293,121 @@ def _select_true_skip_segment(
         raise ValueError(
             "true segment-skip currently supports exactly one skipped L=5 segment. "
             f"Got {skipped_segments.size}; use prune_ratio in (0, 1/3] with three segments."
-        )
+    )
     return int(skipped_segments[0]), float(args.true_skip_chunk_size / coarse_samples.shape[1]), entropy
+
+
+def _uniform_keep_indices(t_len: int, budget: int) -> np.ndarray:
+    if budget > t_len:
+        raise ValueError(f"Gated budget K={budget} exceeds coarse trajectory length {t_len}.")
+    indices = np.floor((np.arange(budget, dtype=np.float64) + 0.5) * t_len / budget).astype(np.int64)
+    indices = np.clip(indices, 0, t_len - 1)
+    if np.unique(indices).shape[0] != budget:
+        indices = np.round(np.linspace(0, t_len - 1, budget)).astype(np.int64)
+    if np.unique(indices).shape[0] != budget:
+        raise ValueError(f"Could not select {budget} unique uniform indices from length {t_len}.")
+    return np.sort(indices)
+
+
+def _entropy_keep_indices(
+    sample: dict[str, Any],
+    *,
+    budget: int,
+    t_len: int,
+    args: argparse.Namespace,
+    norm_stats: dict[str, Any] | None,
+    data_config: _config.DataConfig,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    coarse_samples = np.asarray(sample["coarse_samples"], dtype=np.float64)
+    if coarse_samples.ndim != 3:
+        raise ValueError(f"coarse_samples must have shape [K, T, D], got {coarse_samples.shape}.")
+    if coarse_samples.shape[1] != t_len:
+        raise ValueError(
+            f"coarse_samples length {coarse_samples.shape[1]} does not match coarse_full length {t_len}."
+        )
+    if budget % args.true_skip_chunk_size != 0:
+        raise ValueError(
+            f"Entropy-gated budget K={budget} must be a multiple of --true_skip_chunk_size {args.true_skip_chunk_size}."
+        )
+
+    coarse_normalized, _ = stage_b._normalize_actions(
+        coarse_samples,
+        norm_stats,
+        use_quantiles=data_config.use_quantile_norm,
+        preferred_key="coarse_actions",
+    )
+    coarse_mean_normalized = np.mean(coarse_normalized, axis=0)
+    segments = acot_compression.segment_fixed(coarse_mean_normalized, chunk_size=args.true_skip_chunk_size)
+    if not segments:
+        raise ValueError("Entropy-gated selection requires at least one segment.")
+
+    keep_segments = budget // args.true_skip_chunk_size
+    if keep_segments <= 0 or keep_segments > len(segments):
+        raise ValueError(f"Cannot keep {keep_segments} segments from {len(segments)} fixed segments.")
+
+    entropy = acot_compression.compute_mc_predictive_entropy(coarse_normalized, segments)
+    sortable = np.nan_to_num(entropy, nan=-np.inf, posinf=np.inf, neginf=-np.inf)
+    if args.gated_selection == "high_entropy":
+        selected_segments = np.argsort(-sortable, kind="stable")[:keep_segments]
+    elif args.gated_selection == "low_entropy":
+        selected_segments = np.argsort(sortable, kind="stable")[:keep_segments]
+    elif args.gated_selection == "random":
+        selected_segments = rng.choice(len(segments), size=keep_segments, replace=False)
+    else:
+        raise ValueError(f"Unsupported entropy-gated selection: {args.gated_selection}")
+
+    selected_segments = np.sort(np.asarray(selected_segments, dtype=np.int64))
+    indices = []
+    for segment_idx in selected_segments:
+        start, end = segments[int(segment_idx)]
+        indices.extend(range(start, end))
+    indices = np.asarray(indices, dtype=np.int64)
+    if indices.shape[0] != budget:
+        raise ValueError(f"Expected {budget} gated indices, got {indices.shape[0]}.")
+    return indices, entropy
+
+
+def _select_gated_keep_indices(
+    sample: dict[str, Any],
+    coarse_full: np.ndarray,
+    *,
+    budget: int,
+    args: argparse.Namespace,
+    norm_stats: dict[str, Any] | None,
+    data_config: _config.DataConfig,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, float, np.ndarray]:
+    t_len = int(coarse_full.shape[0])
+    if budget > t_len:
+        raise ValueError(f"Gated budget K={budget} exceeds coarse trajectory length {t_len}.")
+    if args.gated_selection == "uniform":
+        return _uniform_keep_indices(t_len, budget), float(budget / t_len), np.asarray([], dtype=np.float64)
+
+    indices, entropy = _entropy_keep_indices(
+        sample,
+        budget=budget,
+        t_len=t_len,
+        args=args,
+        norm_stats=norm_stats,
+        data_config=data_config,
+        rng=rng,
+    )
+    return indices, float(indices.shape[0] / t_len), entropy
+
+
+def _action_error_metrics(reference: np.ndarray, candidate: np.ndarray) -> dict[str, float]:
+    ref = np.asarray(reference, dtype=np.float64)
+    cand = np.asarray(candidate, dtype=np.float64)
+    if ref.shape != cand.shape:
+        raise ValueError(f"Action shapes must match for error metrics, got {ref.shape} and {cand.shape}.")
+    diff = cand - ref
+    return {
+        "action_mse_vs_full": float(np.mean(np.square(diff))),
+        "action_rmse_vs_full": float(np.sqrt(np.mean(np.square(diff)))),
+        "action_l2_vs_full": float(np.mean(np.linalg.norm(diff, axis=-1))),
+        "action_linf_vs_full": float(np.max(np.abs(diff))),
+    }
 
 
 def _mean(values: list[float]) -> float:
@@ -270,9 +424,16 @@ def _ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
-def _write_outputs(output_dir: pathlib.Path, rows: list[dict[str, Any]], summary: dict[str, Any]) -> None:
+def _write_outputs(
+    output_dir: pathlib.Path,
+    rows: list[dict[str, Any]],
+    summary: dict[str, Any],
+    gated_budgets: list[int],
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     rows_path = output_dir / "latency_rows.csv"
+    gated_prefixes = [_gated_prefix(budget) for budget in gated_budgets]
+    timing_prefixes = [*PROFILE_TIMING_PREFIXES, *gated_prefixes]
     with rows_path.open("w", newline="") as f:
         writer = csv.DictWriter(
             f,
@@ -288,10 +449,25 @@ def _write_outputs(output_dir: pathlib.Path, rows: list[dict[str, Any]], summary
                 "cached_override_wall_ms",
                 "pruned_override_wall_ms",
                 "true_entropy_segment_skip_wall_ms",
+                *[f"{prefix}_ms" for prefix in gated_prefixes],
+                *[f"{prefix}_wall_ms" for prefix in gated_prefixes],
                 *[
                     f"{prefix}_{field}"
-                    for prefix in PROFILE_TIMING_PREFIXES
+                    for prefix in timing_prefixes
                     for field in PROFILE_TIMING_FIELDS
+                ],
+                *[
+                    field
+                    for budget in gated_budgets
+                    for field in (
+                        f"gated_k{budget}_keep_ratio",
+                        f"gated_k{budget}_keep_indices",
+                        f"gated_k{budget}_selection",
+                        f"gated_k{budget}_action_mse_vs_full",
+                        f"gated_k{budget}_action_rmse_vs_full",
+                        f"gated_k{budget}_action_l2_vs_full",
+                        f"gated_k{budget}_action_linf_vs_full",
+                    )
                 ],
                 "skip_ratio",
                 "true_skip_ratio",
@@ -312,6 +488,7 @@ def _write_outputs(output_dir: pathlib.Path, rows: list[dict[str, Any]], summary
 def main() -> None:
     args = build_arg_parser().parse_args()
     _validate_args(args)
+    gated_budgets = _ordered_unique_budgets(args.gated_budgets)
 
     entropy_dir = pathlib.Path(args.entropy_dir)
     output_dir = pathlib.Path(args.output_dir)
@@ -365,6 +542,26 @@ def main() -> None:
     warmup_override_input["coarse_actions_override"] = np.asarray(warmup_full["coarse_actions"], dtype=np.float32)
     for i in range(args.warmup):
         _infer_timed(policy, dict(warmup_override_input), seed=warmup_seed + args.warmup + i)
+    warmup_gated_rng = np.random.default_rng(args.seed + 15_000_000)
+    warmup_coarse_full = np.asarray(warmup_full["coarse_actions"], dtype=np.float32)
+    for budget_idx, budget in enumerate(gated_budgets):
+        keep_indices, _, _ = _select_gated_keep_indices(
+            warmup_sample,
+            warmup_coarse_full,
+            budget=budget,
+            args=args,
+            norm_stats=norm_stats,
+            data_config=data_config,
+            rng=warmup_gated_rng,
+        )
+        warmup_gated_input = dict(warmup_input)
+        warmup_gated_input["coarse_actions_override"] = warmup_coarse_full[keep_indices].astype(np.float32)
+        for i in range(args.warmup):
+            _infer_timed(
+                policy,
+                dict(warmup_gated_input),
+                seed=warmup_seed + (budget_idx + 3) * args.warmup + i,
+            )
     warmup_rng = np.random.default_rng(args.seed + 20_000_000)
     warmup_skip_segment, _, _ = _select_true_skip_segment(
         warmup_sample,
@@ -398,6 +595,35 @@ def main() -> None:
             cached_input["coarse_actions_override"] = coarse_full
             _, cached_ms, cached_wall_ms, cached_timing = _infer_timed(policy, cached_input, seed=seed_base)
 
+            gated_outputs: dict[int, dict[str, Any]] = {}
+            for budget in gated_budgets:
+                keep_indices, keep_ratio, _ = _select_gated_keep_indices(
+                    sample,
+                    coarse_full,
+                    budget=budget,
+                    args=args,
+                    norm_stats=norm_stats,
+                    data_config=data_config,
+                    rng=rng,
+                )
+                gated_input = dict(policy_input)
+                gated_input["coarse_actions_override"] = coarse_full[keep_indices].astype(np.float32)
+                gated_result, gated_ms, gated_wall_ms, gated_timing = _infer_timed(
+                    policy,
+                    gated_input,
+                    seed=seed_base,
+                )
+                if "actions" not in gated_result or "actions" not in full_result:
+                    raise RuntimeError("Policy output did not include actions for gated error metrics.")
+                gated_outputs[budget] = {
+                    "ms": gated_ms,
+                    "wall_ms": gated_wall_ms,
+                    "timing": gated_timing,
+                    "keep_ratio": keep_ratio,
+                    "keep_indices": keep_indices,
+                    "error": _action_error_metrics(full_result["actions"], gated_result["actions"]),
+                }
+
             coarse_pruned, skip_mask, skip_ratio = _make_pruned_coarse(
                 sample,
                 coarse_full,
@@ -425,32 +651,41 @@ def main() -> None:
                 seed=seed_base,
             )
 
-            rows.append(
-                {
-                    "sample_id": sample["sample_id"],
-                    "item_index": sample["item_index"],
-                    "repeat": repeat_idx,
-                    "full_ms": full_ms,
-                    "cached_override_ms": cached_ms,
-                    "pruned_override_ms": pruned_ms,
-                    "true_entropy_segment_skip_ms": true_skip_ms,
-                    "full_wall_ms": full_wall_ms,
-                    "cached_override_wall_ms": cached_wall_ms,
-                    "pruned_override_wall_ms": pruned_wall_ms,
-                    "true_entropy_segment_skip_wall_ms": true_skip_wall_ms,
-                    **_prefixed_timing("full", full_timing),
-                    **_prefixed_timing("cached_override", cached_timing),
-                    **_prefixed_timing("pruned_override", pruned_timing),
-                    **_prefixed_timing("true_entropy_segment_skip", true_skip_timing),
-                    "skip_ratio": skip_ratio,
-                    "true_skip_ratio": true_skip_ratio,
-                    "true_skip_segment": true_skip_segment,
-                    "true_skip_segment_entropy": float(true_skip_entropy[true_skip_segment]),
-                    "action_cot_denoising_steps_used": _denoising_steps_from_result(full_result),
-                    "num_segments": len(sample["segments"]),
-                    "skipped_segments": ";".join(str(i) for i, value in enumerate(skip_mask.tolist()) if value),
-                }
-            )
+            row = {
+                "sample_id": sample["sample_id"],
+                "item_index": sample["item_index"],
+                "repeat": repeat_idx,
+                "full_ms": full_ms,
+                "cached_override_ms": cached_ms,
+                "pruned_override_ms": pruned_ms,
+                "true_entropy_segment_skip_ms": true_skip_ms,
+                "full_wall_ms": full_wall_ms,
+                "cached_override_wall_ms": cached_wall_ms,
+                "pruned_override_wall_ms": pruned_wall_ms,
+                "true_entropy_segment_skip_wall_ms": true_skip_wall_ms,
+                **_prefixed_timing("full", full_timing),
+                **_prefixed_timing("cached_override", cached_timing),
+                **_prefixed_timing("pruned_override", pruned_timing),
+                **_prefixed_timing("true_entropy_segment_skip", true_skip_timing),
+                "skip_ratio": skip_ratio,
+                "true_skip_ratio": true_skip_ratio,
+                "true_skip_segment": true_skip_segment,
+                "true_skip_segment_entropy": float(true_skip_entropy[true_skip_segment]),
+                "action_cot_denoising_steps_used": _denoising_steps_from_result(full_result),
+                "num_segments": len(sample["segments"]),
+                "skipped_segments": ";".join(str(i) for i, value in enumerate(skip_mask.tolist()) if value),
+            }
+            for budget, output in gated_outputs.items():
+                prefix = _gated_prefix(budget)
+                row[f"{prefix}_ms"] = output["ms"]
+                row[f"{prefix}_wall_ms"] = output["wall_ms"]
+                row.update(_prefixed_timing(prefix, output["timing"]))
+                row[f"gated_k{budget}_keep_ratio"] = output["keep_ratio"]
+                row[f"gated_k{budget}_keep_indices"] = ";".join(str(int(i)) for i in output["keep_indices"])
+                row[f"gated_k{budget}_selection"] = args.gated_selection
+                for field, value in output["error"].items():
+                    row[f"gated_k{budget}_{field}"] = value
+            rows.append(row)
 
     full_values = [float(row["full_ms"]) for row in rows]
     cached_values = [float(row["cached_override_ms"]) for row in rows]
@@ -462,7 +697,8 @@ def main() -> None:
     true_skip_mean = _mean(true_skip_values)
     profile_aggregate = {}
     stage_profile = {}
-    for prefix in PROFILE_TIMING_PREFIXES:
+    timing_prefixes = [*PROFILE_TIMING_PREFIXES, *[_gated_prefix(budget) for budget in gated_budgets]]
+    for prefix in timing_prefixes:
         stage_profile[prefix] = {}
         for field in PROFILE_TIMING_FIELDS:
             values = [float(row[f"{prefix}_{field}"]) for row in rows]
@@ -472,6 +708,34 @@ def main() -> None:
                 "mean": _mean(values),
                 "std": _std(values),
             }
+    gated_aggregate = {}
+    for budget in gated_budgets:
+        prefix = _gated_prefix(budget)
+        values = [float(row[f"{prefix}_ms"]) for row in rows]
+        mean_value = _mean(values)
+        gated_aggregate[f"{prefix}_ms_mean"] = mean_value
+        gated_aggregate[f"{prefix}_ms_std"] = _std(values)
+        gated_aggregate[f"full_to_gated_k{budget}_override_speedup_pct"] = (
+            1.0 - _ratio(mean_value, full_mean)
+        ) * 100.0
+        gated_aggregate[f"cached_to_gated_k{budget}_override_speedup_pct"] = (
+            1.0 - _ratio(mean_value, cached_mean)
+        ) * 100.0
+        gated_aggregate[f"gated_k{budget}_keep_ratio_mean"] = _mean(
+            [float(row[f"gated_k{budget}_keep_ratio"]) for row in rows]
+        )
+        for field in (
+            "action_mse_vs_full",
+            "action_rmse_vs_full",
+            "action_l2_vs_full",
+            "action_linf_vs_full",
+        ):
+            gated_aggregate[f"gated_k{budget}_{field}_mean"] = _mean(
+                [float(row[f"gated_k{budget}_{field}"]) for row in rows]
+            )
+            gated_aggregate[f"gated_k{budget}_{field}_std"] = _std(
+                [float(row[f"gated_k{budget}_{field}"]) for row in rows]
+            )
     summary = {
         "config": {
             "entropy_dir": str(entropy_dir),
@@ -490,6 +754,8 @@ def main() -> None:
             "replacement": args.replacement,
             "true_skip_selector": "fixed_l5_entropy",
             "true_skip_chunk_size": args.true_skip_chunk_size,
+            "gated_budgets": gated_budgets,
+            "gated_selection": args.gated_selection,
         },
         "aggregate": {
             "num_measurements": len(rows),
@@ -502,6 +768,7 @@ def main() -> None:
             "true_entropy_segment_skip_ms_mean": true_skip_mean,
             "true_entropy_segment_skip_ms_std": _std(true_skip_values),
             **profile_aggregate,
+            **gated_aggregate,
             "skip_ratio_mean": _mean([float(row["skip_ratio"]) for row in rows]),
             "true_skip_ratio_mean": _mean([float(row["true_skip_ratio"]) for row in rows]),
             "action_cot_denoising_steps_used_mean": _mean(
@@ -542,9 +809,14 @@ def main() -> None:
                 "This path selects one fixed L=5 segment by entropy, generates only the remaining 10 explicit "
                 "Action-CoT tokens, restores the skipped frames, then runs the unchanged final action head."
             ),
+            "gated_override": (
+                "This non-deployable upper-bound test reuses full coarse_actions, keeps only K selected tokens as a "
+                "short coarse_actions_override, and lets the final action head consume the short explicit Action-CoT "
+                "sequence without restoring it to the full horizon. Compare it primarily against cached_coarse_override."
+            ),
         },
     }
-    _write_outputs(output_dir, rows, summary)
+    _write_outputs(output_dir, rows, summary, gated_budgets)
     _status(f"Wrote {output_dir / 'summary.json'}")
 
 
