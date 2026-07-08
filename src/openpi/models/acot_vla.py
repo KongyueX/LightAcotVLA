@@ -946,8 +946,8 @@ class ACOT_VLA(_model.BaseModel):
         observation: _model.Observation,
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
-        coarse_num_steps: int | at.Int[at.Array, ""] | None = None,
-        dynamic_coarse_steps: bool | None = None,
+        action_cot_denoising_steps: int | at.Int[at.Array, ""] | None = None,
+        dynamic_denoising_steps: bool | None = None,
         explicit_action_reason_override: _model.CoarseActions | None = None,
         explicit_action_skip_segment: int | at.Int[at.Array, ""] | None = None,
     ) -> _model.Actions:
@@ -956,8 +956,8 @@ class ACOT_VLA(_model.BaseModel):
         coarse_outputs = self.sample_actions_profile_coarse(
             prefix_state,
             num_steps=num_steps,
-            coarse_num_steps=coarse_num_steps,
-            dynamic_coarse_steps=dynamic_coarse_steps,
+            action_cot_denoising_steps=action_cot_denoising_steps,
+            dynamic_denoising_steps=dynamic_denoising_steps,
             explicit_action_reason_override=explicit_action_reason_override,
             explicit_action_skip_segment=explicit_action_skip_segment,
         )
@@ -971,7 +971,7 @@ class ACOT_VLA(_model.BaseModel):
             return {
                 "actions": expert_outputs["actions"],
                 "coarse_actions": coarse_outputs["explicit_action_reason"],
-                "coarse_num_steps": coarse_outputs["coarse_num_steps"],
+                "action_cot_denoising_steps": coarse_outputs["action_cot_denoising_steps"],
             }
         return expert_outputs
 
@@ -1022,8 +1022,8 @@ class ACOT_VLA(_model.BaseModel):
         prefix_state: dict[str, Any],
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
-        coarse_num_steps: int | at.Int[at.Array, ""] | None = None,
-        dynamic_coarse_steps: bool | None = None,
+        action_cot_denoising_steps: int | at.Int[at.Array, ""] | None = None,
+        dynamic_denoising_steps: bool | None = None,
         explicit_action_reason_override: _model.CoarseActions | None = None,
         explicit_action_skip_segment: int | at.Int[at.Array, ""] | None = None,
     ) -> dict[str, Any]:
@@ -1035,17 +1035,17 @@ class ACOT_VLA(_model.BaseModel):
         ref_action_noise = prefix_state["ref_action_noise"]
         batch_size = observation.state.shape[0]
 
-        use_dynamic_coarse_steps = (
-            self.action_cot_dynamic_steps if dynamic_coarse_steps is None else dynamic_coarse_steps
+        use_dynamic_denoising_steps = (
+            self.action_cot_dynamic_steps if dynamic_denoising_steps is None else dynamic_denoising_steps
         )
-        if coarse_num_steps is None and use_dynamic_coarse_steps:
+        if action_cot_denoising_steps is None and use_dynamic_denoising_steps:
             logits = self._action_cot_step_logits(prefix_out, prefix_mask)
             step_values = jnp.asarray(self.action_cot_step_values, dtype=jnp.int32)
-            coarse_num_steps = step_values[jnp.argmax(logits, axis=-1)[0]]
-        if coarse_num_steps is None:
-            coarse_num_steps = num_steps
-        coarse_num_steps = jnp.maximum(jnp.asarray(coarse_num_steps, dtype=jnp.float32), 1.0)
-        coarse_dt = -1.0 / coarse_num_steps
+            action_cot_denoising_steps = step_values[jnp.argmax(logits, axis=-1)[0]]
+        if action_cot_denoising_steps is None:
+            action_cot_denoising_steps = num_steps
+        action_cot_denoising_steps = jnp.maximum(jnp.asarray(action_cot_denoising_steps, dtype=jnp.float32), 1.0)
+        denoising_dt = -1.0 / action_cot_denoising_steps
 
         def step_explicit_action_reasoner(carry):
             x_t, time, step_idx = carry
@@ -1072,11 +1072,11 @@ class ACOT_VLA(_model.BaseModel):
             )
             v_t = self.coarse_action_out_proj(suffix_out[:, -x_t.shape[1] :])
 
-            return x_t + coarse_dt * v_t, time + coarse_dt, step_idx + 1
+            return x_t + denoising_dt * v_t, time + denoising_dt, step_idx + 1
 
         def cond_explicit_action_reasoner(carry):
             x_t, time, _ = carry
-            return time >= -coarse_dt / 2
+            return time >= -denoising_dt / 2
 
         if explicit_action_reason_override is not None:
             if not self.adopt_explicit_action_reasoner:
@@ -1112,7 +1112,7 @@ class ACOT_VLA(_model.BaseModel):
 
         return {
             "explicit_action_reason": explicit_action_reason,
-            "coarse_num_steps": jnp.broadcast_to(jnp.asarray(coarse_num_steps), (batch_size,)),
+            "action_cot_denoising_steps": jnp.broadcast_to(jnp.asarray(action_cot_denoising_steps), (batch_size,)),
         }
 
     def sample_actions_profile_expert(

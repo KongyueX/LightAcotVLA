@@ -206,17 +206,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video_out_path", "--video-out-path", default=None)
     parser.add_argument("--save_videos", "--save-videos", action="store_true")
     parser.add_argument(
-        "--coarse_num_steps",
-        "--coarse-num-steps",
+        "--action_cot_denoising_steps",
+        "--action-cot-denoising-steps",
         type=int,
         default=None,
-        help="Denoising steps for explicit coarse Action-CoT only. Defaults to the policy server sample default.",
+        help="Denoising iterations for explicit Action-CoT coarse-action generation.",
     )
     parser.add_argument(
-        "--dynamic_coarse_steps",
-        "--dynamic-coarse-steps",
+        "--action_cot_dynamic_denoising_steps",
         action="store_true",
-        help="Use the trained Action-CoT step head to choose coarse denoising steps.",
+        help="Use the trained Action-CoT step head to choose coarse denoising iterations.",
     )
 
     parser.add_argument(
@@ -294,8 +293,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--max_tasks must be positive when set.")
     if args.entropy_samples <= 0:
         raise ValueError("--entropy_samples must be positive.")
-    if args.coarse_num_steps is not None and args.coarse_num_steps <= 0:
-        raise ValueError("--coarse_num_steps must be positive when set.")
+    if args.action_cot_denoising_steps is not None and args.action_cot_denoising_steps <= 0:
+        raise ValueError("--action_cot_denoising_steps must be positive when set.")
     if not 0.0 <= args.prune_ratio <= 1.0:
         raise ValueError("--prune_ratio must be in [0, 1].")
     if args.true_skip_chunk_size != 5:
@@ -308,12 +307,12 @@ def _status(message: str) -> None:
     print(f"[eval_libero_action_cot_pruning] {message}", flush=True)
 
 
-def _with_coarse_num_steps(element: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+def _with_action_cot_denoising_steps(element: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     request = dict(element)
-    if args.coarse_num_steps is not None:
-        request["action_cot_coarse_num_steps"] = np.asarray(args.coarse_num_steps, dtype=np.int32)
-    if args.dynamic_coarse_steps:
-        request["action_cot_dynamic_coarse_steps"] = np.asarray(True)
+    if args.action_cot_denoising_steps is not None:
+        request["action_cot_denoising_steps"] = np.asarray(args.action_cot_denoising_steps, dtype=np.int32)
+    if args.action_cot_dynamic_denoising_steps:
+        request["action_cot_dynamic_denoising_steps"] = np.asarray(True)
     return request
 
 
@@ -546,10 +545,10 @@ def _infer(
     return result, wall_ms, policy_ms, server_ms, stage_timing
 
 
-def _coarse_steps_from_result(result: dict[str, Any]) -> float:
-    if "coarse_num_steps" not in result:
+def _denoising_steps_from_result(result: dict[str, Any]) -> float:
+    if "action_cot_denoising_steps" not in result:
         return float("nan")
-    value = np.asarray(result["coarse_num_steps"])
+    value = np.asarray(result["action_cot_denoising_steps"])
     if value.size == 0:
         return float("nan")
     return float(value.reshape(-1)[0])
@@ -816,14 +815,14 @@ def _query_action(
     if mode == "full":
         result, wall_ms, policy_ms, server_ms, stage_timing = _infer(
             client,
-            _with_coarse_num_steps(element, args),
+            _with_action_cot_denoising_steps(element, args),
             seed=seed,
         )
         full_wall_ms = [wall_ms]
         full_policy_ms = [policy_ms]
         full_server_ms = [server_ms]
         full_stage_timings = [stage_timing]
-        full_coarse_steps = [_coarse_steps_from_result(result)]
+        full_denoising_steps = [_denoising_steps_from_result(result)]
         entropy_info: dict[str, Any] = {}
         coarse_actions = np.asarray(result["coarse_actions"], dtype=np.float32) if "coarse_actions" in result else None
 
@@ -832,7 +831,7 @@ def _query_action(
                 entropy_info = _coarse_variation_proxy(coarse_actions, args=args, norm_stats=norm_stats)
             elif args.adaptive_replan_entropy_mode == "online_mc":
                 coarse_samples = [coarse_actions]
-                full_element = _with_coarse_num_steps(element, args)
+                full_element = _with_action_cot_denoising_steps(element, args)
                 for sample_idx in range(1, args.adaptive_replan_entropy_samples):
                     extra_result, extra_wall_ms, extra_policy_ms, extra_server_ms, extra_stage_timing = _infer(
                         client,
@@ -846,7 +845,7 @@ def _query_action(
                     full_policy_ms.append(extra_policy_ms)
                     full_server_ms.append(extra_server_ms)
                     full_stage_timings.append(extra_stage_timing)
-                    full_coarse_steps.append(_coarse_steps_from_result(extra_result))
+                    full_denoising_steps.append(_denoising_steps_from_result(extra_result))
                 entropy_info = _mc_entropy_info(np.stack(coarse_samples, axis=0), args=args, norm_stats=norm_stats)
 
         total_wall_ms = float(np.nansum(full_wall_ms))
@@ -868,12 +867,12 @@ def _query_action(
             "full_calls": len(full_wall_ms),
             "override_calls": 0,
             "true_skip_calls": 0,
-            "coarse_num_steps_used": _mean(full_coarse_steps),
+            "action_cot_denoising_steps_used": _mean(full_denoising_steps),
             **entropy_info,
         }
 
     if mode == "true_segment_skip":
-        true_element = _with_coarse_num_steps(element, args)
+        true_element = _with_action_cot_denoising_steps(element, args)
         true_element["action_cot_skip_segment"] = np.asarray(args.true_skip_segment, dtype=np.int32)
         result, wall_ms, policy_ms, server_ms, stage_timing = _infer(client, true_element, seed=seed)
         return np.asarray(result["actions"]), {
@@ -891,7 +890,7 @@ def _query_action(
             "full_calls": 0,
             "override_calls": 0,
             "true_skip_calls": 1,
-            "coarse_num_steps_used": _coarse_steps_from_result(result),
+            "action_cot_denoising_steps_used": _denoising_steps_from_result(result),
         }
 
     entropy_samples = 1 if mode == "cached_override" else args.entropy_samples
@@ -900,8 +899,8 @@ def _query_action(
     full_policy_ms = []
     full_server_ms = []
     full_stage_timings = []
-    full_coarse_steps = []
-    full_element = _with_coarse_num_steps(element, args)
+    full_denoising_steps = []
+    full_element = _with_action_cot_denoising_steps(element, args)
     for sample_idx in range(entropy_samples):
         result, wall_ms, policy_ms, server_ms, stage_timing = _infer(client, full_element, seed=seed + sample_idx)
         if "coarse_actions" not in result:
@@ -911,7 +910,7 @@ def _query_action(
         full_policy_ms.append(policy_ms)
         full_server_ms.append(server_ms)
         full_stage_timings.append(stage_timing)
-        full_coarse_steps.append(_coarse_steps_from_result(result))
+        full_denoising_steps.append(_denoising_steps_from_result(result))
 
     if mode == "cached_override":
         coarse_override = coarse_samples[0]
@@ -925,7 +924,7 @@ def _query_action(
             norm_stats=norm_stats,
             rng=rng,
         )
-        true_element = _with_coarse_num_steps(element, args)
+        true_element = _with_action_cot_denoising_steps(element, args)
         true_element["action_cot_skip_segment"] = np.asarray(skip_segment, dtype=np.int32)
         result, skip_wall_ms, skip_policy_ms, skip_server_ms, skip_stage_timing = _infer(
             client,
@@ -948,7 +947,7 @@ def _query_action(
             "full_calls": entropy_samples,
             "override_calls": 0,
             "true_skip_calls": 1,
-            "coarse_num_steps_used": _coarse_steps_from_result(result),
+            "action_cot_denoising_steps_used": _denoising_steps_from_result(result),
         }
     else:
         coarse_override, skip_ratio, skipped_segments, num_segments = _prune_online_coarse(
@@ -958,7 +957,7 @@ def _query_action(
             rng=rng,
         )
 
-    override_element = _with_coarse_num_steps(element, args)
+    override_element = _with_action_cot_denoising_steps(element, args)
     override_element["coarse_actions_override"] = coarse_override
     result, override_wall_ms, override_policy_ms, override_server_ms, override_stage_timing = _infer(
         client,
@@ -983,7 +982,7 @@ def _query_action(
         "full_calls": entropy_samples,
         "override_calls": 1,
         "true_skip_calls": 0,
-        "coarse_num_steps_used": _mean(full_coarse_steps),
+        "action_cot_denoising_steps_used": _mean(full_denoising_steps),
     }
 
 
@@ -1045,7 +1044,7 @@ def _run_mode(
             policy_stage_ms = {field: [] for field in PROFILE_TIMING_FIELDS}
             deployable_policy_stage_ms = {field: [] for field in PROFILE_TIMING_FIELDS}
             skip_ratios = []
-            coarse_steps_used = []
+            denoising_steps_used_values = []
             replan_horizons = []
             adaptive_action_delta = []
             adaptive_action_jerk = []
@@ -1142,8 +1141,9 @@ def _run_mode(
                             deployable_policy_stage_ms[field].append(deployable_value)
                     if np.isfinite(float(timing["skip_ratio"])):
                         skip_ratios.append(float(timing["skip_ratio"]))
-                    if np.isfinite(float(timing.get("coarse_num_steps_used", float("nan")))):
-                        coarse_steps_used.append(float(timing["coarse_num_steps_used"]))
+                    denoising_steps_used = timing.get("action_cot_denoising_steps_used", float("nan"))
+                    if np.isfinite(float(denoising_steps_used)):
+                        denoising_steps_used_values.append(float(denoising_steps_used))
                     full_calls += int(timing["full_calls"])
                     override_calls += int(timing["override_calls"])
                     true_skip_calls += int(timing.get("true_skip_calls", 0))
@@ -1189,6 +1189,9 @@ def _run_mode(
                 "avg_deployable_wall_inference_ms": _mean(deployable_wall_ms),
                 "avg_deployable_policy_inference_ms": _mean(deployable_policy_ms),
                 "avg_deployable_server_inference_ms": _mean(deployable_server_ms),
+                "primary_wall_inference_ms": _mean(deployable_wall_ms),
+                "primary_policy_inference_ms": _mean(deployable_policy_ms),
+                "primary_server_inference_ms": _mean(deployable_server_ms),
                 "total_deployable_wall_inference_ms": float(np.nansum(deployable_wall_ms)),
                 "total_deployable_policy_inference_ms": float(np.nansum(deployable_policy_ms)),
                 "total_deployable_server_inference_ms": float(np.nansum(deployable_server_ms)),
@@ -1198,7 +1201,7 @@ def _run_mode(
                     for field in PROFILE_TIMING_FIELDS
                 },
                 "avg_skip_ratio": _mean(skip_ratios),
-                "avg_coarse_num_steps_used": _mean(coarse_steps_used),
+                "avg_action_cot_denoising_steps_used": _mean(denoising_steps_used_values),
                 "avg_replan_horizon": _mean(replan_horizons),
                 "min_replan_horizon": float(np.min(replan_horizons)) if replan_horizons else float("nan"),
                 "max_replan_horizon": float(np.max(replan_horizons)) if replan_horizons else float("nan"),
@@ -1235,7 +1238,9 @@ def _run_mode(
 
             _status(
                 f"mode={mode} task={task_id} episode={episode_idx} "
-                f"success={success} avg_wall_ms={row['avg_wall_inference_ms']:.2f}"
+                f"success={success} observed_avg_wall_ms={row['avg_wall_inference_ms']:.2f} "
+                f"primary_avg_wall_ms={row['primary_wall_inference_ms']:.2f} "
+                f"entropy_extra_calls={row['entropy_oracle_extra_calls']}"
             )
 
         if env is not None:
@@ -1267,13 +1272,16 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_deployable_wall_inference_ms",
         "avg_deployable_policy_inference_ms",
         "avg_deployable_server_inference_ms",
+        "primary_wall_inference_ms",
+        "primary_policy_inference_ms",
+        "primary_server_inference_ms",
         "total_deployable_wall_inference_ms",
         "total_deployable_policy_inference_ms",
         "total_deployable_server_inference_ms",
         *[f"avg_policy_{field}" for field in PROFILE_TIMING_FIELDS],
         *[f"avg_deployable_policy_{field}" for field in PROFILE_TIMING_FIELDS],
         "avg_skip_ratio",
-        "avg_coarse_num_steps_used",
+        "avg_action_cot_denoising_steps_used",
         "avg_replan_horizon",
         "min_replan_horizon",
         "max_replan_horizon",
@@ -1329,6 +1337,9 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "avg_deployable_server_inference_ms": _mean(
                 [float(row["avg_deployable_server_inference_ms"]) for row in subset]
             ),
+            "primary_wall_inference_ms": _mean([float(row["primary_wall_inference_ms"]) for row in subset]),
+            "primary_policy_inference_ms": _mean([float(row["primary_policy_inference_ms"]) for row in subset]),
+            "primary_server_inference_ms": _mean([float(row["primary_server_inference_ms"]) for row in subset]),
             "avg_total_deployable_wall_inference_ms_per_episode": _mean(
                 [float(row["total_deployable_wall_inference_ms"]) for row in subset]
             ),
@@ -1336,6 +1347,15 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 [float(row["total_deployable_policy_inference_ms"]) for row in subset]
             ),
             "avg_total_deployable_server_inference_ms_per_episode": _mean(
+                [float(row["total_deployable_server_inference_ms"]) for row in subset]
+            ),
+            "primary_total_wall_inference_ms_per_episode": _mean(
+                [float(row["total_deployable_wall_inference_ms"]) for row in subset]
+            ),
+            "primary_total_policy_inference_ms_per_episode": _mean(
+                [float(row["total_deployable_policy_inference_ms"]) for row in subset]
+            ),
+            "primary_total_server_inference_ms_per_episode": _mean(
                 [float(row["total_deployable_server_inference_ms"]) for row in subset]
             ),
             **{
@@ -1349,7 +1369,9 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 for field in PROFILE_TIMING_FIELDS
             },
             "avg_skip_ratio": _mean([float(row["avg_skip_ratio"]) for row in subset]),
-            "avg_coarse_num_steps_used": _mean([float(row["avg_coarse_num_steps_used"]) for row in subset]),
+            "avg_action_cot_denoising_steps_used": _mean(
+                [float(row["avg_action_cot_denoising_steps_used"]) for row in subset]
+            ),
             "avg_replan_horizon": _mean([float(row["avg_replan_horizon"]) for row in subset]),
             "avg_min_replan_horizon": _mean([float(row["min_replan_horizon"]) for row in subset]),
             "avg_max_replan_horizon": _mean([float(row["max_replan_horizon"]) for row in subset]),
@@ -1401,8 +1423,8 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "adaptive_replan_jerk_low": args.adaptive_replan_jerk_low,
             "adaptive_replan_jerk_high": args.adaptive_replan_jerk_high,
             "adaptive_replan_gripper_change_threshold": args.adaptive_replan_gripper_change_threshold,
-            "coarse_num_steps": args.coarse_num_steps,
-            "dynamic_coarse_steps": args.dynamic_coarse_steps,
+            "action_cot_denoising_steps": args.action_cot_denoising_steps,
+            "action_cot_dynamic_denoising_steps": args.action_cot_dynamic_denoising_steps,
             "entropy_samples": args.entropy_samples,
             "strategy": args.strategy,
             "segment_mode": args.segment_mode,
@@ -1418,7 +1440,8 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 "its deployable timing fields measure only the final true-skip model call. For adaptive replanning "
                 "with online_mc entropy, avg_total_* includes the Stage-B entropy MC calls, while "
                 "avg_total_deployable_* treats entropy as an oracle/predicted signal and counts only the optimized "
-                "action-producing policy calls after the entropy decision."
+                "action-producing policy calls after the entropy decision. primary_* fields mirror this deployable "
+                "timing and are the intended fields for speed-success comparison."
             ),
         },
         "aggregate": by_mode,

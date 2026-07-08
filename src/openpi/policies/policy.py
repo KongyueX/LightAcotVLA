@@ -71,16 +71,8 @@ class Policy(BasePolicy):
         coarse_actions_override = inputs.pop("coarse_actions_override", None)
         action_cot_skip_segment = inputs.pop("action_cot_skip_segment", None)
         profile_policy_timing = _as_bool(inputs.pop("profile_policy_timing", False))
-        action_cot_coarse_num_steps = inputs.pop("action_cot_coarse_num_steps", None)
-        if action_cot_coarse_num_steps is None:
-            action_cot_coarse_num_steps = inputs.pop("coarse_num_steps", None)
-        else:
-            inputs.pop("coarse_num_steps", None)
-        action_cot_dynamic_coarse_steps = inputs.pop("action_cot_dynamic_coarse_steps", None)
-        if action_cot_dynamic_coarse_steps is None:
-            action_cot_dynamic_coarse_steps = inputs.pop("dynamic_coarse_steps", None)
-        else:
-            inputs.pop("dynamic_coarse_steps", None)
+        action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
+        action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
         transformed_coarse_actions_override = None
         if coarse_actions_override is not None:
             override_inputs = jax.tree.map(lambda x: x, obs)
@@ -88,10 +80,8 @@ class Policy(BasePolicy):
             override_inputs.pop("policy_seed", None)
             override_inputs.pop("action_cot_skip_segment", None)
             override_inputs.pop("profile_policy_timing", None)
-            override_inputs.pop("action_cot_coarse_num_steps", None)
-            override_inputs.pop("coarse_num_steps", None)
-            override_inputs.pop("action_cot_dynamic_coarse_steps", None)
-            override_inputs.pop("dynamic_coarse_steps", None)
+            override_inputs.pop("action_cot_denoising_steps", None)
+            override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             # Avoid data transforms regenerating coarse_actions from expert actions.
             override_inputs.pop("actions", None)
             override_inputs["coarse_actions"] = coarse_actions_override
@@ -126,15 +116,15 @@ class Policy(BasePolicy):
                 **sample_kwargs,
                 "explicit_action_skip_segment": np.asarray(action_cot_skip_segment, dtype=np.int32).reshape(()),
             }
-        if action_cot_coarse_num_steps is not None:
+        if action_cot_denoising_steps is not None:
             sample_kwargs = {
                 **sample_kwargs,
-                "coarse_num_steps": np.asarray(action_cot_coarse_num_steps, dtype=np.int32).reshape(()),
+                "action_cot_denoising_steps": np.asarray(action_cot_denoising_steps, dtype=np.int32).reshape(()),
             }
-        if action_cot_dynamic_coarse_steps is not None:
+        if action_cot_dynamic_denoising_steps is not None:
             sample_kwargs = {
                 **sample_kwargs,
-                "dynamic_coarse_steps": bool(np.asarray(action_cot_dynamic_coarse_steps).item()),
+                "dynamic_denoising_steps": bool(np.asarray(action_cot_dynamic_denoising_steps).item()),
             }
         observation = _model.Observation.from_dict(inputs)
         detailed_timing = {}
@@ -205,8 +195,8 @@ class Policy(BasePolicy):
         coarse_kwargs = {
             key: sample_kwargs[key]
             for key in (
-                "coarse_num_steps",
-                "dynamic_coarse_steps",
+                "action_cot_denoising_steps",
+                "dynamic_denoising_steps",
                 "explicit_action_reason_override",
                 "explicit_action_skip_segment",
             )
@@ -231,7 +221,7 @@ class Policy(BasePolicy):
         result = dict(expert_outputs)
         if coarse_outputs.get("explicit_action_reason") is not None:
             result["coarse_actions"] = coarse_outputs["explicit_action_reason"]
-            result["coarse_num_steps"] = coarse_outputs["coarse_num_steps"]
+            result["action_cot_denoising_steps"] = coarse_outputs["action_cot_denoising_steps"]
         return result, timing
 
     def post_process(self, obs: dict, outputs: dict) -> dict:

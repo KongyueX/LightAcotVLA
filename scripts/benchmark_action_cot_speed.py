@@ -80,17 +80,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--num_steps", "--num-steps", type=int, default=10)
     parser.add_argument(
-        "--coarse_num_steps",
-        "--coarse-num-steps",
+        "--action_cot_denoising_steps",
+        "--action-cot-denoising-steps",
         type=int,
         default=None,
-        help="Denoising steps for explicit coarse Action-CoT only. Defaults to --num_steps.",
+        help="Denoising iterations for explicit Action-CoT coarse-action generation. Defaults to --num_steps.",
     )
     parser.add_argument(
-        "--dynamic_coarse_steps",
-        "--dynamic-coarse-steps",
+        "--action_cot_dynamic_denoising_steps",
         action="store_true",
-        help="Use the trained Action-CoT step head to choose coarse denoising steps.",
+        help="Use the trained Action-CoT step head to choose coarse denoising iterations.",
     )
 
     parser.add_argument("--strategy", choices=("low_entropy", "high_entropy", "random"), default="low_entropy")
@@ -123,8 +122,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--repeat must be positive.")
     if args.num_steps <= 0:
         raise ValueError("--num_steps must be positive.")
-    if args.coarse_num_steps is not None and args.coarse_num_steps <= 0:
-        raise ValueError("--coarse_num_steps must be positive when set.")
+    if args.action_cot_denoising_steps is not None and args.action_cot_denoising_steps <= 0:
+        raise ValueError("--action_cot_denoising_steps must be positive when set.")
     if not 0.0 <= args.prune_ratio <= 1.0:
         raise ValueError("--prune_ratio must be in [0, 1].")
     if args.true_skip_chunk_size != 5:
@@ -135,10 +134,10 @@ def _status(message: str) -> None:
     print(f"[benchmark_action_cot_speed] {message}", flush=True)
 
 
-def _effective_coarse_num_steps(args: argparse.Namespace) -> int:
-    if args.dynamic_coarse_steps and args.coarse_num_steps is None:
+def _effective_action_cot_denoising_steps(args: argparse.Namespace) -> int:
+    if args.action_cot_dynamic_denoising_steps and args.action_cot_denoising_steps is None:
         return -1
-    return int(args.num_steps if args.coarse_num_steps is None else args.coarse_num_steps)
+    return int(args.num_steps if args.action_cot_denoising_steps is None else args.action_cot_denoising_steps)
 
 
 def _infer_timed(
@@ -170,10 +169,10 @@ def _prefixed_timing(prefix: str, timing: dict[str, float]) -> dict[str, float]:
     return {f"{prefix}_{field}": float(timing.get(field, float("nan"))) for field in PROFILE_TIMING_FIELDS}
 
 
-def _coarse_steps_from_result(result: dict[str, Any]) -> float:
-    if "coarse_num_steps" not in result:
+def _denoising_steps_from_result(result: dict[str, Any]) -> float:
+    if "action_cot_denoising_steps" not in result:
         return float("nan")
-    value = np.asarray(result["coarse_num_steps"])
+    value = np.asarray(result["action_cot_denoising_steps"])
     if value.size == 0:
         return float("nan")
     return float(value.reshape(-1)[0])
@@ -298,7 +297,7 @@ def _write_outputs(output_dir: pathlib.Path, rows: list[dict[str, Any]], summary
                 "true_skip_ratio",
                 "true_skip_segment",
                 "true_skip_segment_entropy",
-                "coarse_num_steps_used",
+                "action_cot_denoising_steps_used",
                 "num_segments",
                 "skipped_segments",
             ],
@@ -326,10 +325,10 @@ def main() -> None:
 
     _status(f"Loading policy from {checkpoint_dir}")
     sample_kwargs = {"num_steps": args.num_steps}
-    if args.coarse_num_steps is not None:
-        sample_kwargs["coarse_num_steps"] = args.coarse_num_steps
-    if args.dynamic_coarse_steps:
-        sample_kwargs["dynamic_coarse_steps"] = True
+    if args.action_cot_denoising_steps is not None:
+        sample_kwargs["action_cot_denoising_steps"] = args.action_cot_denoising_steps
+    if args.action_cot_dynamic_denoising_steps:
+        sample_kwargs["action_cot_dynamic_denoising_steps"] = True
     policy = _policy_config.create_trained_policy(
         train_config,
         checkpoint_dir,
@@ -447,7 +446,7 @@ def main() -> None:
                     "true_skip_ratio": true_skip_ratio,
                     "true_skip_segment": true_skip_segment,
                     "true_skip_segment_entropy": float(true_skip_entropy[true_skip_segment]),
-                    "coarse_num_steps_used": _coarse_steps_from_result(full_result),
+                    "action_cot_denoising_steps_used": _denoising_steps_from_result(full_result),
                     "num_segments": len(sample["segments"]),
                     "skipped_segments": ";".join(str(i) for i, value in enumerate(skip_mask.tolist()) if value),
                 }
@@ -462,19 +461,25 @@ def main() -> None:
     pruned_mean = _mean(pruned_values)
     true_skip_mean = _mean(true_skip_values)
     profile_aggregate = {}
+    stage_profile = {}
     for prefix in PROFILE_TIMING_PREFIXES:
+        stage_profile[prefix] = {}
         for field in PROFILE_TIMING_FIELDS:
             values = [float(row[f"{prefix}_{field}"]) for row in rows]
             profile_aggregate[f"{prefix}_{field}_mean"] = _mean(values)
             profile_aggregate[f"{prefix}_{field}_std"] = _std(values)
+            stage_profile[prefix][field] = {
+                "mean": _mean(values),
+                "std": _std(values),
+            }
     summary = {
         "config": {
             "entropy_dir": str(entropy_dir),
             "checkpoint_dir": str(checkpoint_dir),
             "policy_config": args.config_name,
             "num_steps": args.num_steps,
-            "coarse_num_steps": _effective_coarse_num_steps(args),
-            "dynamic_coarse_steps": args.dynamic_coarse_steps,
+            "action_cot_denoising_steps": _effective_action_cot_denoising_steps(args),
+            "action_cot_dynamic_denoising_steps": args.action_cot_dynamic_denoising_steps,
             "max_items": args.max_items,
             "warmup": args.warmup,
             "repeat": args.repeat,
@@ -499,12 +504,29 @@ def main() -> None:
             **profile_aggregate,
             "skip_ratio_mean": _mean([float(row["skip_ratio"]) for row in rows]),
             "true_skip_ratio_mean": _mean([float(row["true_skip_ratio"]) for row in rows]),
-            "coarse_num_steps_used_mean": _mean([float(row["coarse_num_steps_used"]) for row in rows]),
+            "action_cot_denoising_steps_used_mean": _mean(
+                [float(row["action_cot_denoising_steps_used"]) for row in rows]
+            ),
             "full_to_cached_speedup_pct": (1.0 - _ratio(cached_mean, full_mean)) * 100.0,
             "full_to_pruned_speedup_pct": (1.0 - _ratio(pruned_mean, full_mean)) * 100.0,
             "full_to_true_entropy_segment_skip_speedup_pct": (1.0 - _ratio(true_skip_mean, full_mean)) * 100.0,
             "cached_to_pruned_speedup_pct": (1.0 - _ratio(pruned_mean, cached_mean)) * 100.0,
             "cached_to_true_entropy_segment_skip_gap_pct": (_ratio(true_skip_mean, cached_mean) - 1.0) * 100.0,
+        },
+        "stage_profile": stage_profile,
+        "entropy_guided_true_skip": {
+            "latency_ms_mean": true_skip_mean,
+            "latency_ms_std": _std(true_skip_values),
+            "speedup_vs_full_acot_pct": (1.0 - _ratio(true_skip_mean, full_mean)) * 100.0,
+            "skip_ratio_mean": _mean([float(row["true_skip_ratio"]) for row in rows]),
+            "stage_ms_mean": {
+                field: _mean([float(row[f"true_entropy_segment_skip_{field}"]) for row in rows])
+                for field in PROFILE_TIMING_FIELDS
+            },
+            "stage_ms_std": {
+                field: _std([float(row[f"true_entropy_segment_skip_{field}"]) for row in rows])
+                for field in PROFILE_TIMING_FIELDS
+            },
         },
         "interpretation": {
             "full_to_cached": "Latency saved by bypassing the entire explicit Action-CoT generation loop.",

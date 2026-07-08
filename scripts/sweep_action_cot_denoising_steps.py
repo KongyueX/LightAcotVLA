@@ -10,19 +10,35 @@ import subprocess
 import sys
 from typing import Any
 
+import numpy as np
+
 
 DEFAULT_STEPS = [10, 7, 5, 3, 1]
+PROFILE_TIMING_FIELDS = (
+    "vlm_ms",
+    "implicit_action_reasoner_ms",
+    "coarse_action_expert_ms",
+    "action_expert_ms",
+    "profile_overhead_ms",
+)
 
 
 def _status(message: str) -> None:
-    print(f"[sweep_action_cot_coarse_steps] {message}", flush=True)
+    print(f"[sweep_action_cot_denoising_steps] {message}", flush=True)
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("speed", "closed_loop", "both"), default="speed")
     parser.add_argument("--output_dir", "--output-dir", required=True)
-    parser.add_argument("--coarse_steps", "--coarse-steps", nargs="*", type=int, default=DEFAULT_STEPS)
+    parser.add_argument(
+        "--action_cot_denoising_steps",
+        "--action-cot-denoising-steps",
+        nargs="*",
+        type=int,
+        default=DEFAULT_STEPS,
+        help="Explicit Action-CoT denoising step values to sweep.",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no_plots", "--no-plots", action="store_true")
 
@@ -93,10 +109,10 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    if not args.coarse_steps:
-        raise ValueError("--coarse_steps must contain at least one value.")
-    if any(step <= 0 for step in args.coarse_steps):
-        raise ValueError("--coarse_steps values must be positive.")
+    if not args.action_cot_denoising_steps:
+        raise ValueError("--action_cot_denoising_steps must contain at least one value.")
+    if any(step <= 0 for step in args.action_cot_denoising_steps):
+        raise ValueError("--action_cot_denoising_steps values must be positive.")
     if args.adaptive_replan_horizons is not None and any(horizon <= 0 for horizon in args.adaptive_replan_horizons):
         raise ValueError("--adaptive_replan_horizons values must be positive.")
     if args.mode in ("speed", "both"):
@@ -133,7 +149,7 @@ def _speed_command(args: argparse.Namespace, step: int, run_dir: pathlib.Path) -
         str(run_dir),
         "--num_steps",
         str(args.num_steps),
-        "--coarse_num_steps",
+        "--action_cot_denoising_steps",
         str(step),
         "--max_items",
         str(args.max_items),
@@ -189,7 +205,7 @@ def _closed_loop_command(args: argparse.Namespace, step: int, run_dir: pathlib.P
         str(args.prune_ratio),
         "--replacement",
         args.replacement,
-        "--coarse_num_steps",
+        "--action_cot_denoising_steps",
         str(step),
         "--output_dir",
         str(run_dir),
@@ -239,30 +255,53 @@ def _speed_row(step: int, summary: dict[str, Any], baseline_ms: float | None) ->
     full_ms = float(_safe_get(aggregate, "full_acot_ms_mean"))
     speedup = float("nan") if baseline_ms in (None, 0.0) else (1.0 - full_ms / baseline_ms) * 100.0
     return {
-        "coarse_num_steps": step,
+        "action_cot_denoising_steps": step,
         "full_acot_ms_mean": full_ms,
         "full_acot_ms_std": _safe_get(aggregate, "full_acot_ms_std"),
-        "speedup_vs_coarse10_pct": speedup,
+        "speedup_vs_denoising10_pct": speedup,
         "cached_coarse_override_ms_mean": _safe_get(aggregate, "cached_coarse_override_ms_mean"),
         "true_entropy_segment_skip_ms_mean": _safe_get(aggregate, "true_entropy_segment_skip_ms_mean"),
         "full_to_cached_speedup_pct": _safe_get(aggregate, "full_to_cached_speedup_pct"),
+        **{f"full_{field}_mean": _safe_get(aggregate, f"full_{field}_mean") for field in PROFILE_TIMING_FIELDS},
+        **{
+            f"true_entropy_segment_skip_{field}_mean": _safe_get(
+                aggregate,
+                f"true_entropy_segment_skip_{field}_mean",
+            )
+            for field in PROFILE_TIMING_FIELDS
+        },
     }
 
 
 def _closed_loop_row(step: int, summary: dict[str, Any], target_mode: str, baseline_ms: float | None) -> dict[str, Any]:
     aggregate = summary.get("aggregate", {})
     mode_metrics = aggregate.get(target_mode, {})
-    wall_ms = float(_safe_get(mode_metrics, "avg_wall_inference_ms"))
-    speedup = float("nan") if baseline_ms in (None, 0.0) else (1.0 - wall_ms / baseline_ms) * 100.0
+    primary_wall_ms = float(_safe_get(mode_metrics, "primary_wall_inference_ms"))
+    if not np.isfinite(primary_wall_ms):
+        primary_wall_ms = float(_safe_get(mode_metrics, "avg_deployable_wall_inference_ms"))
+    if not np.isfinite(primary_wall_ms):
+        primary_wall_ms = float(_safe_get(mode_metrics, "avg_wall_inference_ms"))
+    speedup = float("nan") if baseline_ms in (None, 0.0) else (1.0 - primary_wall_ms / baseline_ms) * 100.0
     return {
-        "coarse_num_steps": step,
+        "action_cot_denoising_steps": step,
         "mode": target_mode,
         "success_rate": _safe_get(mode_metrics, "success_rate"),
         "average_return": _safe_get(mode_metrics, "average_return"),
         "timeout_rate": _safe_get(mode_metrics, "timeout_rate"),
-        "avg_wall_inference_ms": wall_ms,
-        "avg_policy_inference_ms": _safe_get(mode_metrics, "avg_policy_inference_ms"),
-        "avg_server_inference_ms": _safe_get(mode_metrics, "avg_server_inference_ms"),
+        "primary_wall_inference_ms": primary_wall_ms,
+        "primary_policy_inference_ms": _safe_get(mode_metrics, "primary_policy_inference_ms"),
+        "primary_server_inference_ms": _safe_get(mode_metrics, "primary_server_inference_ms"),
+        "observed_avg_wall_inference_ms": _safe_get(mode_metrics, "avg_wall_inference_ms"),
+        "observed_avg_policy_inference_ms": _safe_get(mode_metrics, "avg_policy_inference_ms"),
+        "observed_avg_server_inference_ms": _safe_get(mode_metrics, "avg_server_inference_ms"),
+        **{
+            f"primary_policy_{field}": _safe_get(mode_metrics, f"avg_deployable_policy_{field}")
+            for field in PROFILE_TIMING_FIELDS
+        },
+        **{
+            f"observed_policy_{field}": _safe_get(mode_metrics, f"avg_policy_{field}")
+            for field in PROFILE_TIMING_FIELDS
+        },
         "avg_total_wall_inference_ms_per_episode": _safe_get(
             mode_metrics,
             "avg_total_wall_inference_ms_per_episode",
@@ -290,8 +329,11 @@ def _closed_loop_row(step: int, summary: dict[str, Any], target_mode: str, basel
             "avg_entropy_oracle_extra_calls_per_episode",
         ),
         "avg_replan_horizon": _safe_get(mode_metrics, "avg_replan_horizon"),
-        "avg_coarse_num_steps_used": _safe_get(mode_metrics, "avg_coarse_num_steps_used"),
-        "speedup_vs_coarse10_pct": speedup,
+        "avg_action_cot_denoising_steps_used": _safe_get(
+            mode_metrics,
+            "avg_action_cot_denoising_steps_used",
+        ),
+        "speedup_vs_denoising10_pct": speedup,
     }
 
 
@@ -319,6 +361,10 @@ def _float(row: dict[str, Any], key: str) -> float:
         return float("nan")
 
 
+def _step_from_row(row: dict[str, Any]) -> int:
+    return int(float(row["action_cot_denoising_steps"]))
+
+
 def _setup_matplotlib():
     import matplotlib
 
@@ -331,11 +377,17 @@ def _setup_matplotlib():
 def _plot_line(rows: list[dict[str, Any]], *, x_key: str, y_key: str, ylabel: str, title: str, path: pathlib.Path) -> None:
     if not rows:
         return
-    points = sorted((int(float(row[x_key])), _float(row, y_key)) for row in rows)
+    points = sorted(
+        (
+            _step_from_row(row) if x_key == "action_cot_denoising_steps" else int(float(row[x_key])),
+            _float(row, y_key),
+        )
+        for row in rows
+    )
     plt = _setup_matplotlib()
     fig, ax = plt.subplots(figsize=(6.5, 4))
     ax.plot([point[0] for point in points], [point[1] for point in points], marker="o", linewidth=2)
-    ax.set_xlabel("Coarse denoising steps")
+    ax.set_xlabel("Action-CoT denoising steps")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
@@ -348,10 +400,10 @@ def _plot_line(rows: list[dict[str, Any]], *, x_key: str, y_key: str, ylabel: st
 def _plot_tradeoff(speed_rows: list[dict[str, Any]], closed_rows: list[dict[str, Any]], path: pathlib.Path) -> None:
     if not speed_rows or not closed_rows:
         return
-    speed_by_step = {int(float(row["coarse_num_steps"])): _float(row, "full_acot_ms_mean") for row in speed_rows}
+    speed_by_step = {_step_from_row(row): _float(row, "full_acot_ms_mean") for row in speed_rows}
     points = []
     for row in closed_rows:
-        step = int(float(row["coarse_num_steps"]))
+        step = _step_from_row(row)
         if step in speed_by_step:
             points.append((step, speed_by_step[step], _float(row, "success_rate")))
     if not points:
@@ -364,7 +416,7 @@ def _plot_tradeoff(speed_rows: list[dict[str, Any]], closed_rows: list[dict[str,
         ax.annotate(str(step), (latency, success), xytext=(5, 4), textcoords="offset points")
     ax.set_xlabel("Open-loop policy latency (ms)")
     ax.set_ylabel("Closed-loop success rate")
-    ax.set_title("Speed-success tradeoff by coarse denoising steps")
+    ax.set_title("Speed-success tradeoff by Action-CoT denoising steps")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -373,13 +425,13 @@ def _plot_tradeoff(speed_rows: list[dict[str, Any]], closed_rows: list[dict[str,
 
 
 def _write_combined_report(output_dir: pathlib.Path) -> None:
-    speed_rows = _read_csv(output_dir / "speed" / "coarse_steps_speed_summary.csv")
-    closed_rows = _read_csv(output_dir / "closed_loop" / "coarse_steps_closed_loop_summary.csv")
+    speed_rows = _read_csv(output_dir / "speed" / "denoising_steps_speed_summary.csv")
+    closed_rows = _read_csv(output_dir / "closed_loop" / "denoising_steps_closed_loop_summary.csv")
     if not speed_rows and not closed_rows:
         return
 
-    speed_by_step = {int(float(row["coarse_num_steps"])): row for row in speed_rows}
-    closed_by_step = {int(float(row["coarse_num_steps"])): row for row in closed_rows}
+    speed_by_step = {_step_from_row(row): row for row in speed_rows}
+    closed_by_step = {_step_from_row(row): row for row in closed_rows}
     steps = sorted(set(speed_by_step) | set(closed_by_step), reverse=True)
     combined_rows = []
     for step in steps:
@@ -387,41 +439,46 @@ def _write_combined_report(output_dir: pathlib.Path) -> None:
         closed = closed_by_step.get(step, {})
         combined_rows.append(
             {
-                "coarse_num_steps": step,
+                "action_cot_denoising_steps": step,
                 "speed_full_acot_ms_mean": speed.get("full_acot_ms_mean", ""),
-                "speedup_vs_coarse10_pct": speed.get("speedup_vs_coarse10_pct", closed.get("speedup_vs_coarse10_pct", "")),
+                "speedup_vs_denoising10_pct": speed.get(
+                    "speedup_vs_denoising10_pct",
+                    closed.get("speedup_vs_denoising10_pct", ""),
+                ),
                 "closed_loop_success_rate": closed.get("success_rate", ""),
                 "closed_loop_average_return": closed.get("average_return", ""),
                 "closed_loop_timeout_rate": closed.get("timeout_rate", ""),
-                "closed_loop_avg_wall_inference_ms": closed.get("avg_wall_inference_ms", ""),
-                "avg_coarse_num_steps_used": closed.get("avg_coarse_num_steps_used", ""),
+                "closed_loop_primary_wall_inference_ms": closed.get("primary_wall_inference_ms", ""),
+                "closed_loop_primary_policy_inference_ms": closed.get("primary_policy_inference_ms", ""),
+                "closed_loop_observed_avg_wall_inference_ms": closed.get("observed_avg_wall_inference_ms", ""),
+                "avg_action_cot_denoising_steps_used": closed.get("avg_action_cot_denoising_steps_used", ""),
             }
         )
-    _write_csv(output_dir / "coarse_steps_systematic_summary.csv", combined_rows)
+    _write_csv(output_dir / "denoising_steps_systematic_summary.csv", combined_rows)
 
     plot_dir = output_dir / "plots"
     _plot_line(
         speed_rows,
-        x_key="coarse_num_steps",
+        x_key="action_cot_denoising_steps",
         y_key="full_acot_ms_mean",
         ylabel="Open-loop latency (ms)",
-        title="Latency vs coarse denoising steps",
+        title="Latency vs Action-CoT denoising steps",
         path=plot_dir / "latency_vs_steps.png",
     )
     _plot_line(
         speed_rows,
-        x_key="coarse_num_steps",
-        y_key="speedup_vs_coarse10_pct",
+        x_key="action_cot_denoising_steps",
+        y_key="speedup_vs_denoising10_pct",
         ylabel="Speedup vs 10 steps (%)",
-        title="Speedup vs coarse denoising steps",
+        title="Speedup vs Action-CoT denoising steps",
         path=plot_dir / "speedup_vs_steps.png",
     )
     _plot_line(
         closed_rows,
-        x_key="coarse_num_steps",
+        x_key="action_cot_denoising_steps",
         y_key="success_rate",
         ylabel="Success rate",
-        title="Closed-loop success vs coarse denoising steps",
+        title="Closed-loop success vs Action-CoT denoising steps",
         path=plot_dir / "success_vs_steps.png",
     )
     _plot_tradeoff(speed_rows, closed_rows, plot_dir / "speed_success_tradeoff.png")
@@ -431,8 +488,8 @@ def _run_mode(args: argparse.Namespace, mode: str, output_dir: pathlib.Path) -> 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     summaries: dict[int, dict[str, Any]] = {}
-    for step in args.coarse_steps:
-        run_dir = output_dir / f"coarse_steps_{step}"
+    for step in args.action_cot_denoising_steps:
+        run_dir = output_dir / f"denoising_steps_{step}"
         if mode == "speed":
             command = _speed_command(args, step, run_dir)
         else:
@@ -449,17 +506,27 @@ def _run_mode(args: argparse.Namespace, mode: str, output_dir: pathlib.Path) -> 
         baseline_ms = None
         if baseline_summary is not None:
             baseline_ms = float(baseline_summary.get("aggregate", {}).get("full_acot_ms_mean", float("nan")))
-        rows = [_speed_row(step, summaries[step], baseline_ms) for step in args.coarse_steps]
-        csv_path = output_dir / "coarse_steps_speed_summary.csv"
+        rows = [_speed_row(step, summaries[step], baseline_ms) for step in args.action_cot_denoising_steps]
+        csv_path = output_dir / "denoising_steps_speed_summary.csv"
     else:
         target_mode = "full" if args.rollout_mode == "all" else args.rollout_mode
         baseline_ms = None
         if baseline_summary is not None:
+            baseline_metrics = baseline_summary.get("aggregate", {}).get(target_mode, {})
             baseline_ms = float(
-                baseline_summary.get("aggregate", {}).get(target_mode, {}).get("avg_wall_inference_ms", float("nan"))
+                baseline_metrics.get(
+                    "primary_wall_inference_ms",
+                    baseline_metrics.get(
+                        "avg_deployable_wall_inference_ms",
+                        baseline_metrics.get("avg_wall_inference_ms", float("nan")),
+                    ),
+                )
             )
-        rows = [_closed_loop_row(step, summaries[step], target_mode, baseline_ms) for step in args.coarse_steps]
-        csv_path = output_dir / "coarse_steps_closed_loop_summary.csv"
+        rows = [
+            _closed_loop_row(step, summaries[step], target_mode, baseline_ms)
+            for step in args.action_cot_denoising_steps
+        ]
+        csv_path = output_dir / "denoising_steps_closed_loop_summary.csv"
 
     _write_csv(csv_path, rows)
     _status(f"Wrote {csv_path}")
