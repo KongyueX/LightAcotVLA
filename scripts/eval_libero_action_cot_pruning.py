@@ -119,7 +119,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--adaptive-replan-horizons",
         nargs="*",
         type=int,
-        default=[5, 8, 10],
+        default=[5, 6, 7, 8, 9, 10],
         help=(
             "Candidate execution horizons H in environment/control steps. For entropy-based adaptive replanning, "
             "horizons below --replan_steps are ignored so entropy can only keep or lengthen the baseline horizon."
@@ -198,6 +198,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.25,
         help="Max gripper change above which the horizon is capped at the default replan horizon.",
+    )
+    parser.add_argument(
+        "--disable_adaptive_replan_stage_guard",
+        "--disable-adaptive-replan-stage-guard",
+        action="store_true",
+        help=(
+            "Disable the default stage-aware guard. By default entropy adaptive replanning caps H at "
+            "--replan_steps during gripper/action-instability phases."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive_replan_action_delta_high",
+        "--adaptive-replan-action-delta-high",
+        type=float,
+        default=0.08,
+        help="Action-delta threshold above which stage-aware entropy replanning is capped at --replan_steps.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_stage_guard_jerk_high",
+        "--adaptive-replan-stage-guard-jerk-high",
+        type=float,
+        default=0.65,
+        help="Action jerk-ratio threshold above which stage-aware entropy replanning is capped at --replan_steps.",
     )
     parser.add_argument("--task_suite_name", "--task-suite-name", default="libero_spatial")
     parser.add_argument("--num_steps_wait", "--num-steps-wait", type=int, default=10)
@@ -285,6 +308,10 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--adaptive_replan_jerk thresholds must be non-negative.")
     if args.adaptive_replan_jerk_low > args.adaptive_replan_jerk_high:
         raise ValueError("--adaptive_replan_jerk_low must be <= --adaptive_replan_jerk_high.")
+    if args.adaptive_replan_action_delta_high < 0:
+        raise ValueError("--adaptive_replan_action_delta_high must be non-negative.")
+    if args.adaptive_replan_stage_guard_jerk_high < 0:
+        raise ValueError("--adaptive_replan_stage_guard_jerk_high must be non-negative.")
     if args.adaptive_replanning in ("entropy", "action_entropy") and args.adaptive_replan_entropy_mode == "none":
         raise ValueError(
             "--adaptive_replanning entropy/action_entropy requires --adaptive_replan_entropy_mode "
@@ -731,6 +758,47 @@ def _entropy_thresholds(
     return low, high, "running_quantile"
 
 
+def _low_entropy_horizon_index(
+    horizons: list[int],
+    default_idx: int,
+    entropy_score: float,
+    entropy_history: list[float],
+    args: argparse.Namespace,
+) -> int:
+    if default_idx >= len(horizons) - 1:
+        return default_idx
+
+    values = np.asarray(entropy_history, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    low_quantile = float(args.adaptive_replan_entropy_low_quantile)
+    if values.size == 0 or low_quantile <= 0:
+        return min(default_idx + 1, len(horizons) - 1)
+
+    percentile = float(np.mean(values <= entropy_score))
+    extension = float(np.clip((low_quantile - percentile) / max(low_quantile, 1e-6), 0.0, 1.0))
+    available = len(horizons) - default_idx - 1
+    return min(default_idx + 1 + int(round(extension * max(available - 1, 0))), len(horizons) - 1)
+
+
+def _stage_guard_info(metrics: dict[str, float], args: argparse.Namespace) -> tuple[bool, str]:
+    if args.disable_adaptive_replan_stage_guard:
+        return False, ""
+
+    reasons = []
+    if bool(metrics["gripper_event"]):
+        reasons.append("gripper_change")
+
+    action_delta = float(metrics["action_delta"])
+    if np.isfinite(action_delta) and action_delta >= args.adaptive_replan_action_delta_high:
+        reasons.append("action_delta")
+
+    jerk_ratio = float(metrics["action_jerk_ratio"])
+    if np.isfinite(jerk_ratio) and jerk_ratio >= args.adaptive_replan_stage_guard_jerk_high:
+        reasons.append("jerk_ratio")
+
+    return bool(reasons), ",".join(reasons)
+
+
 def _select_replan_horizon(
     action_chunk: np.ndarray,
     *,
@@ -772,20 +840,34 @@ def _select_replan_horizon(
     entropy_score = float(timing.get("adaptive_entropy_score", float("nan")))
     entropy_low, entropy_high, entropy_threshold_source = _entropy_thresholds(entropy_history, args)
     entropy_decision = 0
+    low_entropy_target_idx = default_idx
     if _adaptive_uses_entropy(args) and np.isfinite(entropy_score):
         if np.isfinite(entropy_low) and np.isfinite(entropy_high):
             if entropy_score <= entropy_low:
                 entropy_decision = 1
-                bucket_idx = min(bucket_idx + 1, len(horizons) - 1)
+                low_entropy_target_idx = _low_entropy_horizon_index(
+                    horizons,
+                    default_idx,
+                    entropy_score,
+                    entropy_history,
+                    args,
+                )
+                bucket_idx = max(bucket_idx, low_entropy_target_idx)
                 reasons.append("entropy_low")
             elif entropy_score >= entropy_high:
                 entropy_decision = -1
-                bucket_idx = max(bucket_idx - 1, 0)
+                bucket_idx = default_idx
                 reasons.append("entropy_high")
             else:
+                bucket_idx = min(bucket_idx, default_idx)
                 reasons.append("entropy_mid")
         else:
             reasons.append(f"entropy_{entropy_threshold_source}")
+
+    stage_guarded, stage_guard_reason = _stage_guard_info(metrics, args)
+    if _adaptive_uses_entropy(args) and stage_guarded:
+        bucket_idx = min(bucket_idx, default_idx)
+        reasons.append(f"stage_guard:{stage_guard_reason}")
 
     horizon = horizons[bucket_idx]
     info = {
@@ -805,6 +887,9 @@ def _select_replan_horizon(
         "adaptive_entropy_high_threshold": entropy_high,
         "adaptive_entropy_threshold_source": entropy_threshold_source,
         "adaptive_entropy_decision": entropy_decision,
+        "adaptive_low_entropy_target_horizon": horizons[low_entropy_target_idx],
+        "adaptive_stage_guard": float(stage_guarded),
+        "adaptive_stage_guard_reason": stage_guard_reason,
     }
     return horizon, info
 
@@ -1062,6 +1147,8 @@ def _run_mode(
             adaptive_entropy_maxes = []
             adaptive_entropy_stds = []
             adaptive_entropy_decisions = []
+            adaptive_low_entropy_target_horizons = []
+            adaptive_stage_guards = []
             adaptive_replan_reasons = []
             full_calls = 0
             override_calls = 0
@@ -1125,6 +1212,8 @@ def _run_mode(
                         ("adaptive_entropy_max", adaptive_entropy_maxes),
                         ("adaptive_entropy_std", adaptive_entropy_stds),
                         ("adaptive_entropy_decision", adaptive_entropy_decisions),
+                        ("adaptive_low_entropy_target_horizon", adaptive_low_entropy_target_horizons),
+                        ("adaptive_stage_guard", adaptive_stage_guards),
                     ):
                         value = float(replan_info.get(key, float("nan")))
                         if np.isfinite(value):
@@ -1221,6 +1310,8 @@ def _run_mode(
                 "avg_adaptive_entropy_max": _mean(adaptive_entropy_maxes),
                 "avg_adaptive_entropy_std": _mean(adaptive_entropy_stds),
                 "avg_adaptive_entropy_decision": _mean(adaptive_entropy_decisions),
+                "avg_adaptive_low_entropy_target_horizon": _mean(adaptive_low_entropy_target_horizons),
+                "avg_adaptive_stage_guard": _mean(adaptive_stage_guards),
                 "adaptive_replan_reasons": ";".join(adaptive_replan_reasons),
                 "num_replans": len(infer_wall_ms),
                 "total_policy_calls": total_policy_calls,
@@ -1301,6 +1392,8 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_adaptive_entropy_max",
         "avg_adaptive_entropy_std",
         "avg_adaptive_entropy_decision",
+        "avg_adaptive_low_entropy_target_horizon",
+        "avg_adaptive_stage_guard",
         "adaptive_replan_reasons",
         "num_replans",
         "total_policy_calls",
@@ -1355,6 +1448,8 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_max_replan_horizon",
         "avg_adaptive_entropy_score",
         "avg_adaptive_entropy_decision",
+        "avg_adaptive_low_entropy_target_horizon",
+        "avg_adaptive_stage_guard",
     ]
     per_task_rows = []
     task_keys = sorted(
@@ -1443,6 +1538,12 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 "avg_adaptive_entropy_decision": _mean(
                     [float(row["avg_adaptive_entropy_decision"]) for row in subset]
                 ),
+                "avg_adaptive_low_entropy_target_horizon": _mean(
+                    [float(row["avg_adaptive_low_entropy_target_horizon"]) for row in subset]
+                ),
+                "avg_adaptive_stage_guard": _mean(
+                    [float(row["avg_adaptive_stage_guard"]) for row in subset]
+                ),
             }
         )
     with per_task_path.open("w", newline="") as f:
@@ -1530,6 +1631,10 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "avg_adaptive_entropy_decision": _mean(
                 [float(row["avg_adaptive_entropy_decision"]) for row in subset]
             ),
+            "avg_adaptive_low_entropy_target_horizon": _mean(
+                [float(row["avg_adaptive_low_entropy_target_horizon"]) for row in subset]
+            ),
+            "avg_adaptive_stage_guard": _mean([float(row["avg_adaptive_stage_guard"]) for row in subset]),
             "avg_num_replans_per_episode": _mean([float(row["num_replans"]) for row in subset]),
             "avg_total_policy_calls_per_episode": _mean([float(row["total_policy_calls"]) for row in subset]),
             "avg_deployable_policy_calls_per_episode": _mean(
@@ -1565,6 +1670,9 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "adaptive_replan_jerk_low": args.adaptive_replan_jerk_low,
             "adaptive_replan_jerk_high": args.adaptive_replan_jerk_high,
             "adaptive_replan_gripper_change_threshold": args.adaptive_replan_gripper_change_threshold,
+            "adaptive_replan_stage_guard": not args.disable_adaptive_replan_stage_guard,
+            "adaptive_replan_action_delta_high": args.adaptive_replan_action_delta_high,
+            "adaptive_replan_stage_guard_jerk_high": args.adaptive_replan_stage_guard_jerk_high,
             "action_cot_denoising_steps": args.action_cot_denoising_steps,
             "action_cot_dynamic_denoising_steps": args.action_cot_dynamic_denoising_steps,
             "entropy_samples": args.entropy_samples,

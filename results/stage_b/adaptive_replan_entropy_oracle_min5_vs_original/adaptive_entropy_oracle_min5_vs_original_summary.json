@@ -1,0 +1,10 @@
+{
+  "comparison_note": "Baseline is clean original per-task baseline excluding task0 trial0 warmup outlier. Adaptive is entropy oracle min5 run with candidate horizons >=5 from user pasted per-task summary.",
+  "policy_total_speedup_positive_tasks": 8,
+  "server_total_speedup_positive_tasks": 8,
+  "calls_reduction_positive_tasks": 8,
+  "success_drop_within_3pp_tasks": 7,
+  "policy_speedup_and_success_drop_within_3pp_tasks": 7,
+  "server_speedup_and_success_drop_within_3pp_tasks": 7,
+  "per_task_csv": "/Users/kongyue/LightAcotVLA/results/stage_b/adaptive_replan_entropy_oracle_min5_vs_original/adaptive_entropy_oracle_min5_vs_original_per_task.csv"
+}
