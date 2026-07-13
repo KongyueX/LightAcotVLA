@@ -8,8 +8,8 @@ next policy call.
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Mapping
+import dataclasses
 
 import flax.nnx as nnx
 import jax
@@ -90,8 +90,7 @@ class ExecutionHorizonPredictor(nnx.Module):
         # scalar overlap/consistency channels.
         self.action_proj = nnx.Linear(4 * config.action_dim + 2, h, rngs=rngs, param_dtype=param_dtype)
         self.temporal_layers = [
-            nnx.Linear(3 * h, h, rngs=rngs, param_dtype=param_dtype)
-            for _ in range(config.temporal_layers)
+            nnx.Linear(3 * h, h, rngs=rngs, param_dtype=param_dtype) for _ in range(config.temporal_layers)
         ]
         self.summary_proj = nnx.Linear(2 * h, h, rngs=rngs, param_dtype=param_dtype)
 
@@ -108,9 +107,9 @@ class ExecutionHorizonPredictor(nnx.Module):
         self.remaining_steps_head = nnx.Linear(h, config.action_horizon, rngs=rngs, param_dtype=param_dtype)
 
     def _align_coarse(self, coarse_actions: jax.Array) -> jax.Array:
-        indices = jnp.rint(
-            jnp.linspace(0, self.config.coarse_horizon - 1, self.config.action_horizon)
-        ).astype(jnp.int32)
+        indices = jnp.rint(jnp.linspace(0, self.config.coarse_horizon - 1, self.config.action_horizon)).astype(
+            jnp.int32
+        )
         return jnp.take(coarse_actions, indices, axis=1)
 
     def _previous_overlap(
@@ -147,15 +146,9 @@ class ExecutionHorizonPredictor(nnx.Module):
         cfg = self.config
         prefix_feature = jnp.asarray(prefix_feature, dtype=jnp.float32)
         state = jnp.asarray(state, dtype=jnp.float32)[..., : cfg.state_dim]
-        coarse_actions = jnp.asarray(coarse_actions, dtype=jnp.float32)[
-            ..., : cfg.coarse_horizon, : cfg.action_dim
-        ]
-        final_actions = jnp.asarray(final_actions, dtype=jnp.float32)[
-            ..., : cfg.action_horizon, : cfg.action_dim
-        ]
-        previous_actions = jnp.asarray(previous_actions, dtype=jnp.float32)[
-            ..., : cfg.action_horizon, : cfg.action_dim
-        ]
+        coarse_actions = jnp.asarray(coarse_actions, dtype=jnp.float32)[..., : cfg.coarse_horizon, : cfg.action_dim]
+        final_actions = jnp.asarray(final_actions, dtype=jnp.float32)[..., : cfg.action_horizon, : cfg.action_dim]
+        previous_actions = jnp.asarray(previous_actions, dtype=jnp.float32)[..., : cfg.action_horizon, : cfg.action_dim]
 
         aligned_coarse = self._align_coarse(coarse_actions)
         aligned_previous, overlap_valid, consistency = self._previous_overlap(
@@ -224,12 +217,8 @@ def execution_horizon_loss(
 
     branch_mask = jnp.asarray(labels.get("branch_valid", jnp.ones_like(labels["branch_success"])))
     risk_mask = jnp.asarray(labels.get("risk_valid", jnp.ones_like(labels["final_risk"])))
-    success_loss = _masked_mean(
-        _bce_with_logits(predictions["success_logits"], labels["branch_success"]), branch_mask
-    )
-    timeout_loss = _masked_mean(
-        _bce_with_logits(predictions["timeout_logits"], labels["branch_timeout"]), branch_mask
-    )
+    success_loss = _masked_mean(_bce_with_logits(predictions["success_logits"], labels["branch_success"]), branch_mask)
+    timeout_loss = _masked_mean(_bce_with_logits(predictions["timeout_logits"], labels["branch_timeout"]), branch_mask)
     calls_loss = _masked_mean(
         _huber((predictions["remaining_calls"] - labels["remaining_calls"]) / remaining_calls_scale),
         branch_mask,
@@ -239,9 +228,7 @@ def execution_horizon_loss(
         branch_mask,
     )
     final_risk_loss = _masked_mean(_huber(predictions["final_risk"] - labels["final_risk"]), risk_mask)
-    cot_risk_loss = _masked_mean(
-        _huber(predictions["action_cot_risk"] - labels["action_cot_risk"]), risk_mask
-    )
+    cot_risk_loss = _masked_mean(_huber(predictions["action_cot_risk"] - labels["action_cot_risk"]), risk_mask)
     fused_risk_loss = _masked_mean(_huber(predictions["fused_risk"] - labels["fused_risk"]), risk_mask)
     event_loss = _masked_mean(_bce_with_logits(predictions["event_logits"], labels["event_mask"]), risk_mask)
 
@@ -250,9 +237,7 @@ def execution_horizon_loss(
         -jnp.take_along_axis(jax.nn.log_softmax(predictions["raw_h_logits"], axis=-1), (raw_h - 1)[:, None], axis=-1)
     )
     ordinal_targets = raw_h[:, None] > jnp.arange(1, 10, dtype=jnp.int32)[None, :]
-    raw_h_ordinal_loss = jnp.mean(
-        _bce_with_logits(predictions["raw_h_ordinal_logits"], ordinal_targets)
-    )
+    raw_h_ordinal_loss = jnp.mean(_bce_with_logits(predictions["raw_h_ordinal_logits"], ordinal_targets))
 
     metrics = {
         "success_bce": success_loss,

@@ -234,9 +234,7 @@ def main(args: Args) -> None:
         timeout_prediction = jax.nn.sigmoid(predictions["timeout_logits"]) >= 0.5
         metrics["success_accuracy"] = jnp.mean(success_prediction == batch["branch_success"])
         metrics["timeout_accuracy"] = jnp.mean(timeout_prediction == batch["branch_timeout"])
-        metrics["raw_h_accuracy"] = jnp.mean(
-            (jnp.argmax(predictions["raw_h_logits"], axis=-1) + 1) == batch["raw_h"]
-        )
+        metrics["raw_h_accuracy"] = jnp.mean((jnp.argmax(predictions["raw_h_logits"], axis=-1) + 1) == batch["raw_h"])
         return metrics
 
     rng = np.random.default_rng(args.seed)
@@ -267,8 +265,7 @@ def main(args: Args) -> None:
                     "elapsed_seconds": time.monotonic() - start_time,
                     **last_train_metrics,
                     **{
-                        f"validation/{name}": float(value)
-                        for name, value in jax.device_get(validation_metrics).items()
+                        f"validation/{name}": float(value) for name, value in jax.device_get(validation_metrics).items()
                     },
                 }
                 metrics_file.write(json.dumps(record, sort_keys=True) + "\n")

@@ -12,11 +12,11 @@ import pathlib
 import time
 from typing import Any
 
+import eval_libero_action_cot_pruning as libero_eval
 import imageio
 import numpy as np
 from openpi_client import websocket_client_policy as websocket_policy
 
-import eval_libero_action_cot_pruning as libero_eval
 from openpi.execution_horizon import dataset as horizon_dataset
 from openpi.execution_horizon import v2
 
@@ -47,12 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-roots-per-episode", type=int, default=0)
     parser.add_argument("--records-per-shard", type=int, default=1024)
     parser.add_argument("--source-iteration", type=int, default=0)
-    parser.add_argument(
-        "--continuation-policy", choices=("fixed_h9", "current_student"), default="fixed_h9"
-    )
-    parser.add_argument(
-        "--student-mode", choices=("v2_distilled", "v2_value_refined"), default="v2_value_refined"
-    )
+    parser.add_argument("--continuation-policy", choices=("fixed_h9", "current_student"), default="fixed_h9")
+    parser.add_argument("--student-mode", choices=("v2_distilled", "v2_value_refined"), default="v2_value_refined")
     parser.add_argument("--student-candidates", nargs="+", type=int, default=list(range(1, 11)))
     parser.add_argument("--v2-min-horizon", type=int, default=3)
     parser.add_argument("--v2-risk-threshold", type=float, default=1.5)
@@ -319,9 +315,7 @@ def _run_branch(
             break
 
         continuation_seed = root_seed + 100_000 + continuation_index
-        policy_input = libero_eval._observation_to_policy_input(
-            observation, task_description, args.resize_size
-        )
+        policy_input = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
         progress = np.clip((root_step + steps) / max(episode_step_limit, 1), 0.0, 1.0)
         use_student = args.continuation_policy == "current_student"
         result = _policy_request(
@@ -421,8 +415,8 @@ def main(args: argparse.Namespace) -> None:
     )
     task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
     max_steps = libero_eval._max_steps(args.task_suite_name)
-    task_end = task_suite.n_tasks if args.max_tasks is None else min(
-        task_suite.n_tasks, args.task_start + args.max_tasks
+    task_end = (
+        task_suite.n_tasks if args.max_tasks is None else min(task_suite.n_tasks, args.task_start + args.max_tasks)
     )
     risk_config = v2.V2RiskConfig(
         risk_threshold=args.v2_risk_threshold,
@@ -451,9 +445,7 @@ def main(args: argparse.Namespace) -> None:
             task = task_suite.get_task(task_id)
             initial_states = task_suite.get_task_init_states(task_id)
             for episode_id in range(args.num_trials_per_task):
-                env, task_description = libero_eval._get_libero_env(
-                    task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed
-                )
+                env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
                 try:
                     env.reset()
                     observation = env.set_init_state(initial_states[episode_id % len(initial_states)])
@@ -473,9 +465,7 @@ def main(args: argparse.Namespace) -> None:
                     previous_actions_raw: np.ndarray | None = None
                     previous_actions_normalized = np.zeros((10, 32), dtype=np.float32)
                     previous_h = 10
-                    budget_state = v2.EpisodeBudgetState(
-                        balance=min(args.v2_initial_budget, args.v2_budget_capacity)
-                    )
+                    budget_state = v2.EpisodeBudgetState(balance=min(args.v2_initial_budget, args.v2_budget_capacity))
                     while not done and step < episode_step_limit:
                         collect_root = decision_index % args.root_stride_calls == 0
                         if args.max_roots_per_episode and roots_this_episode >= args.max_roots_per_episode:
@@ -528,8 +518,7 @@ def main(args: argparse.Namespace) -> None:
                                 if timeout and frames and debug_videos < args.debug_failure_videos:
                                     debug_dir.mkdir(parents=True, exist_ok=True)
                                     imageio.mimwrite(
-                                        debug_dir
-                                        / f"task{task_id}_ep{episode_id}_step{step}_h{forced_horizon}.mp4",
+                                        debug_dir / f"task{task_id}_ep{episode_id}_step{step}_h{forced_horizon}.mp4",
                                         frames,
                                         fps=10,
                                     )
@@ -580,9 +569,9 @@ def main(args: argparse.Namespace) -> None:
                                 result["execution_horizon_final_actions_normalized"], dtype=np.float32
                             )
                         elif "mc_actions_normalized" in result:
-                            previous_actions_normalized = np.asarray(
-                                result["mc_actions_normalized"], dtype=np.float32
-                            )[0]
+                            previous_actions_normalized = np.asarray(result["mc_actions_normalized"], dtype=np.float32)[
+                                0
+                            ]
                         else:
                             previous_actions_normalized = np.zeros((10, 32), dtype=np.float32)
                         previous_actions_raw = primary_actions
@@ -609,9 +598,7 @@ def main(args: argparse.Namespace) -> None:
         "num_records": total_records,
         "teacher_samples": args.teacher_samples,
         "branch_success_count_by_h": branch_successes.tolist(),
-        "branch_success_rate_by_h": (
-            branch_successes / max(total_records, 1)
-        ).tolist(),
+        "branch_success_rate_by_h": (branch_successes / max(total_records, 1)).tolist(),
         "debug_failure_videos": debug_videos,
         "elapsed_seconds": time.monotonic() - started,
         "metadata": metadata,

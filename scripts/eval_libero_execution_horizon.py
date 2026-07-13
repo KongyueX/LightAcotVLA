@@ -11,12 +11,11 @@ import pathlib
 import time
 from typing import Any
 
+import eval_libero_action_cot_pruning as libero_eval
 import numpy as np
 from openpi_client import websocket_client_policy as websocket_policy
 
-import eval_libero_action_cot_pruning as libero_eval
 from openpi.execution_horizon import v2
-
 
 MODES = (
     "original",
@@ -233,9 +232,7 @@ def _warmup(
         return
     task = task_suite.get_task(args.task_start)
     states = task_suite.get_task_init_states(args.task_start)
-    env, task_description = libero_eval._get_libero_env(
-        task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed
-    )
+    env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
     try:
         env.reset()
         observation = env.set_init_state(states[args.initial_state_offset % len(states)])
@@ -243,9 +240,7 @@ def _warmup(
             observation, _, done, _ = env.step(libero_eval.LIBERO_DUMMY_ACTION)
             if done:
                 break
-        element = libero_eval._observation_to_policy_input(
-            observation, task_description, args.resize_size
-        )
+        element = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
         for mode in args.modes:
             for repeat in range(args.warmup_requests):
                 _request(
@@ -275,9 +270,7 @@ def _run_episode(
     task = task_suite.get_task(task_id)
     states = task_suite.get_task_init_states(task_id)
     state_id = (args.initial_state_offset + episode) % len(states)
-    env, task_description = libero_eval._get_libero_env(
-        task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed
-    )
+    env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
     timings: list[dict[str, float]] = []
     decisions: list[dict[str, Any]] = []
     horizons: list[int] = []
@@ -287,9 +280,7 @@ def _run_episode(
     success = False
     previous_actions: np.ndarray | None = None
     previous_horizon = 10
-    budget_state = v2.EpisodeBudgetState(
-        balance=min(args.v2_initial_budget, args.v2_budget_capacity)
-    )
+    budget_state = v2.EpisodeBudgetState(balance=min(args.v2_initial_budget, args.v2_budget_capacity))
     max_steps = libero_eval._max_steps(args.task_suite_name)
     try:
         env.reset()
@@ -306,9 +297,7 @@ def _run_episode(
                 break
 
         while not success and step < episode_step_limit:
-            element = libero_eval._observation_to_policy_input(
-                observation, task_description, args.resize_size
-            )
+            element = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
             request_seed = args.seed + task_id * 1_000_000 + episode * 10_000 + step
             result, timing = _request(
                 client,
@@ -325,9 +314,7 @@ def _run_episode(
             sampled_chunks += args.teacher_samples if mode == "exact_batched_mc_v2" else 1
             timings.append(timing)
             action_chunk = np.asarray(result["actions"], dtype=np.float32)
-            horizon, selector_info = _select_horizon(
-                mode, result, args=args, budget_state=budget_state
-            )
+            horizon, selector_info = _select_horizon(mode, result, args=args, budget_state=budget_state)
             horizon = min(horizon, len(action_chunk), episode_step_limit - step)
             if horizon <= 0:
                 break
@@ -393,9 +380,7 @@ def _run_episode(
 
 
 def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None) -> dict[str, Any]:
-    subset = [
-        row for row in rows if row["mode"] == mode and (task_id is None or row["task_id"] == task_id)
-    ]
+    subset = [row for row in rows if row["mode"] == mode and (task_id is None or row["task_id"] == task_id)]
     all_horizons: list[int] = []
     for row in subset:
         histogram = json.loads(row["h_distribution_json"])
@@ -470,15 +455,10 @@ def main(args: argparse.Namespace) -> None:
                 _write_csv(output_dir / "rollout_rows.csv", rows)
                 _write_csv(output_dir / "decisions.csv", decisions)
 
-    per_task = [
-        _aggregate(rows, mode, task_id)
-        for mode in args.modes
-        for task_id in range(args.task_start, task_end)
-    ]
+    per_task = [_aggregate(rows, mode, task_id) for mode in args.modes for task_id in range(args.task_start, task_end)]
     overall = {mode: _aggregate(rows, mode) for mode in args.modes}
     flat_per_task = [
-        {**item, "h_distribution": json.dumps(item["h_distribution"], sort_keys=True)}
-        for item in per_task
+        {**item, "h_distribution": json.dumps(item["h_distribution"], sort_keys=True)} for item in per_task
     ]
     _write_csv(output_dir / "per_task_summary.csv", flat_per_task)
     summary = {
@@ -501,9 +481,7 @@ def main(args: argparse.Namespace) -> None:
             "per_task_summary": str(output_dir / "per_task_summary.csv"),
         },
     }
-    (output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n"
-    )
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n")
 
 
 if __name__ == "__main__":

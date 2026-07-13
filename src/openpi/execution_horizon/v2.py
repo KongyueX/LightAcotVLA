@@ -95,9 +95,7 @@ def _aac_grouped_frame_entropy(samples: np.ndarray, config: V2RiskConfig) -> np.
         return _diagonal_frame_entropy(samples, config.entropy_eps)
     translation = _gaussian_group_entropy(samples[..., :3], config.covariance_shrinkage)
     rotation = _gaussian_group_entropy(samples[..., 3:6], config.covariance_shrinkage)
-    probability = np.clip(
-        np.mean(samples[..., 6] > 0, axis=0), config.entropy_eps, 1.0 - config.entropy_eps
-    )
+    probability = np.clip(np.mean(samples[..., 6] > 0, axis=0), config.entropy_eps, 1.0 - config.entropy_eps)
     gripper = -(probability * np.log(probability) + (1.0 - probability) * np.log(1.0 - probability))
     return translation + rotation + gripper
 
@@ -115,9 +113,7 @@ def final_component_entropy(samples: np.ndarray, config: V2RiskConfig) -> dict[s
     translation = _diagonal_frame_entropy(samples[..., :3], config.entropy_eps)
     rotation = _diagonal_frame_entropy(samples[..., 3:6], config.entropy_eps)
     if samples.shape[-1] >= 7:
-        probability = np.clip(
-            np.mean(samples[..., 6] > 0, axis=0), config.entropy_eps, 1.0 - config.entropy_eps
-        )
+        probability = np.clip(np.mean(samples[..., 6] > 0, axis=0), config.entropy_eps, 1.0 - config.entropy_eps)
         gripper = -(probability * np.log(probability) + (1.0 - probability) * np.log(1.0 - probability))
     else:
         gripper = np.zeros((time_len,), dtype=np.float64)
@@ -172,9 +168,9 @@ def risk_targets_from_normalized_mc(
             robust_positive_risk(components["gripper"], config.entropy_eps),
         ]
     )
-    fused_risk = (
-        config.final_weight * component_risk + config.action_cot_weight * action_cot_risk
-    ) / (config.final_weight + config.action_cot_weight)
+    fused_risk = (config.final_weight * component_risk + config.action_cot_weight * action_cot_risk) / (
+        config.final_weight + config.action_cot_weight
+    )
     event_mask = fused_risk >= config.risk_threshold
     if config.final_risk_threshold is not None:
         event_mask |= final_risk >= config.final_risk_threshold
@@ -241,12 +237,10 @@ def value_refined_raw_horizon(
     candidates = np.asarray(sorted(set(config.candidates)), dtype=np.int64)
     candidates = candidates[(candidates >= 1) & (candidates <= min(10, fused_risk.size))]
     entropy_cap = min(10, entropy_raw_horizon + max(config.risk_slack_steps, 0))
-    risk_safe = np.asarray(
-        [np.max(fused_risk[:horizon]) < config.risk_threshold for horizon in candidates], dtype=bool
+    risk_safe = np.asarray([np.max(fused_risk[:horizon]) < config.risk_threshold for horizon in candidates], dtype=bool)
+    value_safe = (success_probability[candidates - 1] >= config.minimum_success_probability) & (
+        timeout_probability[candidates - 1] <= config.maximum_timeout_probability
     )
-    value_safe = (
-        success_probability[candidates - 1] >= config.minimum_success_probability
-    ) & (timeout_probability[candidates - 1] <= config.maximum_timeout_probability)
     eligible = (candidates <= entropy_cap) & risk_safe & value_safe
     if np.any(eligible):
         selected = int(candidates[np.flatnonzero(eligible)[-1]])
@@ -278,9 +272,7 @@ def apply_episode_budget(
     budget_limited = False
     if required_credit > balance_before + 1e-9:
         affordable_floor = target - balance_before
-        affordable = [
-            horizon for horizon in horizons if horizon >= raw_horizon and horizon + 1e-9 >= affordable_floor
-        ]
+        affordable = [horizon for horizon in horizons if horizon >= raw_horizon and horizon + 1e-9 >= affordable_floor]
         final_horizon = affordable[0] if affordable else horizons[-1]
         budget_limited = final_horizon > raw_horizon
     balance_after = float(np.clip(balance_before + final_horizon - target, 0.0, config.capacity))

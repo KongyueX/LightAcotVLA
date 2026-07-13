@@ -9,10 +9,9 @@ import pathlib
 import statistics
 import time
 
+import eval_libero_action_cot_pruning as libero_eval
 import numpy as np
 from openpi_client import websocket_client_policy as websocket_policy
-
-import eval_libero_action_cot_pruning as libero_eval
 
 
 def _mean(values: list[float]) -> float:
@@ -60,9 +59,7 @@ def main(args: argparse.Namespace) -> None:
     task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
     task = task_suite.get_task(args.task_id)
     states = task_suite.get_task_init_states(args.task_id)
-    env, task_description = libero_eval._get_libero_env(
-        task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed
-    )
+    env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
     try:
         env.reset()
         observation = env.set_init_state(states[args.episode % len(states)])
@@ -70,9 +67,7 @@ def main(args: argparse.Namespace) -> None:
             observation, _, done, _ = env.step(libero_eval.LIBERO_DUMMY_ACTION)
             if done:
                 break
-        element = libero_eval._observation_to_policy_input(
-            observation, task_description, args.resize_size
-        )
+        element = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
     finally:
         libero_eval._safe_close_env(env)
 
@@ -85,9 +80,7 @@ def main(args: argparse.Namespace) -> None:
                 "policy_seed": np.asarray(args.seed + repeat * 1000, dtype=np.int64),
                 "profile_policy_timing": np.asarray(1, dtype=np.bool_),
                 "batched_mc_samples": np.asarray(sample_count, dtype=np.int32),
-                "action_cot_denoising_steps": np.asarray(
-                    args.action_cot_denoising_steps, dtype=np.int32
-                ),
+                "action_cot_denoising_steps": np.asarray(args.action_cot_denoising_steps, dtype=np.int32),
             }
             result, wall_ms = _infer(client, request)
             if repeat < args.warmup:
@@ -100,9 +93,7 @@ def main(args: argparse.Namespace) -> None:
                     "policy_ms": float(policy_timing.get("infer_ms", np.nan)),
                     "server_ms": float(server_timing.get("infer_ms", np.nan)),
                     "batched_teacher_ms": float(policy_timing.get("batched_mc_teacher_ms", np.nan)),
-                    "predictor_ms": float(
-                        policy_timing.get("execution_horizon_predictor_ms", np.nan)
-                    ),
+                    "predictor_ms": float(policy_timing.get("execution_horizon_predictor_ms", np.nan)),
                 }
             )
         row = {
@@ -123,13 +114,9 @@ def main(args: argparse.Namespace) -> None:
                 for sample_index in range(sample_count):
                     request = {
                         **element,
-                        "policy_seed": np.asarray(
-                            args.seed + repeat * 1000 + sample_index, dtype=np.int64
-                        ),
+                        "policy_seed": np.asarray(args.seed + repeat * 1000 + sample_index, dtype=np.int64),
                         "profile_policy_timing": np.asarray(1, dtype=np.bool_),
-                        "action_cot_denoising_steps": np.asarray(
-                            args.action_cot_denoising_steps, dtype=np.int32
-                        ),
+                        "action_cot_denoising_steps": np.asarray(args.action_cot_denoising_steps, dtype=np.int32),
                     }
                     result, wall_ms = _infer(client, request)
                     wall_sum += wall_ms
