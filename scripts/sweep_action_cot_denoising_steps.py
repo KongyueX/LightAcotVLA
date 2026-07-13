@@ -78,7 +78,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--adaptive_h_selector",
         "--adaptive-h-selector",
-        choices=("legacy", "final_aac", "cot_aac", "guarded_cot_aac"),
+        choices=("legacy", "final_aac", "cot_aac", "guarded_cot_aac", "budgeted_event_v2"),
         default="guarded_cot_aac",
     )
     parser.add_argument(
@@ -94,6 +94,35 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--adaptive_h_growth_limit", "--adaptive-h-growth-limit", type=int, default=1)
     parser.add_argument("--adaptive_h_low_risk_required", "--adaptive-h-low-risk-required", type=int, default=2)
     parser.add_argument("--adaptive_h_guard_cooldown", "--adaptive-h-guard-cooldown", type=int, default=2)
+    parser.add_argument("--adaptive_h_v2_min_horizon", "--adaptive-h-v2-min-horizon", type=int, default=3)
+    parser.add_argument(
+        "--adaptive_h_v2_target_avg_horizon",
+        "--adaptive-h-v2-target-avg-horizon",
+        type=float,
+        default=9.0,
+    )
+    parser.add_argument("--adaptive_h_v2_initial_budget", "--adaptive-h-v2-initial-budget", type=float, default=6.0)
+    parser.add_argument(
+        "--adaptive_h_v2_budget_capacity",
+        "--adaptive-h-v2-budget-capacity",
+        type=float,
+        default=12.0,
+    )
+    parser.add_argument("--adaptive_h_v2_risk_threshold", "--adaptive-h-v2-risk-threshold", type=float, default=1.5)
+    parser.add_argument("--adaptive_h_v2_final_weight", "--adaptive-h-v2-final-weight", type=float, default=0.5)
+    parser.add_argument("--adaptive_h_v2_cot_weight", "--adaptive-h-v2-cot-weight", type=float, default=0.5)
+    parser.add_argument(
+        "--adaptive_h_v2_final_entropy_threshold",
+        "--adaptive-h-v2-final-entropy-threshold",
+        type=float,
+        default=None,
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_cot_entropy_threshold",
+        "--adaptive-h-v2-cot-entropy-threshold",
+        type=float,
+        default=None,
+    )
     parser.add_argument(
         "--adaptive_replan_entropy_mode",
         "--adaptive-replan-entropy-mode",
@@ -148,6 +177,20 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--adaptive_h_low_risk_required must be positive.")
     if args.adaptive_h_guard_cooldown < 0:
         raise ValueError("--adaptive_h_guard_cooldown must be non-negative.")
+    if args.adaptive_h_v2_min_horizon <= 0:
+        raise ValueError("--adaptive_h_v2_min_horizon must be positive.")
+    if args.adaptive_h_v2_target_avg_horizon <= 0:
+        raise ValueError("--adaptive_h_v2_target_avg_horizon must be positive.")
+    if args.adaptive_h_v2_initial_budget < 0 or args.adaptive_h_v2_budget_capacity <= 0:
+        raise ValueError("V2 budget values must be non-negative with positive capacity.")
+    if args.adaptive_h_v2_initial_budget > args.adaptive_h_v2_budget_capacity:
+        raise ValueError("--adaptive_h_v2_initial_budget must not exceed capacity.")
+    if args.adaptive_h_v2_risk_threshold < 0:
+        raise ValueError("--adaptive_h_v2_risk_threshold must be non-negative.")
+    if args.adaptive_h_v2_final_weight < 0 or args.adaptive_h_v2_cot_weight < 0:
+        raise ValueError("V2 entropy weights must be non-negative.")
+    if args.adaptive_h_v2_final_weight + args.adaptive_h_v2_cot_weight <= 0:
+        raise ValueError("At least one V2 entropy weight must be positive.")
     if args.mode in ("speed", "both"):
         if args.entropy_dir is None:
             raise ValueError("--entropy_dir is required for --mode speed or --mode both.")
@@ -258,6 +301,15 @@ def _closed_loop_command(args: argparse.Namespace, step: int, run_dir: pathlib.P
         command.extend(["--adaptive_h_growth_limit", str(args.adaptive_h_growth_limit)])
         command.extend(["--adaptive_h_low_risk_required", str(args.adaptive_h_low_risk_required)])
         command.extend(["--adaptive_h_guard_cooldown", str(args.adaptive_h_guard_cooldown)])
+        command.extend(["--adaptive_h_v2_min_horizon", str(args.adaptive_h_v2_min_horizon)])
+        command.extend(
+            ["--adaptive_h_v2_target_avg_horizon", str(args.adaptive_h_v2_target_avg_horizon)]
+        )
+        command.extend(["--adaptive_h_v2_initial_budget", str(args.adaptive_h_v2_initial_budget)])
+        command.extend(["--adaptive_h_v2_budget_capacity", str(args.adaptive_h_v2_budget_capacity)])
+        command.extend(["--adaptive_h_v2_risk_threshold", str(args.adaptive_h_v2_risk_threshold)])
+        command.extend(["--adaptive_h_v2_final_weight", str(args.adaptive_h_v2_final_weight)])
+        command.extend(["--adaptive_h_v2_cot_weight", str(args.adaptive_h_v2_cot_weight)])
         command.extend(["--adaptive_replan_entropy_mode", args.adaptive_replan_entropy_mode])
         command.extend(["--adaptive_replan_entropy_samples", str(args.adaptive_replan_entropy_samples)])
         command.extend(["--adaptive_replan_entropy_low_quantile", str(args.adaptive_replan_entropy_low_quantile)])
@@ -278,6 +330,14 @@ def _closed_loop_command(args: argparse.Namespace, step: int, run_dir: pathlib.P
             command.extend(["--adaptive_replan_entropy_low", str(args.adaptive_replan_entropy_low)])
         if args.adaptive_replan_entropy_high is not None:
             command.extend(["--adaptive_replan_entropy_high", str(args.adaptive_replan_entropy_high)])
+        if args.adaptive_h_v2_final_entropy_threshold is not None:
+            command.extend(
+                ["--adaptive_h_v2_final_entropy_threshold", str(args.adaptive_h_v2_final_entropy_threshold)]
+            )
+        if args.adaptive_h_v2_cot_entropy_threshold is not None:
+            command.extend(
+                ["--adaptive_h_v2_cot_entropy_threshold", str(args.adaptive_h_v2_cot_entropy_threshold)]
+            )
     return command
 
 

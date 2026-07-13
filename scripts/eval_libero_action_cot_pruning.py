@@ -62,6 +62,11 @@ class AdaptiveHState:
     previous_horizon: int
     low_risk_streak: int = 0
     guard_cooldown: int = 0
+    budget_balance: float = 0.0
+    budget_horizon_sum: float = 0.0
+    budget_decisions: int = 0
+    budget_interventions: int = 0
+    budget_limited_decisions: int = 0
 
 
 def _ensure_libero_import_path() -> None:
@@ -129,19 +134,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=[5, 6, 7, 8, 9, 10],
         help=(
-            "Candidate execution horizons H in environment/control steps. For entropy-based adaptive replanning, "
-            "horizons below --replan_steps are ignored so entropy can only keep or lengthen the baseline horizon."
+            "Candidate execution horizons H in environment/control steps. Legacy entropy selectors ignore values "
+            "below --replan_steps; budgeted_event_v2 fills every integer horizon from "
+            "--adaptive_h_v2_min_horizon through the configured maximum."
         ),
     )
     parser.add_argument(
         "--adaptive_h_selector",
         "--adaptive-h-selector",
-        choices=("legacy", "final_aac", "cot_aac", "guarded_cot_aac"),
+        choices=("legacy", "final_aac", "cot_aac", "guarded_cot_aac", "budgeted_event_v2"),
         default="guarded_cot_aac",
         help=(
             "Execution-horizon selector used by entropy-based adaptive replanning. final_aac uses final-action "
             "MC entropy, cot_aac uses time-aligned Action-CoT MC entropy, guarded_cot_aac adds stage guards and "
-            "hysteresis, and legacy retains the previous global segment-entropy mapping."
+            "hysteresis, budgeted_event_v2 fuses per-timestep final/Action-CoT risk and permits sparse short-H "
+            "interventions under an episode horizon budget, and legacy retains the previous mapping."
         ),
     )
     parser.add_argument(
@@ -202,6 +209,72 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=2,
         help="Number of subsequent replan decisions held at the baseline horizon after a stage guard fires.",
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_min_horizon",
+        "--adaptive-h-v2-min-horizon",
+        type=int,
+        default=3,
+        help="Minimum execution horizon allowed for a budgeted_event_v2 risk intervention.",
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_target_avg_horizon",
+        "--adaptive-h-v2-target-avg-horizon",
+        type=float,
+        default=9.0,
+        help=(
+            "Target episode-average execution horizon for budgeted_event_v2. Horizons above this target earn "
+            "budget credit and shorter horizons spend it."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_initial_budget",
+        "--adaptive-h-v2-initial-budget",
+        type=float,
+        default=6.0,
+        help="Initial horizon-step credit, allowing one early H=3 intervention when the target is H=9.",
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_budget_capacity",
+        "--adaptive-h-v2-budget-capacity",
+        type=float,
+        default=12.0,
+        help="Maximum horizon-step credit retained by the V2 episode budget controller.",
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_risk_threshold",
+        "--adaptive-h-v2-risk-threshold",
+        type=float,
+        default=1.5,
+        help="Threshold on the fused robust per-timestep risk curve that triggers a V2 event.",
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_final_weight",
+        "--adaptive-h-v2-final-weight",
+        type=float,
+        default=0.5,
+        help="Fusion weight for final-action entropy and component disagreement in budgeted_event_v2.",
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_cot_weight",
+        "--adaptive-h-v2-cot-weight",
+        type=float,
+        default=0.5,
+        help="Fusion weight for time-aligned Action-CoT entropy in budgeted_event_v2.",
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_final_entropy_threshold",
+        "--adaptive-h-v2-final-entropy-threshold",
+        type=float,
+        default=None,
+        help="Optional globally calibrated absolute final-action entropy event threshold.",
+    )
+    parser.add_argument(
+        "--adaptive_h_v2_cot_entropy_threshold",
+        "--adaptive-h-v2-cot-entropy-threshold",
+        type=float,
+        default=None,
+        help="Optional globally calibrated absolute time-aligned Action-CoT entropy event threshold.",
     )
     parser.add_argument(
         "--adaptive_replan_entropy_mode",
@@ -388,6 +461,32 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--adaptive_h_low_risk_required must be positive.")
     if args.adaptive_h_guard_cooldown < 0:
         raise ValueError("--adaptive_h_guard_cooldown must be non-negative.")
+    if args.adaptive_h_v2_min_horizon <= 0:
+        raise ValueError("--adaptive_h_v2_min_horizon must be positive.")
+    if args.adaptive_h_v2_target_avg_horizon <= 0:
+        raise ValueError("--adaptive_h_v2_target_avg_horizon must be positive.")
+    if args.adaptive_h_v2_initial_budget < 0:
+        raise ValueError("--adaptive_h_v2_initial_budget must be non-negative.")
+    if args.adaptive_h_v2_budget_capacity <= 0:
+        raise ValueError("--adaptive_h_v2_budget_capacity must be positive.")
+    if args.adaptive_h_v2_initial_budget > args.adaptive_h_v2_budget_capacity:
+        raise ValueError("--adaptive_h_v2_initial_budget must not exceed --adaptive_h_v2_budget_capacity.")
+    if args.adaptive_h_v2_risk_threshold < 0:
+        raise ValueError("--adaptive_h_v2_risk_threshold must be non-negative.")
+    if args.adaptive_h_v2_final_weight < 0 or args.adaptive_h_v2_cot_weight < 0:
+        raise ValueError("V2 entropy fusion weights must be non-negative.")
+    if args.adaptive_h_v2_final_weight + args.adaptive_h_v2_cot_weight <= 0:
+        raise ValueError("At least one V2 entropy fusion weight must be positive.")
+    if args.adaptive_h_selector == "budgeted_event_v2":
+        max_configured_horizon = max(args.adaptive_replan_horizons + [args.replan_steps])
+        if args.adaptive_h_v2_min_horizon > max_configured_horizon:
+            raise ValueError("--adaptive_h_v2_min_horizon exceeds every configured candidate horizon.")
+        if args.adaptive_h_v2_target_avg_horizon > max_configured_horizon:
+            raise ValueError("--adaptive_h_v2_target_avg_horizon exceeds the maximum configured horizon.")
+        if args.adaptive_replanning not in ("entropy", "action_entropy"):
+            raise ValueError("budgeted_event_v2 requires --adaptive_replanning entropy or action_entropy.")
+        if args.adaptive_replan_entropy_mode != "online_mc":
+            raise ValueError("budgeted_event_v2 requires --adaptive_replan_entropy_mode online_mc.")
     if not 0.0 <= args.adaptive_replan_entropy_low_quantile <= 1.0:
         raise ValueError("--adaptive_replan_entropy_low_quantile must be in [0, 1].")
     if not 0.0 <= args.adaptive_replan_entropy_high_quantile <= 1.0:
@@ -732,7 +831,10 @@ def _adaptive_uses_action(args: argparse.Namespace) -> bool:
 
 def _candidate_horizons(args: argparse.Namespace, action_len: int) -> list[int]:
     horizons = sorted(set(int(value) for value in args.adaptive_replan_horizons + [args.replan_steps]))
-    if _adaptive_uses_entropy(args):
+    if args.adaptive_h_selector == "budgeted_event_v2":
+        horizons = sorted(set(horizons + list(range(args.adaptive_h_v2_min_horizon, max(horizons) + 1))))
+        horizons = [value for value in horizons if value >= args.adaptive_h_v2_min_horizon]
+    elif _adaptive_uses_entropy(args):
         horizons = [value for value in horizons if value >= args.replan_steps]
     horizons = [value for value in horizons if value > 0 and value <= action_len]
     if horizons:
@@ -887,6 +989,47 @@ def _frame_entropy(samples: np.ndarray, args: argparse.Namespace) -> np.ndarray:
     return _diagonal_frame_entropy(samples, args.adaptive_h_entropy_eps)
 
 
+def _final_action_component_entropy(samples: np.ndarray, args: argparse.Namespace) -> dict[str, np.ndarray]:
+    samples = np.asarray(samples, dtype=np.float64)
+    time_len = samples.shape[1]
+    action_dim = samples.shape[-1]
+
+    translation_end = min(3, action_dim)
+    rotation_start = min(3, action_dim)
+    rotation_end = min(6, action_dim)
+    translation = (
+        _diagonal_frame_entropy(samples[..., :translation_end], args.adaptive_h_entropy_eps)
+        if translation_end > 0
+        else np.zeros((time_len,), dtype=np.float64)
+    )
+    rotation = (
+        _diagonal_frame_entropy(samples[..., rotation_start:rotation_end], args.adaptive_h_entropy_eps)
+        if rotation_end > rotation_start
+        else np.zeros((time_len,), dtype=np.float64)
+    )
+
+    gripper_indices = _gripper_action_indices(action_dim, args)
+    if gripper_indices.size:
+        gripper_closed = samples[..., gripper_indices] > 0
+        probability = np.clip(
+            np.mean(gripper_closed, axis=0),
+            args.adaptive_h_entropy_eps,
+            1.0 - args.adaptive_h_entropy_eps,
+        )
+        gripper = np.mean(
+            -(probability * np.log(probability) + (1.0 - probability) * np.log(1.0 - probability)),
+            axis=-1,
+        )
+    else:
+        gripper = np.zeros((time_len,), dtype=np.float64)
+
+    return {
+        "translation": translation,
+        "rotation": rotation,
+        "gripper": gripper,
+    }
+
+
 def _align_coarse_entropy_to_actions(
     coarse_entropy: np.ndarray,
     *,
@@ -928,6 +1071,7 @@ def _mc_entropy_info(
         preferred_key="actions",
     )
     final_frame_entropy = _frame_entropy(action_normalized, args)
+    final_components = _final_action_component_entropy(action_normalized, args)
     aligned_cot_entropy = _align_coarse_entropy_to_actions(
         coarse_frame_entropy,
         action_len=action_samples.shape[1],
@@ -943,6 +1087,9 @@ def _mc_entropy_info(
         "adaptive_cot_entropy_curve": aligned_cot_entropy.tolist(),
         "adaptive_final_entropy_curve": final_frame_entropy.tolist(),
         "adaptive_coarse_entropy_curve": coarse_frame_entropy.tolist(),
+        "adaptive_final_translation_entropy_curve": final_components["translation"].tolist(),
+        "adaptive_final_rotation_entropy_curve": final_components["rotation"].tolist(),
+        "adaptive_final_gripper_entropy_curve": final_components["gripper"].tolist(),
     }
 
 
@@ -1029,6 +1176,222 @@ def _aac_horizon_from_curve(
         "max_entropy_jump": max_jump,
         "entropy_jump_threshold": jump_threshold,
         "entropy_jump_significant": significant,
+    }
+
+
+def _robust_positive_risk(curve: np.ndarray, eps: float) -> np.ndarray:
+    values = np.asarray(curve, dtype=np.float64)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return np.zeros_like(values)
+
+    center = float(np.median(finite))
+    filled = np.where(np.isfinite(values), values, center)
+    mad_scale = 1.4826 * float(np.median(np.abs(finite - center)))
+    standard_scale = float(np.std(finite))
+    scale = max(mad_scale, standard_scale, eps)
+    return np.maximum((filled - center) / scale, 0.0)
+
+
+def _v2_risk_curve(
+    timing: dict[str, Any],
+    *,
+    action_len: int,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, int | None, str, dict[str, np.ndarray]]:
+    curve_keys = {
+        "final": "adaptive_final_entropy_curve",
+        "cot": "adaptive_cot_entropy_curve",
+        "translation": "adaptive_final_translation_entropy_curve",
+        "rotation": "adaptive_final_rotation_entropy_curve",
+        "gripper": "adaptive_final_gripper_entropy_curve",
+    }
+    curves = {
+        name: np.asarray(timing.get(key, []), dtype=np.float64)
+        for name, key in curve_keys.items()
+    }
+    missing = [name for name, curve in curves.items() if curve.size < action_len]
+    if missing:
+        raise ValueError(
+            "budgeted_event_v2 requires full per-timestep online-MC curves; "
+            f"missing or short curves: {', '.join(missing)}."
+        )
+    curves = {name: curve[:action_len] for name, curve in curves.items()}
+
+    component_risk = np.maximum.reduce(
+        [
+            _robust_positive_risk(curves["final"], args.adaptive_h_entropy_eps),
+            _robust_positive_risk(curves["translation"], args.adaptive_h_entropy_eps),
+            _robust_positive_risk(curves["rotation"], args.adaptive_h_entropy_eps),
+            _robust_positive_risk(curves["gripper"], args.adaptive_h_entropy_eps),
+        ]
+    )
+    cot_risk = _robust_positive_risk(curves["cot"], args.adaptive_h_entropy_eps)
+    weight_sum = args.adaptive_h_v2_final_weight + args.adaptive_h_v2_cot_weight
+    fused_risk = (
+        args.adaptive_h_v2_final_weight * component_risk
+        + args.adaptive_h_v2_cot_weight * cot_risk
+    ) / weight_sum
+
+    robust_event = fused_risk >= args.adaptive_h_v2_risk_threshold
+    final_absolute_event = np.zeros((action_len,), dtype=bool)
+    if args.adaptive_h_v2_final_entropy_threshold is not None:
+        final_absolute_event = curves["final"] >= args.adaptive_h_v2_final_entropy_threshold
+    cot_absolute_event = np.zeros((action_len,), dtype=bool)
+    if args.adaptive_h_v2_cot_entropy_threshold is not None:
+        cot_absolute_event = curves["cot"] >= args.adaptive_h_v2_cot_entropy_threshold
+
+    event_mask = robust_event | final_absolute_event | cot_absolute_event
+    event_indices = np.flatnonzero(event_mask)
+    event_index = int(event_indices[0]) if event_indices.size else None
+    event_sources = []
+    if event_index is not None:
+        if robust_event[event_index]:
+            event_sources.append("robust_fusion")
+        if final_absolute_event[event_index]:
+            event_sources.append("final_absolute")
+        if cot_absolute_event[event_index]:
+            event_sources.append("cot_absolute")
+    return fused_risk, event_index, ",".join(event_sources) if event_sources else "none", curves
+
+
+def _event_horizon(event_index: int | None, horizons: list[int]) -> int:
+    if event_index is None:
+        return horizons[-1]
+
+    safe_horizon = max(horizons[0], event_index)
+    safe_candidates = [horizon for horizon in horizons if horizon <= safe_horizon]
+    return safe_candidates[-1] if safe_candidates else horizons[0]
+
+
+def _apply_horizon_budget(
+    raw_horizon: int,
+    horizons: list[int],
+    *,
+    args: argparse.Namespace,
+    state: AdaptiveHState,
+) -> tuple[int, dict[str, float]]:
+    target = min(float(args.adaptive_h_v2_target_avg_horizon), float(horizons[-1]))
+    balance_before = float(state.budget_balance)
+    required_credit = max(target - raw_horizon, 0.0)
+    final_horizon = raw_horizon
+    budget_limited = False
+
+    if required_credit > balance_before + 1e-9:
+        affordable_floor = target - balance_before
+        affordable = [
+            horizon
+            for horizon in horizons
+            if horizon >= raw_horizon and horizon + 1e-9 >= affordable_floor
+        ]
+        final_horizon = affordable[0] if affordable else horizons[-1]
+        budget_limited = final_horizon > raw_horizon
+
+    balance_after = balance_before + final_horizon - target
+    balance_after = float(np.clip(balance_after, 0.0, args.adaptive_h_v2_budget_capacity))
+    state.budget_balance = balance_after
+    state.budget_decisions += 1
+    state.budget_horizon_sum += final_horizon
+    intervention = final_horizon < horizons[-1]
+    state.budget_interventions += int(intervention)
+    state.budget_limited_decisions += int(budget_limited)
+
+    return final_horizon, {
+        "target_horizon": target,
+        "balance_before": balance_before,
+        "balance_after": balance_after,
+        "required_credit": required_credit,
+        "budget_limited": float(budget_limited),
+        "intervention": float(intervention),
+        "cumulative_avg_horizon": state.budget_horizon_sum / state.budget_decisions,
+        "intervention_rate": state.budget_interventions / state.budget_decisions,
+        "budget_limited_rate": state.budget_limited_decisions / state.budget_decisions,
+    }
+
+
+def _select_budgeted_event_execution_horizon(
+    action_chunk: np.ndarray,
+    *,
+    timing: dict[str, Any],
+    args: argparse.Namespace,
+    state: AdaptiveHState,
+) -> tuple[int, dict[str, Any]]:
+    action_len = int(np.asarray(action_chunk).shape[0])
+    horizons = _candidate_horizons(args, action_len)
+    if horizons[0] < args.adaptive_h_v2_min_horizon:
+        raise ValueError("No V2 candidate horizon satisfies --adaptive_h_v2_min_horizon.")
+
+    fused_risk, event_index, event_source, curves = _v2_risk_curve(
+        timing,
+        action_len=action_len,
+        args=args,
+    )
+    raw_horizon = _event_horizon(event_index, horizons)
+    previous_horizon = state.previous_horizon
+    final_horizon, budget_info = _apply_horizon_budget(
+        raw_horizon,
+        horizons,
+        args=args,
+        state=state,
+    )
+    state.previous_horizon = final_horizon
+
+    metrics = _action_stability_metrics(np.asarray(action_chunk)[:final_horizon], args)
+    reasons = ["no_risk_event" if event_index is None else f"risk_event_t{event_index}"]
+    if budget_info["budget_limited"]:
+        reasons.append("budget_limited")
+
+    event_risk = float(fused_risk[event_index]) if event_index is not None else float("nan")
+    return final_horizon, {
+        "adaptive_replan_horizon": final_horizon,
+        "adaptive_replan_reason": "+".join(reasons),
+        "adaptive_h_selector": "budgeted_event_v2",
+        "adaptive_raw_execution_horizon": int(raw_horizon),
+        "adaptive_guard_cap": int(horizons[-1]),
+        "adaptive_previous_execution_horizon": int(previous_horizon),
+        "adaptive_hysteresis_limited": 0.0,
+        "adaptive_low_risk_streak": 0,
+        "adaptive_guard_cooldown_remaining": 0,
+        "adaptive_action_delta": float(metrics["action_delta"]),
+        "adaptive_action_jerk": float(metrics["action_jerk"]),
+        "adaptive_action_jerk_ratio": float(metrics["action_jerk_ratio"]),
+        "adaptive_gripper_change": float(metrics["gripper_change"]),
+        "adaptive_gripper_event": float(metrics["gripper_event"]),
+        "adaptive_entropy_score": float(np.max(fused_risk)),
+        "adaptive_entropy_mean": float(np.mean(fused_risk)),
+        "adaptive_entropy_max": float(np.max(fused_risk)),
+        "adaptive_entropy_std": float(np.std(fused_risk)),
+        "adaptive_entropy_num_segments": int(fused_risk.size),
+        "adaptive_entropy_low_threshold": float("nan"),
+        "adaptive_entropy_high_threshold": float(args.adaptive_h_v2_risk_threshold),
+        "adaptive_entropy_threshold_source": "v2_robust_or_global_absolute",
+        "adaptive_entropy_decision": -1 if event_index is not None else 1,
+        "adaptive_low_entropy_target_horizon": int(raw_horizon),
+        "adaptive_stage_guard": 0.0,
+        "adaptive_stage_guard_reason": "",
+        "adaptive_entropy_curve": fused_risk.tolist(),
+        "adaptive_prefix_entropy": {},
+        "adaptive_entropy_jumps": {},
+        "adaptive_max_entropy_jump": float("nan"),
+        "adaptive_entropy_jump_threshold": float("nan"),
+        "adaptive_entropy_jump_significant": float("nan"),
+        "adaptive_v2_risk_event_index": float(event_index) if event_index is not None else float("nan"),
+        "adaptive_v2_event_risk": event_risk,
+        "adaptive_v2_event_source": event_source,
+        "adaptive_v2_final_risk_curve": _robust_positive_risk(
+            curves["final"], args.adaptive_h_entropy_eps
+        ).tolist(),
+        "adaptive_v2_cot_risk_curve": _robust_positive_risk(
+            curves["cot"], args.adaptive_h_entropy_eps
+        ).tolist(),
+        "adaptive_v2_budget_balance_before": budget_info["balance_before"],
+        "adaptive_v2_budget_balance_after": budget_info["balance_after"],
+        "adaptive_v2_budget_required_credit": budget_info["required_credit"],
+        "adaptive_v2_budget_limited": budget_info["budget_limited"],
+        "adaptive_v2_intervention": budget_info["intervention"],
+        "adaptive_v2_cumulative_avg_horizon": budget_info["cumulative_avg_horizon"],
+        "adaptive_v2_intervention_rate": budget_info["intervention_rate"],
+        "adaptive_v2_budget_limited_rate": budget_info["budget_limited_rate"],
     }
 
 
@@ -1190,6 +1553,14 @@ def _select_replan_horizon(
             "adaptive_replan_reason": "fixed",
             "adaptive_entropy_decision": 0,
         }
+
+    if _adaptive_uses_entropy(args) and args.adaptive_h_selector == "budgeted_event_v2":
+        return _select_budgeted_event_execution_horizon(
+            action_chunk,
+            timing=timing,
+            args=args,
+            state=state,
+        )
 
     if _adaptive_uses_entropy(args) and args.adaptive_h_selector != "legacy":
         return _select_aac_execution_horizon(
@@ -1551,9 +1922,27 @@ def _run_mode(
             adaptive_guard_caps = []
             adaptive_max_entropy_jumps = []
             adaptive_hysteresis_limited = []
+            adaptive_v2_risk_event_indices = []
+            adaptive_v2_event_risks = []
+            adaptive_v2_budget_balances = []
+            adaptive_v2_budget_limited = []
+            adaptive_v2_interventions = []
             adaptive_replan_reasons = []
             adaptive_h_decisions = []
-            adaptive_h_state = AdaptiveHState(previous_horizon=args.replan_steps)
+            v2_enabled = _adaptive_uses_entropy(args) and args.adaptive_h_selector == "budgeted_event_v2"
+            initial_horizon = (
+                max(args.adaptive_replan_horizons)
+                if v2_enabled
+                else args.replan_steps
+            )
+            adaptive_h_state = AdaptiveHState(
+                previous_horizon=initial_horizon,
+                budget_balance=(
+                    min(args.adaptive_h_v2_initial_budget, args.adaptive_h_v2_budget_capacity)
+                    if v2_enabled
+                    else 0.0
+                ),
+            )
             full_calls = 0
             override_calls = 0
             true_skip_calls = 0
@@ -1624,6 +2013,11 @@ def _run_mode(
                         ("adaptive_guard_cap", adaptive_guard_caps),
                         ("adaptive_max_entropy_jump", adaptive_max_entropy_jumps),
                         ("adaptive_hysteresis_limited", adaptive_hysteresis_limited),
+                        ("adaptive_v2_risk_event_index", adaptive_v2_risk_event_indices),
+                        ("adaptive_v2_event_risk", adaptive_v2_event_risks),
+                        ("adaptive_v2_budget_balance_after", adaptive_v2_budget_balances),
+                        ("adaptive_v2_budget_limited", adaptive_v2_budget_limited),
+                        ("adaptive_v2_intervention", adaptive_v2_interventions),
                     ):
                         value = float(replan_info.get(key, float("nan")))
                         if np.isfinite(value):
@@ -1672,8 +2066,41 @@ def _run_mode(
                             "guard_cooldown_remaining": int(
                                 replan_info.get("adaptive_guard_cooldown_remaining", 0)
                             ),
+                            "v2_risk_event_index": float(
+                                replan_info.get("adaptive_v2_risk_event_index", float("nan"))
+                            ),
+                            "v2_event_risk": float(
+                                replan_info.get("adaptive_v2_event_risk", float("nan"))
+                            ),
+                            "v2_event_source": str(replan_info.get("adaptive_v2_event_source", "")),
+                            "v2_budget_balance_before": float(
+                                replan_info.get("adaptive_v2_budget_balance_before", float("nan"))
+                            ),
+                            "v2_budget_balance_after": float(
+                                replan_info.get("adaptive_v2_budget_balance_after", float("nan"))
+                            ),
+                            "v2_budget_required_credit": float(
+                                replan_info.get("adaptive_v2_budget_required_credit", float("nan"))
+                            ),
+                            "v2_budget_limited": float(
+                                replan_info.get("adaptive_v2_budget_limited", float("nan"))
+                            ),
+                            "v2_intervention": float(
+                                replan_info.get("adaptive_v2_intervention", float("nan"))
+                            ),
+                            "v2_cumulative_avg_horizon": float(
+                                replan_info.get("adaptive_v2_cumulative_avg_horizon", float("nan"))
+                            ),
+                            "v2_intervention_rate": float(
+                                replan_info.get("adaptive_v2_intervention_rate", float("nan"))
+                            ),
+                            "v2_budget_limited_rate": float(
+                                replan_info.get("adaptive_v2_budget_limited_rate", float("nan"))
+                            ),
                             "decision_reason": str(replan_info.get("adaptive_replan_reason", "")),
                             "entropy_curve": replan_info.get("adaptive_entropy_curve", []),
+                            "v2_final_risk_curve": replan_info.get("adaptive_v2_final_risk_curve", []),
+                            "v2_cot_risk_curve": replan_info.get("adaptive_v2_cot_risk_curve", []),
                             "prefix_entropy": replan_info.get("adaptive_prefix_entropy", {}),
                             "entropy_jumps": replan_info.get("adaptive_entropy_jumps", {}),
                         }
@@ -1789,6 +2216,19 @@ def _run_mode(
                 "avg_guard_cap": _mean(adaptive_guard_caps),
                 "avg_max_entropy_jump": _mean(adaptive_max_entropy_jumps),
                 "avg_hysteresis_limited": _mean(adaptive_hysteresis_limited),
+                "avg_v2_risk_event_index": _mean(adaptive_v2_risk_event_indices),
+                "avg_v2_event_risk": _mean(adaptive_v2_event_risks),
+                "avg_v2_budget_balance": _mean(adaptive_v2_budget_balances),
+                "v2_budget_limited_rate": _mean(adaptive_v2_budget_limited),
+                "v2_intervention_rate": _mean(adaptive_v2_interventions),
+                "v2_final_budget_balance": (
+                    float(adaptive_h_state.budget_balance) if v2_enabled else float("nan")
+                ),
+                "v2_cumulative_avg_horizon": (
+                    adaptive_h_state.budget_horizon_sum / adaptive_h_state.budget_decisions
+                    if adaptive_h_state.budget_decisions
+                    else float("nan")
+                ),
                 "adaptive_replan_reasons": ";".join(adaptive_replan_reasons),
                 "adaptive_h_decisions_json": json.dumps(adaptive_h_decisions, separators=(",", ":")),
                 "num_replans": len(infer_wall_ms),
@@ -1879,6 +2319,13 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_guard_cap",
         "avg_max_entropy_jump",
         "avg_hysteresis_limited",
+        "avg_v2_risk_event_index",
+        "avg_v2_event_risk",
+        "avg_v2_budget_balance",
+        "v2_budget_limited_rate",
+        "v2_intervention_rate",
+        "v2_final_budget_balance",
+        "v2_cumulative_avg_horizon",
         "adaptive_replan_reasons",
         "adaptive_h_decisions_json",
         "num_replans",
@@ -1921,8 +2368,21 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "hysteresis_limited",
         "low_risk_streak",
         "guard_cooldown_remaining",
+        "v2_risk_event_index",
+        "v2_event_risk",
+        "v2_event_source",
+        "v2_budget_balance_before",
+        "v2_budget_balance_after",
+        "v2_budget_required_credit",
+        "v2_budget_limited",
+        "v2_intervention",
+        "v2_cumulative_avg_horizon",
+        "v2_intervention_rate",
+        "v2_budget_limited_rate",
         "decision_reason",
         "entropy_curve",
+        "v2_final_risk_curve",
+        "v2_cot_risk_curve",
         "prefix_entropy",
         "entropy_jumps",
     ]
@@ -1939,7 +2399,14 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                     "decision_index": decision_index,
                     **{
                         key: json.dumps(value, separators=(",", ":"))
-                        if key in ("entropy_curve", "prefix_entropy", "entropy_jumps")
+                        if key
+                        in (
+                            "entropy_curve",
+                            "v2_final_risk_curve",
+                            "v2_cot_risk_curve",
+                            "prefix_entropy",
+                            "entropy_jumps",
+                        )
                         else value
                         for key, value in decision.items()
                     },
@@ -1985,6 +2452,9 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_total_policy_calls_per_episode",
         "avg_deployable_policy_calls_per_episode",
         "avg_entropy_oracle_extra_calls_per_episode",
+        "avg_successful_deployable_policy_calls",
+        "avg_failed_deployable_policy_calls",
+        "deployable_policy_ms_per_success",
         "avg_replan_horizon",
         "avg_min_replan_horizon",
         "avg_max_replan_horizon",
@@ -1996,6 +2466,13 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_guard_cap",
         "avg_max_entropy_jump",
         "avg_hysteresis_limited",
+        "avg_v2_risk_event_index",
+        "avg_v2_event_risk",
+        "avg_v2_budget_balance",
+        "avg_v2_budget_limited_rate",
+        "avg_v2_intervention_rate",
+        "avg_v2_final_budget_balance",
+        "avg_v2_cumulative_avg_horizon",
     ]
     per_task_rows = []
     task_keys = sorted(
@@ -2004,6 +2481,8 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
     )
     for mode, task_id in task_keys:
         subset = [row for row in rows if row["mode"] == mode and row["task_id"] == task_id]
+        successful_subset = [row for row in subset if int(row["success"]) == 1]
+        failed_subset = [row for row in subset if int(row["success"]) == 0]
         per_task_rows.append(
             {
                 "mode": mode,
@@ -2075,6 +2554,18 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 "avg_entropy_oracle_extra_calls_per_episode": _mean(
                     [float(row["entropy_oracle_extra_calls"]) for row in subset]
                 ),
+                "avg_successful_deployable_policy_calls": _mean(
+                    [float(row["deployable_policy_calls"]) for row in successful_subset]
+                ),
+                "avg_failed_deployable_policy_calls": _mean(
+                    [float(row["deployable_policy_calls"]) for row in failed_subset]
+                ),
+                "deployable_policy_ms_per_success": (
+                    float(np.nansum([float(row["total_deployable_policy_inference_ms"]) for row in subset]))
+                    / len(successful_subset)
+                    if successful_subset
+                    else float("nan")
+                ),
                 "avg_replan_horizon": _mean([float(row["avg_replan_horizon"]) for row in subset]),
                 "avg_min_replan_horizon": _mean([float(row["min_replan_horizon"]) for row in subset]),
                 "avg_max_replan_horizon": _mean([float(row["max_replan_horizon"]) for row in subset]),
@@ -2098,6 +2589,25 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 "avg_hysteresis_limited": _mean(
                     [float(row["avg_hysteresis_limited"]) for row in subset]
                 ),
+                "avg_v2_risk_event_index": _mean(
+                    [float(row["avg_v2_risk_event_index"]) for row in subset]
+                ),
+                "avg_v2_event_risk": _mean([float(row["avg_v2_event_risk"]) for row in subset]),
+                "avg_v2_budget_balance": _mean(
+                    [float(row["avg_v2_budget_balance"]) for row in subset]
+                ),
+                "avg_v2_budget_limited_rate": _mean(
+                    [float(row["v2_budget_limited_rate"]) for row in subset]
+                ),
+                "avg_v2_intervention_rate": _mean(
+                    [float(row["v2_intervention_rate"]) for row in subset]
+                ),
+                "avg_v2_final_budget_balance": _mean(
+                    [float(row["v2_final_budget_balance"]) for row in subset]
+                ),
+                "avg_v2_cumulative_avg_horizon": _mean(
+                    [float(row["v2_cumulative_avg_horizon"]) for row in subset]
+                ),
             }
         )
     with per_task_path.open("w", newline="") as f:
@@ -2108,6 +2618,20 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
     by_mode = {}
     for mode in sorted({row["mode"] for row in rows}):
         subset = [row for row in rows if row["mode"] == mode]
+        successful_subset = [row for row in subset if int(row["success"]) == 1]
+        failed_subset = [row for row in subset if int(row["success"]) == 0]
+        decisions = [
+            decision
+            for row in subset
+            for decision in json.loads(row["adaptive_h_decisions_json"])
+        ]
+        horizon_counts = collections.Counter(int(decision["execution_horizon"]) for decision in decisions)
+        raw_horizon_counts = collections.Counter(int(decision["raw_execution_horizon"]) for decision in decisions)
+        event_source_counts = collections.Counter(
+            str(decision["v2_event_source"])
+            for decision in decisions
+            if str(decision.get("v2_event_source", ""))
+        )
         by_mode[mode] = {
             "episodes": len(subset),
             "success_rate": _mean([float(row["success"]) for row in subset]),
@@ -2197,6 +2721,25 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "avg_hysteresis_limited": _mean(
                 [float(row["avg_hysteresis_limited"]) for row in subset]
             ),
+            "avg_v2_risk_event_index": _mean(
+                [float(row["avg_v2_risk_event_index"]) for row in subset]
+            ),
+            "avg_v2_event_risk": _mean([float(row["avg_v2_event_risk"]) for row in subset]),
+            "avg_v2_budget_balance": _mean(
+                [float(row["avg_v2_budget_balance"]) for row in subset]
+            ),
+            "avg_v2_budget_limited_rate": _mean(
+                [float(row["v2_budget_limited_rate"]) for row in subset]
+            ),
+            "avg_v2_intervention_rate": _mean(
+                [float(row["v2_intervention_rate"]) for row in subset]
+            ),
+            "avg_v2_final_budget_balance": _mean(
+                [float(row["v2_final_budget_balance"]) for row in subset]
+            ),
+            "avg_v2_cumulative_avg_horizon": _mean(
+                [float(row["v2_cumulative_avg_horizon"]) for row in subset]
+            ),
             "avg_num_replans_per_episode": _mean([float(row["num_replans"]) for row in subset]),
             "avg_total_policy_calls_per_episode": _mean([float(row["total_policy_calls"]) for row in subset]),
             "avg_deployable_policy_calls_per_episode": _mean(
@@ -2205,6 +2748,21 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "avg_entropy_oracle_extra_calls_per_episode": _mean(
                 [float(row["entropy_oracle_extra_calls"]) for row in subset]
             ),
+            "avg_successful_deployable_policy_calls": _mean(
+                [float(row["deployable_policy_calls"]) for row in successful_subset]
+            ),
+            "avg_failed_deployable_policy_calls": _mean(
+                [float(row["deployable_policy_calls"]) for row in failed_subset]
+            ),
+            "deployable_policy_ms_per_success": (
+                float(np.nansum([float(row["total_deployable_policy_inference_ms"]) for row in subset]))
+                / len(successful_subset)
+                if successful_subset
+                else float("nan")
+            ),
+            "execution_horizon_counts": dict(sorted(horizon_counts.items())),
+            "raw_execution_horizon_counts": dict(sorted(raw_horizon_counts.items())),
+            "v2_event_source_counts": dict(sorted(event_source_counts.items())),
             "avg_full_calls_per_episode": _mean([float(row["full_calls"]) for row in subset]),
             "avg_override_calls_per_episode": _mean([float(row["override_calls"]) for row in subset]),
             "avg_true_skip_calls_per_episode": _mean([float(row["true_skip_calls"]) for row in subset]),
@@ -2231,6 +2789,15 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "adaptive_h_growth_limit": args.adaptive_h_growth_limit,
             "adaptive_h_low_risk_required": args.adaptive_h_low_risk_required,
             "adaptive_h_guard_cooldown": args.adaptive_h_guard_cooldown,
+            "adaptive_h_v2_min_horizon": args.adaptive_h_v2_min_horizon,
+            "adaptive_h_v2_target_avg_horizon": args.adaptive_h_v2_target_avg_horizon,
+            "adaptive_h_v2_initial_budget": args.adaptive_h_v2_initial_budget,
+            "adaptive_h_v2_budget_capacity": args.adaptive_h_v2_budget_capacity,
+            "adaptive_h_v2_risk_threshold": args.adaptive_h_v2_risk_threshold,
+            "adaptive_h_v2_final_weight": args.adaptive_h_v2_final_weight,
+            "adaptive_h_v2_cot_weight": args.adaptive_h_v2_cot_weight,
+            "adaptive_h_v2_final_entropy_threshold": args.adaptive_h_v2_final_entropy_threshold,
+            "adaptive_h_v2_cot_entropy_threshold": args.adaptive_h_v2_cot_entropy_threshold,
             "adaptive_replan_entropy_mode": args.adaptive_replan_entropy_mode,
             "adaptive_replan_entropy_samples": args.adaptive_replan_entropy_samples,
             "adaptive_replan_entropy_low_quantile": args.adaptive_replan_entropy_low_quantile,
@@ -2262,7 +2829,10 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 "with online_mc entropy, avg_total_* includes the Stage-B entropy MC calls, while "
                 "avg_total_deployable_* treats entropy as an oracle/predicted signal and counts only the optimized "
                 "action-producing policy calls after the entropy decision. primary_* fields mirror this deployable "
-                "timing and are the intended fields for speed-success comparison."
+                "timing and are the intended fields for speed-success comparison. budgeted_event_v2 defaults to "
+                "H=10, shortens H at the earliest fused per-timestep risk event, and constrains short-H decisions "
+                "with an episode horizon-credit budget targeting the configured average H. Its current online-MC "
+                "implementation remains an oracle; actual observed timing includes all entropy samples."
             ),
         },
         "aggregate": by_mode,
