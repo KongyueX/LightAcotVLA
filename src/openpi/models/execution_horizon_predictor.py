@@ -52,6 +52,29 @@ class ExecutionHorizonLossWeights:
 DEFAULT_LOSS_WEIGHTS = ExecutionHorizonLossWeights()
 
 
+@dataclasses.dataclass(frozen=True)
+class ExecutionHorizonLabelWeights:
+    """Class/region weights for imbalanced counterfactual supervision.
+
+    These multipliers are deliberately separate from the task-level loss
+    coefficients above: changing them rebalances labels *within* a head while
+    preserving the configured contribution of that head to the total loss.
+    """
+
+    success_failure: float = 1.0
+    timeout_positive: float = 1.0
+    event_positive: float = 1.0
+    risk_event: float = 1.0
+
+    def __post_init__(self) -> None:
+        for name, value in dataclasses.asdict(self).items():
+            if value <= 0:
+                raise ValueError(f"{name} must be positive, got {value}.")
+
+
+DEFAULT_LABEL_WEIGHTS = ExecutionHorizonLabelWeights()
+
+
 def _bce_with_logits(logits: jax.Array, labels: jax.Array) -> jax.Array:
     labels = labels.astype(logits.dtype)
     return jnp.maximum(logits, 0) - logits * labels + jnp.log1p(jnp.exp(-jnp.abs(logits)))
@@ -210,6 +233,7 @@ def execution_horizon_loss(
     labels: Mapping[str, jax.Array],
     *,
     weights: ExecutionHorizonLossWeights = DEFAULT_LOSS_WEIGHTS,
+    label_weights: ExecutionHorizonLabelWeights = DEFAULT_LABEL_WEIGHTS,
     remaining_calls_scale: float = 64.0,
     remaining_steps_scale: float = 512.0,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
@@ -217,8 +241,21 @@ def execution_horizon_loss(
 
     branch_mask = jnp.asarray(labels.get("branch_valid", jnp.ones_like(labels["branch_success"])))
     risk_mask = jnp.asarray(labels.get("risk_valid", jnp.ones_like(labels["final_risk"])))
-    success_loss = _masked_mean(_bce_with_logits(predictions["success_logits"], labels["branch_success"]), branch_mask)
-    timeout_loss = _masked_mean(_bce_with_logits(predictions["timeout_logits"], labels["branch_timeout"]), branch_mask)
+    success_label = jnp.asarray(labels["branch_success"], dtype=jnp.bool_)
+    timeout_label = jnp.asarray(labels["branch_timeout"], dtype=jnp.bool_)
+    event_label = jnp.asarray(labels["event_mask"], dtype=jnp.bool_)
+    success_mask = branch_mask * jnp.where(success_label, 1.0, label_weights.success_failure)
+    timeout_mask = branch_mask * jnp.where(timeout_label, label_weights.timeout_positive, 1.0)
+    event_mask = risk_mask * jnp.where(event_label, label_weights.event_positive, 1.0)
+    risk_regression_mask = risk_mask * jnp.where(event_label, label_weights.risk_event, 1.0)
+    success_loss = _masked_mean(
+        _bce_with_logits(predictions["success_logits"], success_label),
+        success_mask,
+    )
+    timeout_loss = _masked_mean(
+        _bce_with_logits(predictions["timeout_logits"], timeout_label),
+        timeout_mask,
+    )
     calls_loss = _masked_mean(
         _huber((predictions["remaining_calls"] - labels["remaining_calls"]) / remaining_calls_scale),
         branch_mask,
@@ -227,10 +264,19 @@ def execution_horizon_loss(
         _huber((predictions["remaining_steps"] - labels["remaining_steps"]) / remaining_steps_scale),
         branch_mask,
     )
-    final_risk_loss = _masked_mean(_huber(predictions["final_risk"] - labels["final_risk"]), risk_mask)
-    cot_risk_loss = _masked_mean(_huber(predictions["action_cot_risk"] - labels["action_cot_risk"]), risk_mask)
-    fused_risk_loss = _masked_mean(_huber(predictions["fused_risk"] - labels["fused_risk"]), risk_mask)
-    event_loss = _masked_mean(_bce_with_logits(predictions["event_logits"], labels["event_mask"]), risk_mask)
+    final_risk_loss = _masked_mean(
+        _huber(predictions["final_risk"] - labels["final_risk"]),
+        risk_regression_mask,
+    )
+    cot_risk_loss = _masked_mean(
+        _huber(predictions["action_cot_risk"] - labels["action_cot_risk"]),
+        risk_regression_mask,
+    )
+    fused_risk_loss = _masked_mean(
+        _huber(predictions["fused_risk"] - labels["fused_risk"]),
+        risk_regression_mask,
+    )
+    event_loss = _masked_mean(_bce_with_logits(predictions["event_logits"], event_label), event_mask)
 
     raw_h = jnp.clip(jnp.asarray(labels["raw_h"], dtype=jnp.int32).reshape((-1,)), 1, 10)
     raw_h_classification_loss = jnp.mean(

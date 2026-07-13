@@ -216,7 +216,7 @@ def load_counterfactual_arrays(
 def sampling_weights(
     arrays: Mapping[str, np.ndarray],
     *,
-    focus_task_ids: Iterable[int] = (7, 8),
+    focus_task_ids: Iterable[int] = (8, 9),
     focus_task_multiplier: float = 2.0,
     high_risk_multiplier: float = 2.0,
     gripper_multiplier: float = 1.5,

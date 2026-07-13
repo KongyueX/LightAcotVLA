@@ -22,6 +22,7 @@ import tyro
 
 from openpi.execution_horizon import dataset as horizon_dataset
 from openpi.models import model as model_lib
+from openpi.models.execution_horizon_predictor import ExecutionHorizonLabelWeights
 from openpi.models.execution_horizon_predictor import ExecutionHorizonLossWeights
 from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictor
 from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictorConfig
@@ -48,7 +49,7 @@ class Args:
     hidden_dim: int = 256
     temporal_layers: int = 3
 
-    focus_task_ids: tuple[int, ...] = (7, 8)
+    focus_task_ids: tuple[int, ...] = (8, 9)
     focus_task_multiplier: float = 2.0
     high_risk_multiplier: float = 2.0
     gripper_multiplier: float = 1.5
@@ -64,6 +65,12 @@ class Args:
     loss_event: float = 0.5
     loss_raw_h_classification: float = 0.5
     loss_raw_h_ordinal: float = 0.25
+
+    success_failure_multiplier: float = 4.0
+    timeout_positive_multiplier: float = 4.0
+    event_positive_multiplier: float = 5.0
+    risk_event_multiplier: float = 3.0
+    event_risk_threshold: float = 1.5
 
 
 _INPUT_FIELDS = (
@@ -104,6 +111,15 @@ def _loss_weights(args: Args) -> ExecutionHorizonLossWeights:
         event=args.loss_event,
         raw_h_classification=args.loss_raw_h_classification,
         raw_h_ordinal=args.loss_raw_h_ordinal,
+    )
+
+
+def _label_weights(args: Args) -> ExecutionHorizonLabelWeights:
+    return ExecutionHorizonLabelWeights(
+        success_failure=args.success_failure_multiplier,
+        timeout_positive=args.timeout_positive_multiplier,
+        event_positive=args.event_positive_multiplier,
+        risk_event=args.risk_event_multiplier,
     )
 
 
@@ -204,6 +220,7 @@ def main(args: Args) -> None:
     )
     optimizer_state = optimizer.init(params)
     weights = _loss_weights(args)
+    label_weights = _label_weights(args)
 
     @jax.jit
     def train_step(
@@ -219,6 +236,7 @@ def main(args: Args) -> None:
                 predictions,
                 {name: batch[name] for name in _LABEL_FIELDS},
                 weights=weights,
+                label_weights=label_weights,
                 remaining_calls_scale=predictor_config.remaining_calls_scale,
                 remaining_steps_scale=predictor_config.remaining_steps_scale,
             )
@@ -237,14 +255,52 @@ def main(args: Args) -> None:
             predictions,
             {name: batch[name] for name in _LABEL_FIELDS},
             weights=weights,
+            label_weights=label_weights,
             remaining_calls_scale=predictor_config.remaining_calls_scale,
             remaining_steps_scale=predictor_config.remaining_steps_scale,
         )
         success_prediction = jax.nn.sigmoid(predictions["success_logits"]) >= 0.5
         timeout_prediction = jax.nn.sigmoid(predictions["timeout_logits"]) >= 0.5
+        event_prediction = predictions["event_logits"] >= 0.0
+        event_label = batch["event_mask"].astype(jnp.bool_)
+        risk_event_prediction = predictions["fused_risk"] >= args.event_risk_threshold
+        event_valid = batch["risk_valid"].astype(jnp.bool_)
+        branch_valid = batch["branch_valid"].astype(jnp.bool_)
+
+        def binary_recall(
+            prediction: jax.Array, target: jax.Array, valid: jax.Array
+        ) -> jax.Array:
+            positives = target & valid
+            return jnp.sum(prediction & positives) / jnp.maximum(jnp.sum(positives), 1)
+
+        def binary_precision(
+            prediction: jax.Array, target: jax.Array, valid: jax.Array
+        ) -> jax.Array:
+            predicted_positives = prediction & valid
+            return jnp.sum(target & predicted_positives) / jnp.maximum(jnp.sum(predicted_positives), 1)
+
         metrics["success_accuracy"] = jnp.mean(success_prediction == batch["branch_success"])
         metrics["timeout_accuracy"] = jnp.mean(timeout_prediction == batch["branch_timeout"])
-        metrics["raw_h_accuracy"] = jnp.mean((jnp.argmax(predictions["raw_h_logits"], axis=-1) + 1) == batch["raw_h"])
+        metrics["failure_recall"] = binary_recall(~success_prediction, ~batch["branch_success"], branch_valid)
+        metrics["timeout_recall"] = binary_recall(timeout_prediction, batch["branch_timeout"], branch_valid)
+        metrics["event_precision"] = binary_precision(event_prediction, event_label, event_valid)
+        metrics["event_recall"] = binary_recall(event_prediction, event_label, event_valid)
+        metrics["fused_risk_event_precision"] = binary_precision(
+            risk_event_prediction, event_label, event_valid
+        )
+        metrics["fused_risk_event_recall"] = binary_recall(risk_event_prediction, event_label, event_valid)
+        success_squared_error = (
+            jax.nn.sigmoid(predictions["success_logits"]) - batch["branch_success"]
+        ) ** 2
+        metrics["success_brier"] = jnp.sum(success_squared_error * branch_valid) / jnp.maximum(
+            jnp.sum(branch_valid), 1
+        )
+        metrics["raw_h_accuracy"] = jnp.mean(
+            (jnp.argmax(predictions["raw_h_logits"], axis=-1) + 1) == batch["raw_h"]
+        )
+        metrics["raw_h_mae"] = jnp.mean(
+            jnp.abs((jnp.argmax(predictions["raw_h_logits"], axis=-1) + 1) - batch["raw_h"])
+        )
         return metrics
 
     rng = np.random.default_rng(args.seed)
@@ -332,6 +388,7 @@ def main(args: Args) -> None:
         "best_validation_loss": best_validation_loss,
         "stopped_early": stopped_early,
         "loss_weights": dataclasses.asdict(weights),
+        "label_weights": dataclasses.asdict(label_weights),
         "last_train_metrics": last_train_metrics,
         "last_validation_metrics": last_validation_metrics,
     }
