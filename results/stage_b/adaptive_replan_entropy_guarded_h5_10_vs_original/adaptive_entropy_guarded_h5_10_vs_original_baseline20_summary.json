@@ -1,0 +1,10 @@
+{
+  "comparison_note": "Baseline uses original trials 0-19 to match adaptive 20-trial runs. For timing, task0 trial0 warmup outlier is excluded from baseline policy/server totals only.",
+  "policy_total_speedup_positive_tasks": 8,
+  "server_total_speedup_positive_tasks": 8,
+  "calls_reduction_positive_tasks": 8,
+  "success_drop_within_3pp_tasks": 7,
+  "policy_speedup_and_success_drop_within_3pp_tasks": 7,
+  "server_speedup_and_success_drop_within_3pp_tasks": 7,
+  "per_task_csv": "results/stage_b/adaptive_replan_entropy_guarded_h5_10_vs_original/adaptive_entropy_guarded_h5_10_vs_original_baseline20_per_task.csv"
+}

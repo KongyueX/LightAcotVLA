@@ -76,12 +76,31 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--adaptive_replan_horizons", "--adaptive-replan-horizons", nargs="*", type=int, default=None)
     parser.add_argument(
+        "--adaptive_h_selector",
+        "--adaptive-h-selector",
+        choices=("legacy", "final_aac", "cot_aac", "guarded_cot_aac"),
+        default="guarded_cot_aac",
+    )
+    parser.add_argument(
+        "--adaptive_h_entropy_algorithm",
+        "--adaptive-h-entropy-algorithm",
+        choices=("diagonal_logvar", "aac_grouped"),
+        default="diagonal_logvar",
+    )
+    parser.add_argument("--adaptive_h_coarse_stride", "--adaptive-h-coarse-stride", type=float, default=2.0)
+    parser.add_argument("--adaptive_h_jump_mad_scale", "--adaptive-h-jump-mad-scale", type=float, default=1.5)
+    parser.add_argument("--adaptive_h_entropy_eps", "--adaptive-h-entropy-eps", type=float, default=1e-6)
+    parser.add_argument("--adaptive_h_cov_shrinkage", "--adaptive-h-cov-shrinkage", type=float, default=1e-4)
+    parser.add_argument("--adaptive_h_growth_limit", "--adaptive-h-growth-limit", type=int, default=1)
+    parser.add_argument("--adaptive_h_low_risk_required", "--adaptive-h-low-risk-required", type=int, default=2)
+    parser.add_argument("--adaptive_h_guard_cooldown", "--adaptive-h-guard-cooldown", type=int, default=2)
+    parser.add_argument(
         "--adaptive_replan_entropy_mode",
         "--adaptive-replan-entropy-mode",
         choices=("none", "coarse_proxy", "online_mc"),
         default="none",
     )
-    parser.add_argument("--adaptive_replan_entropy_samples", "--adaptive-replan-entropy-samples", type=int, default=4)
+    parser.add_argument("--adaptive_replan_entropy_samples", "--adaptive-replan-entropy-samples", type=int, default=5)
     parser.add_argument(
         "--adaptive_replan_entropy_low_quantile",
         "--adaptive-replan-entropy-low-quantile",
@@ -115,6 +134,20 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--action_cot_denoising_steps values must be positive.")
     if args.adaptive_replan_horizons is not None and any(horizon <= 0 for horizon in args.adaptive_replan_horizons):
         raise ValueError("--adaptive_replan_horizons values must be positive.")
+    if args.adaptive_h_coarse_stride <= 0:
+        raise ValueError("--adaptive_h_coarse_stride must be positive.")
+    if args.adaptive_h_jump_mad_scale < 0:
+        raise ValueError("--adaptive_h_jump_mad_scale must be non-negative.")
+    if args.adaptive_h_entropy_eps <= 0:
+        raise ValueError("--adaptive_h_entropy_eps must be positive.")
+    if args.adaptive_h_cov_shrinkage <= 0:
+        raise ValueError("--adaptive_h_cov_shrinkage must be positive.")
+    if args.adaptive_h_growth_limit <= 0:
+        raise ValueError("--adaptive_h_growth_limit must be positive.")
+    if args.adaptive_h_low_risk_required <= 0:
+        raise ValueError("--adaptive_h_low_risk_required must be positive.")
+    if args.adaptive_h_guard_cooldown < 0:
+        raise ValueError("--adaptive_h_guard_cooldown must be non-negative.")
     if args.mode in ("speed", "both"):
         if args.entropy_dir is None:
             raise ValueError("--entropy_dir is required for --mode speed or --mode both.")
@@ -216,6 +249,15 @@ def _closed_loop_command(args: argparse.Namespace, step: int, run_dir: pathlib.P
         command.extend(["--norm_stats_dir", args.norm_stats_dir])
     if args.adaptive_replanning != "none":
         command.extend(["--adaptive_replanning", args.adaptive_replanning])
+        command.extend(["--adaptive_h_selector", args.adaptive_h_selector])
+        command.extend(["--adaptive_h_entropy_algorithm", args.adaptive_h_entropy_algorithm])
+        command.extend(["--adaptive_h_coarse_stride", str(args.adaptive_h_coarse_stride)])
+        command.extend(["--adaptive_h_jump_mad_scale", str(args.adaptive_h_jump_mad_scale)])
+        command.extend(["--adaptive_h_entropy_eps", str(args.adaptive_h_entropy_eps)])
+        command.extend(["--adaptive_h_cov_shrinkage", str(args.adaptive_h_cov_shrinkage)])
+        command.extend(["--adaptive_h_growth_limit", str(args.adaptive_h_growth_limit)])
+        command.extend(["--adaptive_h_low_risk_required", str(args.adaptive_h_low_risk_required)])
+        command.extend(["--adaptive_h_guard_cooldown", str(args.adaptive_h_guard_cooldown)])
         command.extend(["--adaptive_replan_entropy_mode", args.adaptive_replan_entropy_mode])
         command.extend(["--adaptive_replan_entropy_samples", str(args.adaptive_replan_entropy_samples)])
         command.extend(["--adaptive_replan_entropy_low_quantile", str(args.adaptive_replan_entropy_low_quantile)])
@@ -329,6 +371,9 @@ def _closed_loop_row(step: int, summary: dict[str, Any], target_mode: str, basel
             "avg_entropy_oracle_extra_calls_per_episode",
         ),
         "avg_replan_horizon": _safe_get(mode_metrics, "avg_replan_horizon"),
+        "avg_raw_execution_horizon": _safe_get(mode_metrics, "avg_raw_execution_horizon"),
+        "avg_guard_cap": _safe_get(mode_metrics, "avg_guard_cap"),
+        "avg_hysteresis_limited": _safe_get(mode_metrics, "avg_hysteresis_limited"),
         "avg_action_cot_denoising_steps_used": _safe_get(
             mode_metrics,
             "avg_action_cot_denoising_steps_used",

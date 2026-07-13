@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
+import dataclasses
 import json
 import logging
 import math
@@ -54,6 +55,13 @@ PROFILE_TIMING_FIELDS = (
     "action_expert_ms",
     "profile_overhead_ms",
 )
+
+
+@dataclasses.dataclass
+class AdaptiveHState:
+    previous_horizon: int
+    low_risk_streak: int = 0
+    guard_cooldown: int = 0
 
 
 def _ensure_libero_import_path() -> None:
@@ -126,6 +134,76 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--adaptive_h_selector",
+        "--adaptive-h-selector",
+        choices=("legacy", "final_aac", "cot_aac", "guarded_cot_aac"),
+        default="guarded_cot_aac",
+        help=(
+            "Execution-horizon selector used by entropy-based adaptive replanning. final_aac uses final-action "
+            "MC entropy, cot_aac uses time-aligned Action-CoT MC entropy, guarded_cot_aac adds stage guards and "
+            "hysteresis, and legacy retains the previous global segment-entropy mapping."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive_h_entropy_algorithm",
+        "--adaptive-h-entropy-algorithm",
+        choices=("diagonal_logvar", "aac_grouped"),
+        default="diagonal_logvar",
+        help=(
+            "Per-timestep MC entropy estimator. diagonal_logvar is the stable Stage-B-style baseline; "
+            "aac_grouped uses translation/rotation Gaussian entropy plus binary gripper entropy."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive_h_coarse_stride",
+        "--adaptive-h-coarse-stride",
+        type=float,
+        default=2.0,
+        help="Raw control-step stride represented by adjacent coarse Action-CoT tokens.",
+    )
+    parser.add_argument(
+        "--adaptive_h_jump_mad_scale",
+        "--adaptive-h-jump-mad-scale",
+        type=float,
+        default=1.5,
+        help="MAD multiplier used to decide whether a prefix-entropy increase is a significant AAC jump.",
+    )
+    parser.add_argument(
+        "--adaptive_h_entropy_eps",
+        "--adaptive-h-entropy-eps",
+        type=float,
+        default=1e-6,
+        help="Numerical epsilon for horizon entropy estimation.",
+    )
+    parser.add_argument(
+        "--adaptive_h_cov_shrinkage",
+        "--adaptive-h-cov-shrinkage",
+        type=float,
+        default=1e-4,
+        help="Diagonal covariance shrinkage for --adaptive_h_entropy_algorithm aac_grouped.",
+    )
+    parser.add_argument(
+        "--adaptive_h_growth_limit",
+        "--adaptive-h-growth-limit",
+        type=int,
+        default=1,
+        help="Maximum increase in guarded execution horizon per replan decision.",
+    )
+    parser.add_argument(
+        "--adaptive_h_low_risk_required",
+        "--adaptive-h-low-risk-required",
+        type=int,
+        default=2,
+        help="Consecutive low-risk decisions required before guarded execution horizon can increase.",
+    )
+    parser.add_argument(
+        "--adaptive_h_guard_cooldown",
+        "--adaptive-h-guard-cooldown",
+        type=int,
+        default=2,
+        help="Number of subsequent replan decisions held at the baseline horizon after a stage guard fires.",
+    )
+    parser.add_argument(
         "--adaptive_replan_entropy_mode",
         "--adaptive-replan-entropy-mode",
         choices=("none", "coarse_proxy", "online_mc"),
@@ -140,7 +218,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--adaptive_replan_entropy_samples",
         "--adaptive-replan-entropy-samples",
         type=int,
-        default=4,
+        default=5,
         help="Number of MC samples for --adaptive_replan_entropy_mode online_mc.",
     )
     parser.add_argument(
@@ -296,6 +374,20 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--adaptive_replan_horizons values must be positive.")
     if args.adaptive_replan_entropy_samples <= 0:
         raise ValueError("--adaptive_replan_entropy_samples must be positive.")
+    if args.adaptive_h_coarse_stride <= 0:
+        raise ValueError("--adaptive_h_coarse_stride must be positive.")
+    if args.adaptive_h_jump_mad_scale < 0:
+        raise ValueError("--adaptive_h_jump_mad_scale must be non-negative.")
+    if args.adaptive_h_entropy_eps <= 0:
+        raise ValueError("--adaptive_h_entropy_eps must be positive.")
+    if args.adaptive_h_cov_shrinkage <= 0:
+        raise ValueError("--adaptive_h_cov_shrinkage must be positive.")
+    if args.adaptive_h_growth_limit <= 0:
+        raise ValueError("--adaptive_h_growth_limit must be positive.")
+    if args.adaptive_h_low_risk_required <= 0:
+        raise ValueError("--adaptive_h_low_risk_required must be positive.")
+    if args.adaptive_h_guard_cooldown < 0:
+        raise ValueError("--adaptive_h_guard_cooldown must be non-negative.")
     if not 0.0 <= args.adaptive_replan_entropy_low_quantile <= 1.0:
         raise ValueError("--adaptive_replan_entropy_low_quantile must be in [0, 1].")
     if not 0.0 <= args.adaptive_replan_entropy_high_quantile <= 1.0:
@@ -317,6 +409,12 @@ def _validate_args(args: argparse.Namespace) -> None:
             "--adaptive_replanning entropy/action_entropy requires --adaptive_replan_entropy_mode "
             "coarse_proxy or online_mc."
         )
+    if (
+        args.adaptive_replanning in ("entropy", "action_entropy")
+        and args.adaptive_h_selector != "legacy"
+        and args.adaptive_replan_entropy_mode != "online_mc"
+    ):
+        raise ValueError("AAC adaptive-H selectors require --adaptive_replan_entropy_mode online_mc.")
     if args.adaptive_replanning in ("entropy", "action_entropy") and args.replan_steps < 5:
         raise ValueError("Entropy adaptive replanning requires --replan_steps >= 5 for speed validation.")
     if args.num_trials_per_task <= 0:
@@ -712,8 +810,66 @@ def _coarse_variation_proxy(
     }
 
 
+def _diagonal_frame_entropy(samples: np.ndarray, eps: float) -> np.ndarray:
+    variance = np.var(samples, axis=0)
+    return np.mean(np.log(variance + eps), axis=-1)
+
+
+def _gaussian_group_entropy(samples: np.ndarray, shrinkage: float) -> np.ndarray:
+    sample_count, time_len, dim = samples.shape
+    entropy = np.empty((time_len,), dtype=np.float64)
+    constant = dim * (1.0 + math.log(2.0 * math.pi))
+    for time_idx in range(time_len):
+        values = samples[:, time_idx, :]
+        centered = values - np.mean(values, axis=0, keepdims=True)
+        covariance = centered.T @ centered / max(sample_count, 1)
+        covariance = covariance + shrinkage * np.eye(dim, dtype=np.float64)
+        sign, logdet = np.linalg.slogdet(covariance)
+        entropy[time_idx] = 0.5 * (constant + logdet) if sign > 0 else float("nan")
+    return entropy
+
+
+def _aac_grouped_frame_entropy(samples: np.ndarray, eps: float, shrinkage: float) -> np.ndarray:
+    if samples.shape[-1] < 7:
+        return _diagonal_frame_entropy(samples, eps)
+
+    actions = samples[..., :7]
+    translation = _gaussian_group_entropy(actions[..., :3], shrinkage)
+    rotation = _gaussian_group_entropy(actions[..., 3:6], shrinkage)
+    gripper_closed = actions[..., 6] > 0
+    probability = np.clip(np.mean(gripper_closed, axis=0), eps, 1.0 - eps)
+    gripper = -(probability * np.log(probability) + (1.0 - probability) * np.log(1.0 - probability))
+    return translation + rotation + gripper
+
+
+def _frame_entropy(samples: np.ndarray, args: argparse.Namespace) -> np.ndarray:
+    samples = np.asarray(samples, dtype=np.float64)
+    if args.adaptive_h_entropy_algorithm == "aac_grouped":
+        return _aac_grouped_frame_entropy(
+            samples,
+            eps=args.adaptive_h_entropy_eps,
+            shrinkage=args.adaptive_h_cov_shrinkage,
+        )
+    return _diagonal_frame_entropy(samples, args.adaptive_h_entropy_eps)
+
+
+def _align_coarse_entropy_to_actions(
+    coarse_entropy: np.ndarray,
+    *,
+    action_len: int,
+    coarse_stride: float,
+) -> np.ndarray:
+    coarse_entropy = np.asarray(coarse_entropy, dtype=np.float64)
+    if coarse_entropy.size == 0 or action_len <= 0:
+        return np.zeros((0,), dtype=np.float64)
+    coarse_times = np.arange(coarse_entropy.size, dtype=np.float64) * coarse_stride
+    action_times = np.arange(action_len, dtype=np.float64)
+    return np.interp(action_times, coarse_times, coarse_entropy)
+
+
 def _mc_entropy_info(
     coarse_samples: np.ndarray,
+    action_samples: np.ndarray,
     *,
     args: argparse.Namespace,
     norm_stats: dict[str, Any] | None,
@@ -728,6 +884,21 @@ def _mc_entropy_info(
     coarse_mean = np.mean(coarse_normalized, axis=0)
     segments = _segment(coarse_mean, args)
     entropy = acot_compression.compute_mc_predictive_entropy(coarse_normalized, segments)
+    coarse_frame_entropy = _frame_entropy(coarse_normalized, args)
+
+    action_samples = np.asarray(action_samples, dtype=np.float64)
+    action_normalized, _ = stage_b._normalize_actions(
+        action_samples,
+        norm_stats,
+        use_quantiles=False,
+        preferred_key="actions",
+    )
+    final_frame_entropy = _frame_entropy(action_normalized, args)
+    aligned_cot_entropy = _align_coarse_entropy_to_actions(
+        coarse_frame_entropy,
+        action_len=action_samples.shape[1],
+        coarse_stride=args.adaptive_h_coarse_stride,
+    )
     return {
         "adaptive_entropy_source": "online_mc",
         "adaptive_entropy_score": float(np.max(entropy)) if entropy.size else float("nan"),
@@ -735,6 +906,9 @@ def _mc_entropy_info(
         "adaptive_entropy_max": float(np.max(entropy)) if entropy.size else float("nan"),
         "adaptive_entropy_std": float(np.std(entropy)) if entropy.size else float("nan"),
         "adaptive_entropy_num_segments": int(len(segments)),
+        "adaptive_cot_entropy_curve": aligned_cot_entropy.tolist(),
+        "adaptive_final_entropy_curve": final_frame_entropy.tolist(),
+        "adaptive_coarse_entropy_curve": coarse_frame_entropy.tolist(),
     }
 
 
@@ -780,6 +954,173 @@ def _low_entropy_horizon_index(
     return min(default_idx + 1 + int(round(extension * max(available - 1, 0))), len(horizons) - 1)
 
 
+def _aac_horizon_from_curve(
+    entropy_curve: np.ndarray,
+    horizons: list[int],
+    args: argparse.Namespace,
+) -> tuple[int, dict[str, Any]]:
+    curve = np.asarray(entropy_curve, dtype=np.float64)
+    prefix_entropy = {
+        horizon: float(np.mean(curve[:horizon]))
+        for horizon in horizons
+        if 0 < horizon <= curve.size
+    }
+    valid_horizons = [horizon for horizon in horizons if horizon in prefix_entropy]
+    if not valid_horizons:
+        raise ValueError("No candidate execution horizon fits the entropy curve.")
+    if len(valid_horizons) == 1:
+        return valid_horizons[0], {
+            "prefix_entropy": prefix_entropy,
+            "entropy_jumps": {},
+            "max_entropy_jump": float("nan"),
+            "entropy_jump_threshold": float("nan"),
+            "entropy_jump_significant": False,
+        }
+
+    jumps = {
+        f"{left}->{right}": prefix_entropy[right] - prefix_entropy[left]
+        for left, right in zip(valid_horizons[:-1], valid_horizons[1:], strict=True)
+    }
+    jump_values = np.asarray(list(jumps.values()), dtype=np.float64)
+    median = float(np.median(jump_values))
+    mad = float(np.median(np.abs(jump_values - median)))
+    jump_threshold = max(0.0, median + args.adaptive_h_jump_mad_scale * mad)
+    max_idx = int(np.argmax(jump_values))
+    max_jump = float(jump_values[max_idx])
+    significant = bool(max_jump > jump_threshold and max_jump > 0.0)
+    raw_horizon = valid_horizons[max_idx] if significant else valid_horizons[-1]
+    return raw_horizon, {
+        "prefix_entropy": prefix_entropy,
+        "entropy_jumps": jumps,
+        "max_entropy_jump": max_jump,
+        "entropy_jump_threshold": jump_threshold,
+        "entropy_jump_significant": significant,
+    }
+
+
+def _select_aac_execution_horizon(
+    action_chunk: np.ndarray,
+    *,
+    timing: dict[str, Any],
+    args: argparse.Namespace,
+    entropy_history: list[float],
+    state: AdaptiveHState,
+) -> tuple[int, dict[str, Any]]:
+    action_len = int(np.asarray(action_chunk).shape[0])
+    horizons = _candidate_horizons(args, action_len)
+    baseline_horizon = min(args.replan_steps, action_len)
+    selector = args.adaptive_h_selector
+    curve_key = "adaptive_final_entropy_curve" if selector == "final_aac" else "adaptive_cot_entropy_curve"
+    entropy_curve = np.asarray(timing.get(curve_key, []), dtype=np.float64)
+    if entropy_curve.size < baseline_horizon:
+        raise ValueError(f"{selector} requires an entropy curve with at least {baseline_horizon} values.")
+
+    raw_horizon, curve_info = _aac_horizon_from_curve(entropy_curve, horizons, args)
+    entropy_score = float(np.max(entropy_curve[:baseline_horizon]))
+    entropy_low, entropy_high, threshold_source = _entropy_thresholds(entropy_history, args)
+    entropy_decision = 1 if raw_horizon > baseline_horizon else -1
+    reasons = ["aac_entropy_jump" if curve_info["entropy_jump_significant"] else "aac_no_significant_jump"]
+
+    guarded = selector == "guarded_cot_aac"
+    if guarded:
+        if not (np.isfinite(entropy_low) and np.isfinite(entropy_high)):
+            raw_horizon = baseline_horizon
+            entropy_decision = 0
+            reasons.append(f"entropy_{threshold_source}")
+        elif entropy_score >= entropy_high:
+            raw_horizon = baseline_horizon
+            entropy_decision = -1
+            reasons.append("entropy_high")
+        elif entropy_score <= entropy_low:
+            entropy_decision = 1
+            reasons.append("entropy_low")
+        else:
+            baseline_idx = _nearest_horizon_index(horizons, baseline_horizon)
+            cautious_horizon = horizons[min(baseline_idx + 1, len(horizons) - 1)]
+            raw_horizon = min(raw_horizon, cautious_horizon)
+            entropy_decision = 0
+            reasons.append("entropy_mid")
+
+    metrics = _action_stability_metrics(np.asarray(action_chunk)[:raw_horizon], args)
+    stage_guarded, stage_guard_reason = _stage_guard_info(metrics, args)
+    guard_cap = horizons[-1]
+    previous_horizon = state.previous_horizon
+    hysteresis_limited = False
+
+    if guarded:
+        if stage_guarded:
+            guard_cap = baseline_horizon
+            state.guard_cooldown = args.adaptive_h_guard_cooldown
+            state.low_risk_streak = 0
+            reasons.append(f"stage_guard:{stage_guard_reason}")
+        elif state.guard_cooldown > 0:
+            guard_cap = baseline_horizon
+            state.guard_cooldown -= 1
+            stage_guarded = True
+            stage_guard_reason = "cooldown"
+            state.low_risk_streak = 0
+            reasons.append("stage_guard:cooldown")
+
+        candidate_horizon = min(raw_horizon, guard_cap)
+        low_risk = entropy_decision > 0 and not stage_guarded
+        if candidate_horizon > previous_horizon:
+            state.low_risk_streak = state.low_risk_streak + 1 if low_risk else 0
+            if state.low_risk_streak < args.adaptive_h_low_risk_required:
+                final_horizon = previous_horizon
+                hysteresis_limited = True
+                reasons.append("hysteresis_wait")
+            else:
+                final_horizon = min(candidate_horizon, previous_horizon + args.adaptive_h_growth_limit)
+                hysteresis_limited = final_horizon < candidate_horizon
+                if hysteresis_limited:
+                    reasons.append("hysteresis_growth_limit")
+        else:
+            final_horizon = candidate_horizon
+            if candidate_horizon < previous_horizon:
+                reasons.append("immediate_shrink")
+            state.low_risk_streak = 0
+    else:
+        final_horizon = raw_horizon
+
+    final_horizon = min(int(final_horizon), action_len)
+    state.previous_horizon = final_horizon
+    info = {
+        "adaptive_replan_horizon": final_horizon,
+        "adaptive_replan_reason": "+".join(reasons),
+        "adaptive_h_selector": selector,
+        "adaptive_raw_execution_horizon": int(raw_horizon),
+        "adaptive_guard_cap": int(guard_cap),
+        "adaptive_previous_execution_horizon": int(previous_horizon),
+        "adaptive_hysteresis_limited": float(hysteresis_limited),
+        "adaptive_low_risk_streak": int(state.low_risk_streak),
+        "adaptive_guard_cooldown_remaining": int(state.guard_cooldown),
+        "adaptive_action_delta": float(metrics["action_delta"]),
+        "adaptive_action_jerk": float(metrics["action_jerk"]),
+        "adaptive_action_jerk_ratio": float(metrics["action_jerk_ratio"]),
+        "adaptive_gripper_change": float(metrics["gripper_change"]),
+        "adaptive_gripper_event": float(metrics["gripper_event"]),
+        "adaptive_entropy_score": entropy_score,
+        "adaptive_entropy_mean": float(np.mean(entropy_curve)),
+        "adaptive_entropy_max": float(np.max(entropy_curve)),
+        "adaptive_entropy_std": float(np.std(entropy_curve)),
+        "adaptive_entropy_num_segments": int(entropy_curve.size),
+        "adaptive_entropy_low_threshold": entropy_low,
+        "adaptive_entropy_high_threshold": entropy_high,
+        "adaptive_entropy_threshold_source": threshold_source if guarded else "aac_curve",
+        "adaptive_entropy_decision": entropy_decision,
+        "adaptive_low_entropy_target_horizon": int(raw_horizon),
+        "adaptive_stage_guard": float(stage_guarded),
+        "adaptive_stage_guard_reason": stage_guard_reason,
+        "adaptive_entropy_curve": entropy_curve.tolist(),
+        "adaptive_prefix_entropy": curve_info["prefix_entropy"],
+        "adaptive_entropy_jumps": curve_info["entropy_jumps"],
+        "adaptive_max_entropy_jump": float(curve_info["max_entropy_jump"]),
+        "adaptive_entropy_jump_threshold": float(curve_info["entropy_jump_threshold"]),
+        "adaptive_entropy_jump_significant": float(curve_info["entropy_jump_significant"]),
+    }
+    return final_horizon, info
+
+
 def _stage_guard_info(metrics: dict[str, float], args: argparse.Namespace) -> tuple[bool, str]:
     if args.disable_adaptive_replan_stage_guard:
         return False, ""
@@ -805,6 +1146,7 @@ def _select_replan_horizon(
     timing: dict[str, Any],
     args: argparse.Namespace,
     entropy_history: list[float],
+    state: AdaptiveHState,
 ) -> tuple[int, dict[str, Any]]:
     action_len = int(np.asarray(action_chunk).shape[0])
     if not _adaptive_replanning_enabled(args):
@@ -814,6 +1156,15 @@ def _select_replan_horizon(
             "adaptive_replan_reason": "fixed",
             "adaptive_entropy_decision": 0,
         }
+
+    if _adaptive_uses_entropy(args) and args.adaptive_h_selector != "legacy":
+        return _select_aac_execution_horizon(
+            action_chunk,
+            timing=timing,
+            args=args,
+            entropy_history=entropy_history,
+            state=state,
+        )
 
     horizons = _candidate_horizons(args, action_len)
     default_idx = _nearest_horizon_index(horizons, args.replan_steps)
@@ -870,6 +1221,7 @@ def _select_replan_horizon(
         reasons.append(f"stage_guard:{stage_guard_reason}")
 
     horizon = horizons[bucket_idx]
+    state.previous_horizon = horizon
     info = {
         "adaptive_replan_horizon": horizon,
         "adaptive_replan_reason": "+".join(reasons) if reasons else "default",
@@ -923,6 +1275,7 @@ def _query_action(
                 entropy_info = _coarse_variation_proxy(coarse_actions, args=args, norm_stats=norm_stats)
             elif args.adaptive_replan_entropy_mode == "online_mc":
                 coarse_samples = [coarse_actions]
+                action_samples = [np.asarray(result["actions"], dtype=np.float32)]
                 full_element = _with_action_cot_denoising_steps(element, args)
                 for sample_idx in range(1, args.adaptive_replan_entropy_samples):
                     extra_result, extra_wall_ms, extra_policy_ms, extra_server_ms, extra_stage_timing = _infer(
@@ -933,12 +1286,18 @@ def _query_action(
                     if "coarse_actions" not in extra_result:
                         raise KeyError("Policy output does not contain coarse_actions for online entropy sampling.")
                     coarse_samples.append(np.asarray(extra_result["coarse_actions"], dtype=np.float32))
+                    action_samples.append(np.asarray(extra_result["actions"], dtype=np.float32))
                     full_wall_ms.append(extra_wall_ms)
                     full_policy_ms.append(extra_policy_ms)
                     full_server_ms.append(extra_server_ms)
                     full_stage_timings.append(extra_stage_timing)
                     full_denoising_steps.append(_denoising_steps_from_result(extra_result))
-                entropy_info = _mc_entropy_info(np.stack(coarse_samples, axis=0), args=args, norm_stats=norm_stats)
+                entropy_info = _mc_entropy_info(
+                    np.stack(coarse_samples, axis=0),
+                    np.stack(action_samples, axis=0),
+                    args=args,
+                    norm_stats=norm_stats,
+                )
 
         total_wall_ms = float(np.nansum(full_wall_ms))
         total_policy_ms = float(np.nansum(full_policy_ms))
@@ -1107,13 +1466,13 @@ def _run_mode(
     rng = np.random.default_rng(args.seed)
     max_steps = _max_steps(args.task_suite_name)
     video_root = pathlib.Path(args.video_out_path) if args.video_out_path else output_dir / "videos"
-    entropy_history: list[float] = []
 
     for task_id in _task_ids(args, task_suite.n_tasks):
         task = task_suite.get_task(task_id)
         initial_states = task_suite.get_task_init_states(task_id)
         task_description = task.language
         env = None
+        entropy_history: list[float] = []
 
         for episode_idx in range(args.num_trials_per_task):
             if env is not None:
@@ -1149,7 +1508,13 @@ def _run_mode(
             adaptive_entropy_decisions = []
             adaptive_low_entropy_target_horizons = []
             adaptive_stage_guards = []
+            adaptive_raw_execution_horizons = []
+            adaptive_guard_caps = []
+            adaptive_max_entropy_jumps = []
+            adaptive_hysteresis_limited = []
             adaptive_replan_reasons = []
+            adaptive_h_decisions = []
+            adaptive_h_state = AdaptiveHState(previous_horizon=args.replan_steps)
             full_calls = 0
             override_calls = 0
             true_skip_calls = 0
@@ -1197,6 +1562,7 @@ def _run_mode(
                         timing=timing,
                         args=args,
                         entropy_history=entropy_history,
+                        state=adaptive_h_state,
                     )
                     replan_horizon = min(int(replan_horizon), len(action_chunk))
                     action_plan.extend(action_chunk[:replan_horizon])
@@ -1214,6 +1580,10 @@ def _run_mode(
                         ("adaptive_entropy_decision", adaptive_entropy_decisions),
                         ("adaptive_low_entropy_target_horizon", adaptive_low_entropy_target_horizons),
                         ("adaptive_stage_guard", adaptive_stage_guards),
+                        ("adaptive_raw_execution_horizon", adaptive_raw_execution_horizons),
+                        ("adaptive_guard_cap", adaptive_guard_caps),
+                        ("adaptive_max_entropy_jump", adaptive_max_entropy_jumps),
+                        ("adaptive_hysteresis_limited", adaptive_hysteresis_limited),
                     ):
                         value = float(replan_info.get(key, float("nan")))
                         if np.isfinite(value):
@@ -1221,6 +1591,53 @@ def _run_mode(
                     entropy_score = float(replan_info.get("adaptive_entropy_score", float("nan")))
                     if _adaptive_uses_entropy(args) and np.isfinite(entropy_score):
                         entropy_history.append(entropy_score)
+                    adaptive_h_decisions.append(
+                        {
+                            "environment_step": int(t),
+                            "selector": str(replan_info.get("adaptive_h_selector", "legacy")),
+                            "entropy_source": str(timing.get("adaptive_entropy_source", "none")),
+                            "raw_execution_horizon": int(
+                                replan_info.get("adaptive_raw_execution_horizon", replan_horizon)
+                            ),
+                            "guard_cap": int(replan_info.get("adaptive_guard_cap", len(action_chunk))),
+                            "previous_execution_horizon": int(
+                                replan_info.get("adaptive_previous_execution_horizon", replan_horizon)
+                            ),
+                            "execution_horizon": int(replan_horizon),
+                            "entropy_score": entropy_score,
+                            "entropy_low_threshold": float(
+                                replan_info.get("adaptive_entropy_low_threshold", float("nan"))
+                            ),
+                            "entropy_high_threshold": float(
+                                replan_info.get("adaptive_entropy_high_threshold", float("nan"))
+                            ),
+                            "entropy_threshold_source": str(
+                                replan_info.get("adaptive_entropy_threshold_source", "none")
+                            ),
+                            "max_entropy_jump": float(
+                                replan_info.get("adaptive_max_entropy_jump", float("nan"))
+                            ),
+                            "entropy_jump_threshold": float(
+                                replan_info.get("adaptive_entropy_jump_threshold", float("nan"))
+                            ),
+                            "entropy_jump_significant": float(
+                                replan_info.get("adaptive_entropy_jump_significant", float("nan"))
+                            ),
+                            "stage_guard": float(replan_info.get("adaptive_stage_guard", float("nan"))),
+                            "stage_guard_reason": str(replan_info.get("adaptive_stage_guard_reason", "")),
+                            "hysteresis_limited": float(
+                                replan_info.get("adaptive_hysteresis_limited", float("nan"))
+                            ),
+                            "low_risk_streak": int(replan_info.get("adaptive_low_risk_streak", 0)),
+                            "guard_cooldown_remaining": int(
+                                replan_info.get("adaptive_guard_cooldown_remaining", 0)
+                            ),
+                            "decision_reason": str(replan_info.get("adaptive_replan_reason", "")),
+                            "entropy_curve": replan_info.get("adaptive_entropy_curve", []),
+                            "prefix_entropy": replan_info.get("adaptive_prefix_entropy", {}),
+                            "entropy_jumps": replan_info.get("adaptive_entropy_jumps", {}),
+                        }
+                    )
 
                     infer_wall_ms.append(float(timing["wall_ms"]))
                     infer_policy_ms.append(float(timing["policy_ms"]))
@@ -1312,7 +1729,12 @@ def _run_mode(
                 "avg_adaptive_entropy_decision": _mean(adaptive_entropy_decisions),
                 "avg_adaptive_low_entropy_target_horizon": _mean(adaptive_low_entropy_target_horizons),
                 "avg_adaptive_stage_guard": _mean(adaptive_stage_guards),
+                "avg_raw_execution_horizon": _mean(adaptive_raw_execution_horizons),
+                "avg_guard_cap": _mean(adaptive_guard_caps),
+                "avg_max_entropy_jump": _mean(adaptive_max_entropy_jumps),
+                "avg_hysteresis_limited": _mean(adaptive_hysteresis_limited),
                 "adaptive_replan_reasons": ";".join(adaptive_replan_reasons),
+                "adaptive_h_decisions_json": json.dumps(adaptive_h_decisions, separators=(",", ":")),
                 "num_replans": len(infer_wall_ms),
                 "total_policy_calls": total_policy_calls,
                 "deployable_policy_calls": deployable_policy_calls,
@@ -1394,7 +1816,12 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_adaptive_entropy_decision",
         "avg_adaptive_low_entropy_target_horizon",
         "avg_adaptive_stage_guard",
+        "avg_raw_execution_horizon",
+        "avg_guard_cap",
+        "avg_max_entropy_jump",
+        "avg_hysteresis_limited",
         "adaptive_replan_reasons",
+        "adaptive_h_decisions_json",
         "num_replans",
         "total_policy_calls",
         "deployable_policy_calls",
@@ -1407,6 +1834,62 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+    decisions_path = output_dir / "adaptive_h_decisions.csv"
+    decision_fieldnames = [
+        "mode",
+        "task_suite",
+        "task_id",
+        "task_name",
+        "episode",
+        "decision_index",
+        "environment_step",
+        "selector",
+        "entropy_source",
+        "raw_execution_horizon",
+        "guard_cap",
+        "previous_execution_horizon",
+        "execution_horizon",
+        "entropy_score",
+        "entropy_low_threshold",
+        "entropy_high_threshold",
+        "entropy_threshold_source",
+        "max_entropy_jump",
+        "entropy_jump_threshold",
+        "entropy_jump_significant",
+        "stage_guard",
+        "stage_guard_reason",
+        "hysteresis_limited",
+        "low_risk_streak",
+        "guard_cooldown_remaining",
+        "decision_reason",
+        "entropy_curve",
+        "prefix_entropy",
+        "entropy_jumps",
+    ]
+    decision_rows = []
+    for row in rows:
+        for decision_index, decision in enumerate(json.loads(row["adaptive_h_decisions_json"])):
+            decision_rows.append(
+                {
+                    "mode": row["mode"],
+                    "task_suite": row["task_suite"],
+                    "task_id": row["task_id"],
+                    "task_name": row["task_name"],
+                    "episode": row["episode"],
+                    "decision_index": decision_index,
+                    **{
+                        key: json.dumps(value, separators=(",", ":"))
+                        if key in ("entropy_curve", "prefix_entropy", "entropy_jumps")
+                        else value
+                        for key, value in decision.items()
+                    },
+                }
+            )
+    with decisions_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=decision_fieldnames)
+        writer.writeheader()
+        writer.writerows(decision_rows)
 
     per_task_path = output_dir / "per_task_summary.csv"
     per_task_fieldnames = [
@@ -1450,6 +1933,10 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "avg_adaptive_entropy_decision",
         "avg_adaptive_low_entropy_target_horizon",
         "avg_adaptive_stage_guard",
+        "avg_raw_execution_horizon",
+        "avg_guard_cap",
+        "avg_max_entropy_jump",
+        "avg_hysteresis_limited",
     ]
     per_task_rows = []
     task_keys = sorted(
@@ -1544,6 +2031,14 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 "avg_adaptive_stage_guard": _mean(
                     [float(row["avg_adaptive_stage_guard"]) for row in subset]
                 ),
+                "avg_raw_execution_horizon": _mean(
+                    [float(row["avg_raw_execution_horizon"]) for row in subset]
+                ),
+                "avg_guard_cap": _mean([float(row["avg_guard_cap"]) for row in subset]),
+                "avg_max_entropy_jump": _mean([float(row["avg_max_entropy_jump"]) for row in subset]),
+                "avg_hysteresis_limited": _mean(
+                    [float(row["avg_hysteresis_limited"]) for row in subset]
+                ),
             }
         )
     with per_task_path.open("w", newline="") as f:
@@ -1635,6 +2130,14 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
                 [float(row["avg_adaptive_low_entropy_target_horizon"]) for row in subset]
             ),
             "avg_adaptive_stage_guard": _mean([float(row["avg_adaptive_stage_guard"]) for row in subset]),
+            "avg_raw_execution_horizon": _mean(
+                [float(row["avg_raw_execution_horizon"]) for row in subset]
+            ),
+            "avg_guard_cap": _mean([float(row["avg_guard_cap"]) for row in subset]),
+            "avg_max_entropy_jump": _mean([float(row["avg_max_entropy_jump"]) for row in subset]),
+            "avg_hysteresis_limited": _mean(
+                [float(row["avg_hysteresis_limited"]) for row in subset]
+            ),
             "avg_num_replans_per_episode": _mean([float(row["num_replans"]) for row in subset]),
             "avg_total_policy_calls_per_episode": _mean([float(row["total_policy_calls"]) for row in subset]),
             "avg_deployable_policy_calls_per_episode": _mean(
@@ -1660,6 +2163,15 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             "replan_steps": args.replan_steps,
             "adaptive_replanning": args.adaptive_replanning,
             "adaptive_replan_horizons": args.adaptive_replan_horizons,
+            "adaptive_h_selector": args.adaptive_h_selector,
+            "adaptive_h_entropy_algorithm": args.adaptive_h_entropy_algorithm,
+            "adaptive_h_coarse_stride": args.adaptive_h_coarse_stride,
+            "adaptive_h_jump_mad_scale": args.adaptive_h_jump_mad_scale,
+            "adaptive_h_entropy_eps": args.adaptive_h_entropy_eps,
+            "adaptive_h_cov_shrinkage": args.adaptive_h_cov_shrinkage,
+            "adaptive_h_growth_limit": args.adaptive_h_growth_limit,
+            "adaptive_h_low_risk_required": args.adaptive_h_low_risk_required,
+            "adaptive_h_guard_cooldown": args.adaptive_h_guard_cooldown,
             "adaptive_replan_entropy_mode": args.adaptive_replan_entropy_mode,
             "adaptive_replan_entropy_samples": args.adaptive_replan_entropy_samples,
             "adaptive_replan_entropy_low_quantile": args.adaptive_replan_entropy_low_quantile,
@@ -1695,7 +2207,11 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
             ),
         },
         "aggregate": by_mode,
-        "outputs": {"rollout_rows_csv": str(rows_path), "per_task_summary_csv": str(per_task_path)},
+        "outputs": {
+            "rollout_rows_csv": str(rows_path),
+            "per_task_summary_csv": str(per_task_path),
+            "adaptive_h_decisions_csv": str(decisions_path),
+        },
     }
     if "full" in by_mode and "pruned_override" in by_mode:
         summary["comparison"] = {
