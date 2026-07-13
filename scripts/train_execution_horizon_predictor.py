@@ -42,6 +42,9 @@ class Args:
     validation_fraction: float = 0.1
     log_interval: int = 100
     checkpoint_interval: int = 5_000
+    select_best_validation: bool = True
+    early_stopping_patience_logs: int = 0
+    early_stopping_min_delta: float = 0.0
     hidden_dim: int = 256
     temporal_layers: int = 3
 
@@ -164,6 +167,8 @@ def _restore_predictor(module: ExecutionHorizonPredictor, params_path: str) -> E
 def main(args: Args) -> None:
     if args.train_steps <= 0 or args.batch_size <= 0:
         raise ValueError("train_steps and batch_size must be positive.")
+    if args.early_stopping_patience_logs < 0 or args.early_stopping_min_delta < 0:
+        raise ValueError("Early-stopping patience and min delta must be non-negative.")
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     arrays = horizon_dataset.load_counterfactual_arrays(args.dataset)
@@ -246,6 +251,13 @@ def main(args: Args) -> None:
     metrics_path = output_dir / "metrics.jsonl"
     start_time = time.monotonic()
     last_train_metrics: dict[str, float] = {}
+    last_validation_metrics: dict[str, float] = {}
+    best_validation_loss = float("inf")
+    best_validation_step = 0
+    best_params: nnx.State | None = None
+    logs_without_improvement = 0
+    completed_steps = 0
+    stopped_early = False
     with metrics_path.open("a") as metrics_file:
         for step in range(1, args.train_steps + 1):
             sampled = rng.choice(
@@ -255,6 +267,7 @@ def main(args: Args) -> None:
                 p=train_probabilities,
             )
             params, optimizer_state, train_metrics = train_step(params, optimizer_state, _batch(arrays, sampled))
+            completed_steps = step
             if step == 1 or step % args.log_interval == 0 or step == args.train_steps:
                 validation_sample = rng.choice(
                     validation_indices,
@@ -265,22 +278,42 @@ def main(args: Args) -> None:
                 last_train_metrics = {
                     f"train/{name}": float(value) for name, value in jax.device_get(train_metrics).items()
                 }
+                last_validation_metrics = {
+                    f"validation/{name}": float(value)
+                    for name, value in jax.device_get(validation_metrics).items()
+                }
                 record: dict[str, Any] = {
                     "step": step,
                     "elapsed_seconds": time.monotonic() - start_time,
                     **last_train_metrics,
-                    **{
-                        f"validation/{name}": float(value) for name, value in jax.device_get(validation_metrics).items()
-                    },
+                    **last_validation_metrics,
                 }
                 metrics_file.write(json.dumps(record, sort_keys=True) + "\n")
                 metrics_file.flush()
                 print(json.dumps(record, sort_keys=True), flush=True)
+                validation_loss = last_validation_metrics["validation/loss"]
+                if validation_loss < best_validation_loss - args.early_stopping_min_delta:
+                    best_validation_loss = validation_loss
+                    best_validation_step = step
+                    # Optax returns a new state tree on each update, so keeping
+                    # this immutable NNX State retains the best validation
+                    # checkpoint without loading or copying the base policy.
+                    best_params = params
+                    logs_without_improvement = 0
+                else:
+                    logs_without_improvement += 1
+                if (
+                    args.early_stopping_patience_logs > 0
+                    and logs_without_improvement >= args.early_stopping_patience_logs
+                ):
+                    stopped_early = True
+                    break
             if args.checkpoint_interval > 0 and step % args.checkpoint_interval == 0:
                 _save_sidecar(params, output_dir / "checkpoints" / f"step-{step:08d}" / "params")
 
     final_params = output_dir / "params"
-    _save_sidecar(params, final_params)
+    selected_params = best_params if args.select_best_validation and best_params is not None else params
+    _save_sidecar(selected_params, final_params)
     summary = {
         "status": "complete",
         "base_policy_loaded": False,
@@ -289,12 +322,18 @@ def main(args: Args) -> None:
         "num_records": len(arrays["task_id"]),
         "num_train_records": int(train_indices.size),
         "num_validation_records": int(validation_indices.size),
-        "train_steps": args.train_steps,
+        "train_steps": completed_steps,
+        "requested_train_steps": args.train_steps,
         "batch_size": args.batch_size,
         "elapsed_seconds": time.monotonic() - start_time,
         "predictor_params": str(final_params.resolve()),
+        "selected_checkpoint": "best_validation" if args.select_best_validation else "last_step",
+        "best_validation_step": best_validation_step,
+        "best_validation_loss": best_validation_loss,
+        "stopped_early": stopped_early,
         "loss_weights": dataclasses.asdict(weights),
         "last_train_metrics": last_train_metrics,
+        "last_validation_metrics": last_validation_metrics,
     }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
