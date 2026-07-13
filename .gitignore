@@ -1,8 +1,11 @@
 # Data directories.
-assets/
-checkpoints/
+/assets
+/checkpoints
 data/
 wandb/
+
+# OS metadata.
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -171,8 +174,10 @@ logs/
 *exps*
 .vscode/
 # Local runtime artifacts
-outputs/
-work/
+/output/
+/outputs/
+/tmp/
+/work/
 
 # Local report context and generated report outputs
 reports/context/
