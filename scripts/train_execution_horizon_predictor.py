@@ -149,6 +149,11 @@ def _save_sidecar(params: nnx.State, target: pathlib.Path) -> None:
 
 def _restore_predictor(module: ExecutionHorizonPredictor, params_path: str) -> ExecutionHorizonPredictor:
     loaded = model_lib.restore_params(params_path, dtype=jnp.float32)
+    # Orbax serializes integer keys used by NNX list containers (for example
+    # temporal_layers/0) as strings.  Convert them back before replacing the
+    # freshly constructed predictor state so iterative SFT can warm-start from
+    # the previous round's sidecar.
+    loaded = model_lib.convert_str_keys_to_int(loaded)
     if "execution_horizon_predictor" in loaded:
         loaded = loaded["execution_horizon_predictor"]
     graphdef, state = nnx.split(module)
