@@ -1134,7 +1134,7 @@ class ACOT_VLA(_model.BaseModel):
         self,
         *,
         prefix_feature: jax.Array,
-        state: jax.Array,
+        proprioception: jax.Array,
         coarse_actions: jax.Array,
         final_actions: jax.Array,
         previous_actions: jax.Array,
@@ -1147,7 +1147,7 @@ class ACOT_VLA(_model.BaseModel):
             raise ValueError("This model was created without execution_horizon_predictor=True.")
         return self.execution_horizon_predictor(
             prefix_feature=prefix_feature,
-            state=state,
+            state=proprioception,
             coarse_actions=coarse_actions,
             final_actions=final_actions,
             previous_actions=previous_actions,

@@ -210,7 +210,7 @@ class Policy(BasePolicy):
             predictor_start = time.monotonic()
             predictor_outputs = self._predict_execution_horizon(
                 prefix_feature=result["execution_horizon_prefix_feature"],
-                state=inputs["state"],
+                proprioception=inputs["state"],
                 coarse_actions=result["coarse_actions"],
                 final_actions=result["actions"],
                 previous_actions=jnp.asarray(normalized_previous_actions)[None, ...],
