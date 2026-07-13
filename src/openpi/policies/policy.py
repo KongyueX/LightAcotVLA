@@ -258,7 +258,8 @@ class Policy(BasePolicy):
     def _normalize_previous_actions(self, previous_actions: Any) -> np.ndarray:
         if previous_actions is None:
             return np.zeros((10, self._action_dim), dtype=np.float32)
-        actions = np.asarray(previous_actions, dtype=np.float32)
+        # websocket/msgpack inputs may be backed by a read-only buffer.
+        actions = np.array(previous_actions, dtype=np.float32, copy=True)
         if actions.ndim != 2:
             raise ValueError(f"execution_horizon_previous_actions must be rank 2, got {actions.shape}.")
         if self._norm_stats is not None and "actions" in self._norm_stats:
