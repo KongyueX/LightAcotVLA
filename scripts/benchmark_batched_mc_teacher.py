@@ -1,4 +1,5 @@
 """Benchmark actual end-to-end latency of the shared-prefix batched MC teacher."""
+# ruff: noqa: SLF001
 
 from __future__ import annotations
 
@@ -82,7 +83,7 @@ def main(args: argparse.Namespace) -> None:
             request = {
                 **element,
                 "policy_seed": np.asarray(args.seed + repeat * 1000, dtype=np.int64),
-                "profile_policy_timing": np.asarray(True),
+                "profile_policy_timing": np.asarray(1, dtype=np.bool_),
                 "batched_mc_samples": np.asarray(sample_count, dtype=np.int32),
                 "action_cot_denoising_steps": np.asarray(
                     args.action_cot_denoising_steps, dtype=np.int32
@@ -125,7 +126,7 @@ def main(args: argparse.Namespace) -> None:
                         "policy_seed": np.asarray(
                             args.seed + repeat * 1000 + sample_index, dtype=np.int64
                         ),
-                        "profile_policy_timing": np.asarray(True),
+                        "profile_policy_timing": np.asarray(1, dtype=np.bool_),
                         "action_cot_denoising_steps": np.asarray(
                             args.action_cot_denoising_steps, dtype=np.int32
                         ),

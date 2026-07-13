@@ -1,8 +1,10 @@
 """Collect H=1..10 counterfactual execution-horizon labels in LIBERO."""
+# ruff: noqa: SLF001
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import dataclasses
 import json
@@ -123,10 +125,8 @@ def _restore_snapshot(env: Any, snapshot: SimulatorSnapshot) -> dict[str, Any]:
         simulator.set_state(snapshot.physics_state)
     simulator.forward()
     for candidate, name, value in snapshot.scalar_attributes:
-        try:
+        with contextlib.suppress(Exception):
             setattr(candidate, name, copy.deepcopy(value))
-        except Exception:
-            pass
     for candidate, name, state in snapshot.random_states:
         generator = getattr(candidate, name, None)
         try:
@@ -151,10 +151,8 @@ def _restore_snapshot(env: Any, snapshot: SimulatorSnapshot) -> dict[str, Any]:
     if callable(regenerate):
         observation = regenerate(snapshot.physics_state)
         for candidate, name, value in snapshot.scalar_attributes:
-            try:
+            with contextlib.suppress(Exception):
                 setattr(candidate, name, copy.deepcopy(value))
-            except Exception:
-                pass
         return observation
     raise RuntimeError("Could not regenerate a LIBERO observation after restoring physics state.")
 
@@ -175,11 +173,11 @@ def _policy_request(
     request = dict(observation)
     request["policy_seed"] = np.asarray(seed, dtype=np.int64)
     request["action_cot_denoising_steps"] = np.asarray(args.action_cot_denoising_steps, dtype=np.int32)
-    request["profile_policy_timing"] = np.asarray(True)
+    request["profile_policy_timing"] = np.asarray(1, dtype=np.bool_)
     if teacher:
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
     if run_student:
-        request["run_execution_horizon_predictor"] = np.asarray(True)
+        request["run_execution_horizon_predictor"] = np.asarray(1, dtype=np.bool_)
         request["execution_horizon_previous_actions"] = (
             np.asarray(previous_actions, dtype=np.float32)
             if previous_actions is not None
@@ -197,7 +195,12 @@ def _policy_request(
 
 def _sigmoid(values: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=np.float64)
-    return np.where(values >= 0, 1.0 / (1.0 + np.exp(-values)), np.exp(values) / (1.0 + np.exp(values)))
+    positive = values >= 0
+    result = np.empty_like(values)
+    result[positive] = 1.0 / (1.0 + np.exp(-values[positive]))
+    exponential = np.exp(values[~positive])
+    result[~positive] = exponential / (1.0 + exponential)
+    return result
 
 
 def _student_horizon(

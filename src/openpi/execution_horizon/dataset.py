@@ -24,6 +24,9 @@ class DatasetShape:
     action_horizon: int = 10
 
 
+DEFAULT_DATASET_SHAPE = DatasetShape()
+
+
 _FIXED_SPECS: dict[str, tuple[np.dtype, tuple[str, ...]]] = {
     "prefix_feature": (np.dtype(np.float16), ("prefix_feature_dim",)),
     "state": (np.dtype(np.float16), ("state_dim",)),
@@ -82,7 +85,7 @@ class ShardedCounterfactualWriter:
         self,
         output_dir: pathlib.Path | str,
         *,
-        shape: DatasetShape = DatasetShape(),
+        shape: DatasetShape = DEFAULT_DATASET_SHAPE,
         records_per_shard: int = 1024,
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
@@ -160,7 +163,7 @@ class ShardedCounterfactualWriter:
     def close(self) -> None:
         self.flush()
 
-    def __enter__(self) -> "ShardedCounterfactualWriter":
+    def __enter__(self) -> ShardedCounterfactualWriter:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
@@ -197,11 +200,11 @@ def load_counterfactual_arrays(
         with h5py.File(shard, "r") as handle:
             if int(handle.attrs["schema_version"]) != SCHEMA_VERSION:
                 raise ValueError(f"Unsupported schema in {shard}: {handle.attrs['schema_version']}")
-            for name in pieces:
+            for name, destination in pieces.items():
                 if name == "physics_state":
-                    pieces[name].extend(np.asarray(row, dtype=np.float64) for row in handle[name])
+                    destination.extend(np.asarray(row, dtype=np.float64) for row in handle[name])
                 else:
-                    pieces[name].append(handle[name][:])
+                    destination.append(handle[name][:])
     result: dict[str, np.ndarray] = {}
     for name, values in pieces.items():
         if name == "physics_state":

@@ -116,11 +116,11 @@ def _split_indices(arrays: dict[str, np.ndarray], args: Args) -> tuple[np.ndarra
         rng.shuffle(indices)
         if len(indices) == 1:
             return indices, indices
-        validation_count = max(1, int(round(len(indices) * args.validation_fraction)))
+        validation_count = max(1, round(len(indices) * args.validation_fraction))
         validation_count = min(validation_count, len(indices) - 1)
         return indices[validation_count:], indices[:validation_count]
     rng.shuffle(unique_groups)
-    validation_count = max(1, int(round(len(unique_groups) * args.validation_fraction)))
+    validation_count = max(1, round(len(unique_groups) * args.validation_fraction))
     validation_groups = unique_groups[:validation_count]
     validation_mask = np.isin(groups, validation_groups)
     train_indices = np.flatnonzero(~validation_mask)
@@ -284,7 +284,7 @@ def main(args: Args) -> None:
         "base_policy_loaded": False,
         "base_policy_frozen": True,
         "dataset_inputs": list(args.dataset),
-        "num_records": int(len(arrays["task_id"])),
+        "num_records": len(arrays["task_id"]),
         "num_train_records": int(train_indices.size),
         "num_validation_records": int(validation_indices.size),
         "train_steps": args.train_steps,

@@ -67,6 +67,10 @@ class SMDPDecision:
     budget_balance: float
 
 
+DEFAULT_RISK_CONFIG = V2RiskConfig()
+DEFAULT_VALUE_REFINEMENT_CONFIG = ValueRefinementConfig()
+
+
 def _diagonal_frame_entropy(samples: np.ndarray, eps: float) -> np.ndarray:
     variance = np.var(samples, axis=0)
     return np.mean(np.log(variance + eps), axis=-1)
@@ -142,7 +146,7 @@ def risk_targets_from_normalized_mc(
     coarse_samples: np.ndarray,
     action_samples: np.ndarray,
     *,
-    config: V2RiskConfig = V2RiskConfig(),
+    config: V2RiskConfig = DEFAULT_RISK_CONFIG,
 ) -> dict[str, np.ndarray | int]:
     """Compute the same V2 curves from already-normalized K-sample chunks."""
     coarse_samples = np.asarray(coarse_samples, dtype=np.float64)[..., :7]
@@ -193,7 +197,7 @@ def risk_targets_from_normalized_mc(
 
 
 def event_horizon(event_index: int | None, candidates: Sequence[int]) -> int:
-    candidates = sorted(set(int(value) for value in candidates))
+    candidates = sorted({int(value) for value in candidates})
     if not candidates:
         raise ValueError("At least one horizon candidate is required.")
     if event_index is None or event_index < 0:
@@ -209,7 +213,7 @@ def distilled_raw_horizon(
     fused_risk: np.ndarray,
     *,
     candidates: Sequence[int],
-    config: V2RiskConfig = V2RiskConfig(),
+    config: V2RiskConfig = DEFAULT_RISK_CONFIG,
 ) -> tuple[int, np.ndarray]:
     """Apply the original V2 event mapping to predicted risk curves."""
     event_mask = np.asarray(fused_risk) >= config.risk_threshold
@@ -228,7 +232,7 @@ def value_refined_raw_horizon(
     success_probability: np.ndarray,
     timeout_probability: np.ndarray,
     fused_risk: np.ndarray,
-    config: ValueRefinementConfig = ValueRefinementConfig(),
+    config: ValueRefinementConfig = DEFAULT_VALUE_REFINEMENT_CONFIG,
 ) -> tuple[int, dict[str, np.ndarray]]:
     """Choose the largest entropy-safe H with acceptable counterfactual value."""
     success_probability = np.asarray(success_probability, dtype=np.float64)
@@ -266,7 +270,7 @@ def apply_episode_budget(
     state: EpisodeBudgetState,
 ) -> tuple[int, dict[str, float]]:
     """Original Budgeted Event V2 credit controller, unchanged."""
-    horizons = sorted(set(int(value) for value in candidates))
+    horizons = sorted({int(value) for value in candidates})
     target = min(float(config.target_average_horizon), float(horizons[-1]))
     balance_before = float(state.balance)
     required_credit = max(target - raw_horizon, 0.0)

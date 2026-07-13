@@ -1,4 +1,5 @@
 """Closed-loop LIBERO evaluation for Budgeted Event V2-P execution horizons."""
+# ruff: noqa: SLF001
 
 from __future__ import annotations
 
@@ -87,7 +88,7 @@ def _request(
     request = {
         **element,
         "policy_seed": np.asarray(seed, dtype=np.int64),
-        "profile_policy_timing": np.asarray(True),
+        "profile_policy_timing": np.asarray(1, dtype=np.bool_),
         "action_cot_denoising_steps": np.asarray(args.action_cot_denoising_steps, dtype=np.int32),
     }
     if mode == "exact_batched_mc_v2":
@@ -95,7 +96,7 @@ def _request(
     if mode in {"v2_distilled", "v2_value_refined"}:
         request.update(
             {
-                "run_execution_horizon_predictor": np.asarray(True),
+                "run_execution_horizon_predictor": np.asarray(1, dtype=np.bool_),
                 "execution_horizon_previous_actions": (
                     np.asarray(previous_actions, dtype=np.float32)
                     if previous_actions is not None

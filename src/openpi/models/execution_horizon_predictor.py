@@ -9,7 +9,7 @@ next policy call.
 from __future__ import annotations
 
 import dataclasses
-from typing import Mapping
+from collections.abc import Mapping
 
 import flax.nnx as nnx
 import jax
@@ -47,6 +47,9 @@ class ExecutionHorizonLossWeights:
     event: float = 0.5
     raw_h_classification: float = 0.5
     raw_h_ordinal: float = 0.25
+
+
+DEFAULT_LOSS_WEIGHTS = ExecutionHorizonLossWeights()
 
 
 def _bce_with_logits(logits: jax.Array, labels: jax.Array) -> jax.Array:
@@ -213,7 +216,7 @@ def execution_horizon_loss(
     predictions: Mapping[str, jax.Array],
     labels: Mapping[str, jax.Array],
     *,
-    weights: ExecutionHorizonLossWeights = ExecutionHorizonLossWeights(),
+    weights: ExecutionHorizonLossWeights = DEFAULT_LOSS_WEIGHTS,
     remaining_calls_scale: float = 64.0,
     remaining_steps_scale: float = 512.0,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
