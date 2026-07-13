@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-tasks", type=int, default=10)
     parser.add_argument("--max-roots-per-episode", type=int, default=0)
     parser.add_argument("--root-stride-calls", type=int, default=1)
+    parser.add_argument("--root-call-offset-cycle", type=int, default=20)
     parser.add_argument("--student-mode", choices=("v2_distilled", "v2_value_refined"), default="v2_value_refined")
     parser.add_argument("--port", type=int, default=8017)
     parser.add_argument("--seed", type=int, default=7)
@@ -158,6 +159,8 @@ def main(args: argparse.Namespace) -> None:
                     str(args.max_tasks),
                     "--root-stride-calls",
                     str(args.root_stride_calls),
+                    "--root-call-offset-cycle",
+                    str(args.root_call_offset_cycle),
                     "--max-roots-per-episode",
                     str(args.max_roots_per_episode),
                     "--source-iteration",

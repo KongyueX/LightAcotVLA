@@ -44,6 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--teacher-samples", type=int, choices=(10, 20, 32), default=20)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument("--root-stride-calls", type=int, default=1)
+    parser.add_argument(
+        "--root-call-offset-cycle",
+        type=int,
+        default=1,
+        help="Episode e starts collecting at policy call e modulo this value.",
+    )
     parser.add_argument("--max-roots-per-episode", type=int, default=0)
     parser.add_argument("--records-per-shard", type=int, default=1024)
     parser.add_argument("--source-iteration", type=int, default=0)
@@ -169,7 +175,10 @@ def _policy_request(
     request = dict(observation)
     request["policy_seed"] = np.asarray(seed, dtype=np.int64)
     request["action_cot_denoising_steps"] = np.asarray(args.action_cot_denoising_steps, dtype=np.int32)
-    request["profile_policy_timing"] = np.asarray(1, dtype=np.bool_)
+    # Branch continuation can contain hundreds of calls.  Only the root
+    # teacher needs stage-synchronized timings; disabling it elsewhere keeps
+    # labels identical while avoiding four host synchronization points/call.
+    request["profile_policy_timing"] = np.asarray(teacher, dtype=np.bool_)
     if teacher:
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
     if run_student:
@@ -399,8 +408,14 @@ def _root_record(
 
 
 def main(args: argparse.Namespace) -> None:
-    if args.root_stride_calls <= 0 or args.action_cot_denoising_steps <= 0:
-        raise ValueError("root_stride_calls and action_cot_denoising_steps must be positive.")
+    if (
+        args.root_stride_calls <= 0
+        or args.root_call_offset_cycle <= 0
+        or args.action_cot_denoising_steps <= 0
+    ):
+        raise ValueError(
+            "root_stride_calls, root_call_offset_cycle and action_cot_denoising_steps must be positive."
+        )
     if args.continuation_policy == "current_student" and args.v2_budget_capacity <= 0:
         raise ValueError("v2_budget_capacity must be positive.")
     output_dir = pathlib.Path(args.output_dir)
@@ -430,6 +445,7 @@ def main(args: argparse.Namespace) -> None:
         "student_mode": args.student_mode,
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "source_iteration": args.source_iteration,
+        "root_call_offset_cycle": args.root_call_offset_cycle,
         "risk_config": dataclasses.asdict(risk_config),
     }
     total_records = 0
@@ -461,13 +477,16 @@ def main(args: argparse.Namespace) -> None:
                         if done:
                             break
                     decision_index = 0
+                    root_call_offset = episode_id % args.root_call_offset_cycle
                     roots_this_episode = 0
                     previous_actions_raw: np.ndarray | None = None
                     previous_actions_normalized = np.zeros((10, 32), dtype=np.float32)
                     previous_h = 10
                     budget_state = v2.EpisodeBudgetState(balance=min(args.v2_initial_budget, args.v2_budget_capacity))
                     while not done and step < episode_step_limit:
-                        collect_root = decision_index % args.root_stride_calls == 0
+                        collect_root = decision_index >= root_call_offset and (
+                            decision_index - root_call_offset
+                        ) % args.root_stride_calls == 0
                         if args.max_roots_per_episode and roots_this_episode >= args.max_roots_per_episode:
                             break
                         root_seed = args.seed + task_id * 1_000_000 + episode_id * 10_000 + step
