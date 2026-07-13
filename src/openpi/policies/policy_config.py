@@ -44,7 +44,9 @@ def create_trained_policy(
 
     logging.info("Loading model...")
     model_config = train_config.model
-    base_params = _model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16)
+    base_params = _model.convert_str_keys_to_int(
+        _model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16)
+    )
     if execution_horizon_predictor_params is not None:
         if not hasattr(model_config, "execution_horizon_predictor"):
             raise ValueError("Execution-horizon sidecars are only supported by ACOTConfig.")
@@ -64,7 +66,9 @@ def create_trained_policy(
         for key in missing:
             flat_merged[key] = flat_expected[key]
         sidecar_path = download.maybe_download(str(execution_horizon_predictor_params))
-        sidecar_params = _model.restore_params(sidecar_path, dtype=jnp.float32)
+        sidecar_params = _model.convert_str_keys_to_int(
+            _model.restore_params(sidecar_path, dtype=jnp.float32)
+        )
         if "execution_horizon_predictor" not in sidecar_params:
             sidecar_params = {"execution_horizon_predictor": sidecar_params}
         flat_sidecar = traverse_util.flatten_dict(sidecar_params)

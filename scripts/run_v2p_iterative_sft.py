@@ -118,7 +118,7 @@ def main(args: argparse.Namespace) -> None:
             args.python,
             "scripts/serve_policy.py",
             "--env",
-            "libero",
+            "LIBERO",
             "--port",
             str(args.port),
             "policy:checkpoint",
