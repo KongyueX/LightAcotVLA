@@ -493,6 +493,40 @@ def _env_success(env) -> bool:
     return False
 
 
+def _env_horizon(env) -> int | None:
+    """Returns the smallest positive episode horizon exposed by an env wrapper chain."""
+    queue = collections.deque([env])
+    seen = set()
+    horizons = []
+    while queue:
+        candidate = queue.popleft()
+        if candidate is None or id(candidate) in seen:
+            continue
+        seen.add(id(candidate))
+
+        for name in ("horizon", "_horizon"):
+            try:
+                value = getattr(candidate, name, None)
+                array = np.asarray(value)
+                if array.size != 1:
+                    continue
+                horizon = int(array.reshape(()).item())
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if horizon > 0:
+                horizons.append(horizon)
+
+        for name in ("env", "_env", "unwrapped"):
+            try:
+                child = getattr(candidate, name, None)
+            except Exception:
+                continue
+            if child is not None and id(child) not in seen:
+                queue.append(child)
+
+    return min(horizons) if horizons else None
+
+
 def _is_terminated_episode_error(exc: Exception) -> bool:
     return isinstance(exc, ValueError) and "executing action in terminated episode" in str(exc)
 
@@ -1482,9 +1516,14 @@ def _run_mode(
             env.reset()
             action_plan = collections.deque()
             obs = env.set_init_state(initial_states[episode_idx])
+            environment_horizon = _env_horizon(env)
+            episode_step_limit = max_steps + args.num_steps_wait
+            if environment_horizon is not None:
+                episode_step_limit = min(episode_step_limit, environment_horizon)
             replay_images = []
             t = 0
             done = False
+            termination_reason = ""
             total_return = 0.0
             infer_wall_ms = []
             infer_policy_ms = []
@@ -1519,7 +1558,7 @@ def _run_mode(
             override_calls = 0
             true_skip_calls = 0
 
-            while t < max_steps + args.num_steps_wait:
+            while t < episode_step_limit:
                 if t < args.num_steps_wait:
                     try:
                         obs, reward, done, _ = env.step(LIBERO_DUMMY_ACTION)
@@ -1527,9 +1566,10 @@ def _run_mode(
                         if not _is_terminated_episode_error(exc):
                             raise
                         done = _env_success(env)
+                        termination_reason = "environment_terminated"
                         _status(
-                            f"WARNING: mode={mode} task={task_id} episode={episode_idx} "
-                            f"ended during wait step; success={done}"
+                            f"mode={mode} task={task_id} episode={episode_idx} environment terminated "
+                            f"during wait at step={t}/{episode_step_limit}; success={done}"
                         )
                         break
                     total_return += float(reward)
@@ -1668,9 +1708,10 @@ def _run_mode(
                     if not _is_terminated_episode_error(exc):
                         raise
                     done = _env_success(env)
+                    termination_reason = "environment_terminated"
                     _status(
-                        f"WARNING: mode={mode} task={task_id} episode={episode_idx} "
-                        f"ended before action step; success={done}"
+                        f"mode={mode} task={task_id} episode={episode_idx} environment terminated "
+                        f"before action at step={t}/{episode_step_limit}; success={done}"
                     )
                     break
                 total_return += float(reward)
@@ -1679,6 +1720,16 @@ def _run_mode(
                 t += 1
 
             success = bool(done)
+            if success:
+                termination_reason = "success"
+            elif not termination_reason and t >= episode_step_limit:
+                termination_reason = "step_limit"
+                _status(
+                    f"mode={mode} task={task_id} episode={episode_idx} reached step limit "
+                    f"step={t}/{episode_step_limit}; success=False"
+                )
+            elif not termination_reason:
+                termination_reason = "stopped"
             timeout = not success
             total_policy_calls = full_calls + override_calls + true_skip_calls
             deployable_policy_calls = len(deployable_wall_ms)
@@ -1693,6 +1744,11 @@ def _run_mode(
                 "return": total_return,
                 "steps": t,
                 "timeout": int(timeout),
+                "termination_reason": termination_reason,
+                "episode_step_limit": episode_step_limit,
+                "environment_horizon": (
+                    float(environment_horizon) if environment_horizon is not None else float("nan")
+                ),
                 "avg_wall_inference_ms": _mean(infer_wall_ms),
                 "avg_policy_inference_ms": _mean(infer_policy_ms),
                 "avg_server_inference_ms": _mean(infer_server_ms),
@@ -1783,6 +1839,9 @@ def _write_results(output_dir: pathlib.Path, rows: list[dict[str, Any]], args: a
         "return",
         "steps",
         "timeout",
+        "termination_reason",
+        "episode_step_limit",
+        "environment_horizon",
         "avg_wall_inference_ms",
         "avg_policy_inference_ms",
         "avg_server_inference_ms",
