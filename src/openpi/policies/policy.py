@@ -133,8 +133,12 @@ class Policy(BasePolicy):
             policy_seed_int = int(np.asarray(policy_seed).item())
             sample_rng = jax.random.key(policy_seed_int)
             sample_rngs = (
-                jax.random.key(
-                    np.arange(policy_seed_int, policy_seed_int + batched_mc_samples, dtype=np.uint32)
+                jax.vmap(jax.random.key)(
+                    jnp.arange(
+                        policy_seed_int,
+                        policy_seed_int + batched_mc_samples,
+                        dtype=jnp.uint32,
+                    )
                 )
                 if batched_mc_samples
                 else None
