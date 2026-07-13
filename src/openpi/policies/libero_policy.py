@@ -154,6 +154,10 @@ class LiberoACOTInputs(transforms.DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class LiberoACOTOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
-        keys = ['coarse_actions', 'actions']
-        ret_result = {key: np.asarray(data[key][:, :7]) for key in keys if key in data}
+        # Preserve predictor/teacher diagnostics while slicing only the two
+        # executable action tensors back to LIBERO's seven dimensions.
+        ret_result = dict(data)
+        for key in ("coarse_actions", "actions"):
+            if key in ret_result:
+                ret_result[key] = np.asarray(ret_result[key][:, :7])
         return ret_result

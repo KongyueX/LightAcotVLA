@@ -21,6 +21,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", "--output-dir", type=pathlib.Path, required=True)
     parser.add_argument("--pid", type=int, default=None, help="Experiment PID to monitor.")
     parser.add_argument("--poll_seconds", "--poll-seconds", type=int, default=900)
+    parser.add_argument(
+        "--progress_seconds",
+        "--progress-seconds",
+        type=int,
+        default=0,
+        help="If positive, send a running progress update at this interval.",
+    )
     parser.add_argument("--mode", default="full", help="Aggregate mode to summarize from summary.json.")
     parser.add_argument("--label", default="ACoT-VLA experiment")
     parser.add_argument("--test_message", "--test-message", default=None)
@@ -31,6 +38,8 @@ def _parse_args() -> argparse.Namespace:
         parser.error("--pid is required unless --test_message is used.")
     if args.poll_seconds <= 0:
         parser.error("--poll_seconds must be positive.")
+    if args.progress_seconds < 0:
+        parser.error("--progress_seconds must be non-negative.")
     return args
 
 
@@ -93,6 +102,53 @@ def _format_seconds(value: Any) -> str:
 
 def _summary_message(output_dir: pathlib.Path, *, label: str, mode: str) -> str:
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
+    if summary.get("base_policy_frozen") is not None:
+        metrics = summary.get("last_train_metrics", {})
+        return "\n".join(
+            [
+                f"[ACoT-VLA] {label} completed",
+                "kind: execution-horizon SFT",
+                f"base policy frozen: {summary.get('base_policy_frozen')}",
+                f"records: {summary.get('num_records', 'n/a')}",
+                f"steps: {summary.get('train_steps', 'n/a')}",
+                f"final loss: {_format_number(metrics.get('train/loss'), 4)}",
+                f"elapsed: {_format_number(_finite_number(summary.get('elapsed_seconds')), 1)}s",
+                f"params: {summary.get('predictor_params', 'n/a')}",
+                f"output: {output_dir}",
+            ]
+        )
+    if "overall" in summary:
+        metrics = summary["overall"].get(mode)
+        if metrics is None and summary["overall"]:
+            mode, metrics = next(iter(summary["overall"].items()))
+        metrics = metrics or {}
+        return "\n".join(
+            [
+                f"[ACoT-VLA] {label} completed",
+                f"mode: {mode}",
+                f"success: {_format_percent(metrics.get('success_rate'))}",
+                f"timeout: {_format_percent(metrics.get('timeout_rate'))}",
+                f"calls/episode: {_format_number(metrics.get('calls_per_episode'))}",
+                f"avg H: {_format_number(metrics.get('avg_h'))}",
+                "actual policy/episode: " + _format_seconds(metrics.get("actual_policy_ms_per_episode")),
+                "actual wall/episode: " + _format_seconds(metrics.get("actual_wall_ms_per_episode")),
+                "predictor/episode: " + _format_seconds(metrics.get("predictor_ms_per_episode")),
+                f"H distribution: {json.dumps(metrics.get('h_distribution', {}), sort_keys=True)}",
+                f"output: {output_dir}",
+            ]
+        )
+    if "num_records" in summary:
+        return "\n".join(
+            [
+                f"[ACoT-VLA] {label} completed",
+                "kind: counterfactual collection",
+                f"records: {summary.get('num_records')}",
+                f"teacher K: {summary.get('teacher_samples', 'n/a')}",
+                f"branch success/H: {summary.get('branch_success_rate_by_h', 'n/a')}",
+                f"elapsed: {_format_number(_finite_number(summary.get('elapsed_seconds')), 1)}s",
+                f"output: {output_dir}",
+            ]
+        )
     aggregate = summary.get("aggregate", {})
     metrics = aggregate.get(mode)
     if metrics is None and aggregate:
@@ -130,6 +186,39 @@ def _summary_message(output_dir: pathlib.Path, *, label: str, mode: str) -> str:
                 )
     lines.append(f"output: {output_dir}")
     return "\n".join(lines)
+
+
+def _progress_message(output_dir: pathlib.Path, *, label: str, pid: int) -> str:
+    metrics_path = output_dir / "metrics.jsonl"
+    if metrics_path.exists():
+        lines = metrics_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if lines:
+            try:
+                metrics = json.loads(lines[-1])
+                return "\n".join(
+                    [
+                        f"[ACoT-VLA] {label} running",
+                        f"pid: {pid}",
+                        f"step: {metrics.get('step', 'n/a')}",
+                        f"train loss: {_format_number(metrics.get('train/loss'), 4)}",
+                        f"validation loss: {_format_number(metrics.get('validation/loss'), 4)}",
+                        f"elapsed: {_format_number(metrics.get('elapsed_seconds'), 1)}s",
+                        f"output: {output_dir}",
+                    ]
+                )
+            except json.JSONDecodeError:
+                pass
+    log_path = output_dir / "run.log"
+    tail = "run.log is not available"
+    if log_path.exists():
+        log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        tail = "\n".join(log_lines[-5:])
+    return (
+        f"[ACoT-VLA] {label} running\n"
+        f"pid: {pid}\n"
+        f"output: {output_dir}\n"
+        f"latest log:\n{tail}"
+    )
 
 
 def _failure_message(output_dir: pathlib.Path, *, label: str, pid: int) -> str:
@@ -171,6 +260,7 @@ def main() -> None:
     if marker_path.exists():
         return
 
+    next_progress = time.monotonic() + args.progress_seconds if args.progress_seconds else None
     while True:
         summary_path = output_dir / "summary.json"
         if summary_path.exists():
@@ -187,6 +277,11 @@ def main() -> None:
             _send_feishu(message, webhook_url=webhook_url, secret=secret)
             marker_path.write_text("failed\n", encoding="utf-8")
             return
+
+        if next_progress is not None and time.monotonic() >= next_progress:
+            message = _progress_message(output_dir, label=args.label, pid=args.pid)
+            _send_feishu(message, webhook_url=webhook_url, secret=secret)
+            next_progress = time.monotonic() + args.progress_seconds
 
         time.sleep(args.poll_seconds)
 

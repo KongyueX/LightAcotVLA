@@ -1,7 +1,11 @@
+import dataclasses
 import logging
 import pathlib
 from typing import Any
 
+import flax.nnx as nnx
+import flax.traverse_util as traverse_util
+import jax
 import jax.numpy as jnp
 
 import openpi.models.model as _model
@@ -20,6 +24,7 @@ def create_trained_policy(
     sample_kwargs: dict[str, Any] | None = None,
     default_prompt: str | None = None,
     norm_stats: dict[str, transforms.NormStats] | None = None,
+    execution_horizon_predictor_params: pathlib.Path | str | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -38,9 +43,45 @@ def create_trained_policy(
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
 
     logging.info("Loading model...")
-    model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
+    model_config = train_config.model
+    base_params = _model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16)
+    if execution_horizon_predictor_params is not None:
+        if not hasattr(model_config, "execution_horizon_predictor"):
+            raise ValueError("Execution-horizon sidecars are only supported by ACOTConfig.")
+        model_config = dataclasses.replace(model_config, execution_horizon_predictor=True)
+        expected_model = nnx.eval_shape(model_config.create, jax.random.key(0))
+        expected_params = nnx.state(expected_model).to_pure_dict()
+        flat_merged = traverse_util.flatten_dict(base_params)
+        flat_expected = traverse_util.flatten_dict(expected_params)
+        missing = set(flat_expected).difference(flat_merged)
+        invalid_missing = sorted(
+            "/".join(map(str, key))
+            for key in missing
+            if not key or key[0] != "execution_horizon_predictor"
+        )
+        if invalid_missing:
+            raise ValueError(f"Base checkpoint is missing non-predictor parameters: {invalid_missing[:5]}")
+        for key in missing:
+            flat_merged[key] = flat_expected[key]
+        sidecar_path = download.maybe_download(str(execution_horizon_predictor_params))
+        sidecar_params = _model.restore_params(sidecar_path, dtype=jnp.float32)
+        if "execution_horizon_predictor" not in sidecar_params:
+            sidecar_params = {"execution_horizon_predictor": sidecar_params}
+        flat_sidecar = traverse_util.flatten_dict(sidecar_params)
+        unexpected = sorted("/".join(map(str, key)) for key in flat_sidecar if key not in flat_merged)
+        if unexpected:
+            raise ValueError(f"Unexpected execution-horizon sidecar parameters: {unexpected[:5]}")
+        for key, value in flat_sidecar.items():
+            expected = flat_merged[key]
+            if expected.shape != value.shape:
+                path = "/".join(map(str, key))
+                raise ValueError(f"Sidecar shape mismatch at {path}: expected {expected.shape}, got {value.shape}")
+            flat_merged[key] = value.astype(expected.dtype)
+        base_params = traverse_util.unflatten_dict(flat_merged)
+        logging.info("Loaded execution-horizon predictor sidecar from %s", sidecar_path)
+    model = model_config.load(base_params)
 
-    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+    data_config = train_config.data.create(train_config.assets_dirs, model_config)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
         # that the policy is using the same normalization stats as the original training process.
@@ -65,4 +106,7 @@ def create_trained_policy(
         ],
         sample_kwargs=sample_kwargs,
         metadata=train_config.policy_metadata,
+        norm_stats=norm_stats,
+        use_quantile_norm=data_config.use_quantile_norm,
+        action_dim=model_config.action_dim,
     )

@@ -31,6 +31,8 @@ class Checkpoint:
     config: str
     # Checkpoint directory (e.g., "checkpoints/pi0_aloha_sim/exp/10000").
     dir: str
+    # Optional standalone Budgeted Event V2-P predictor params directory.
+    execution_horizon_predictor_params: str | None = None
 
 
 @dataclasses.dataclass
@@ -109,7 +111,10 @@ def create_policy(args: Args) -> _policy.Policy:
     match args.policy:
         case Checkpoint():
             return _policy_config.create_trained_policy(
-                _config.get_config(args.policy.config), args.policy.dir, default_prompt=args.default_prompt
+                _config.get_config(args.policy.config),
+                args.policy.dir,
+                default_prompt=args.default_prompt,
+                execution_horizon_predictor_params=args.policy.execution_horizon_predictor_params,
             )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)

@@ -29,6 +29,7 @@ import openpi.policies.vlabench_policy as vlabench_policy
 import openpi.policies.arx_policy as arx_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
+import openpi.shared.nnx_utils as nnx_utils
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
 import openpi.training.optimizer as _optimizer
 import openpi.training.weight_loaders as weight_loaders
@@ -1624,6 +1625,42 @@ _CONFIGS = [
         num_workers=48 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
         batch_size=16,
         freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(freeze_vision = False, freeze_llm = True, freeze_dual_ae=[False, False]),
+    ),
+    # Budgeted Event V2-P keeps the full base policy frozen.  Its standalone
+    # trainer consumes counterfactual HDF5 features and writes only the
+    # execution_horizon_predictor subtree as a sidecar checkpoint.
+    TrainConfig(
+        name="acot_libero_budgeted_event_v2p",
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=15,
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            coarse_action_expert_variant="gemma_300m",
+            action_expert_variant="gemma_300m",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+            execution_horizon_predictor=True,
+        ),
+        data=LeRobotACOTLiberoDataConfig(
+            repo_id="your_hf_username/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir="/root/autodl-tmp/acotvla/assets/acot_libero_action_cot_explicit_implicit_co_fusion",
+                asset_id="your_hf_username/libero",
+            ),
+            extra_delta_transform=(False, False),
+            joint_action_shifts=(2, 1),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999/params",
+            missing_regex=".*execution_horizon_predictor.*",
+        ),
+        num_train_steps=20_000,
+        batch_size=256,
+        # Freeze every parameter outside the dedicated predictor subtree.
+        freeze_filter=nnx.Not(nnx_utils.PathRegex(".*execution_horizon_predictor.*")),
     ),
     TrainConfig(
         name="acot_libero_action_cot_adaptive_skip_stage_c",

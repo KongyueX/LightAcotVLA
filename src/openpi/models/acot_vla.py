@@ -12,6 +12,8 @@ import os
 from openpi.models import model as _model
 import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
+from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictor
+from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictorConfig
 from openpi.models.pi0 import posemb_sincos, make_attn_mask
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
@@ -292,6 +294,13 @@ class ACOTConfig(_model.BaseModelConfig):
     action_cot_step_loss_weight: float = 0.0
     action_cot_dynamic_steps: bool = False
 
+    # Execution-horizon prediction is a separate problem from selecting the
+    # number of Action-CoT denoising iterations above.  It therefore has its
+    # own module and checkpoint sidecar.
+    execution_horizon_predictor: bool = False
+    execution_horizon_hidden_dim: int = 256
+    execution_horizon_temporal_layers: int = 3
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
@@ -303,6 +312,8 @@ class ACOTConfig(_model.BaseModelConfig):
             raise ValueError(f"action_cot_step_values must be positive, got {self.action_cot_step_values}.")
         if (self.action_cot_step_loss_weight > 0 or self.action_cot_dynamic_steps) and len(self.action_cot_step_values) < 2:
             raise ValueError("action_cot_step_values must contain at least two values when step head is enabled.")
+        if self.execution_horizon_predictor and self.action_horizon != 10:
+            raise ValueError("execution_horizon_predictor currently requires action_horizon=10.")
 
     @property
     @override
@@ -445,6 +456,20 @@ class ACOT_VLA(_model.BaseModel):
             self.action_cot_step_head = nnx.Linear(
                 paligemma_config.width,
                 len(self.action_cot_step_values),
+                rngs=rngs,
+            )
+        self.execution_horizon_predictor_enabled = config.execution_horizon_predictor
+        if self.execution_horizon_predictor_enabled:
+            self.execution_horizon_predictor = ExecutionHorizonPredictor(
+                ExecutionHorizonPredictorConfig(
+                    prefix_feature_dim=paligemma_config.width,
+                    state_dim=config.action_dim,
+                    action_dim=config.action_dim,
+                    coarse_horizon=config.coarse_action_horizon,
+                    action_horizon=config.action_horizon,
+                    hidden_dim=config.execution_horizon_hidden_dim,
+                    temporal_layers=config.execution_horizon_temporal_layers,
+                ),
                 rngs=rngs,
             )
         
@@ -968,25 +993,22 @@ class ACOT_VLA(_model.BaseModel):
             num_steps=num_steps,
         )
         if self.adopt_explicit_action_reasoner:
-            return {
+            result = {
                 "actions": expert_outputs["actions"],
                 "coarse_actions": coarse_outputs["explicit_action_reason"],
                 "action_cot_denoising_steps": coarse_outputs["action_cot_denoising_steps"],
             }
+            if self.execution_horizon_predictor_enabled:
+                result["execution_horizon_prefix_feature"] = jnp.asarray(
+                    self._pool_prefix(prefix_state["prefix_out"], prefix_state["prefix_mask"]),
+                    dtype=jnp.float32,
+                )
+            return result
         return expert_outputs
 
-    def sample_actions_profile_prefix(
-        self,
-        rng: at.KeyArrayLike,
-        observation: _model.Observation,
-    ) -> dict[str, Any]:
+    def _compute_prefix_state(self, observation: _model.Observation) -> dict[str, Any]:
+        """Run preprocessing and the VLM prefix exactly once."""
         observation = _model.preprocess_observation(None, observation, train=False)
-        batch_size = observation.state.shape[0]
-
-        ref_action_rng, expert_action_rng = jax.random.split(rng, 2)
-        ref_action_noise = jax.random.normal(ref_action_rng, (batch_size, self.coarse_action_horizon, self.action_dim))
-        expert_action_noise = jax.random.normal(expert_action_rng, (batch_size, self.action_horizon, self.action_dim))
-
         prefix_tokens, prefix_mask, prefix_ar_mask = self.embed_prefix(observation)
         prefix_attn_mask = make_attn_mask(prefix_mask, prefix_ar_mask)
         positions = jnp.cumsum(prefix_mask, axis=1) - 1
@@ -995,7 +1017,6 @@ class ACOT_VLA(_model.BaseModel):
             mask=prefix_attn_mask,
             positions=positions,
         )
-
         return {
             "observation": observation,
             "prefix_tokens": prefix_tokens,
@@ -1003,9 +1024,138 @@ class ACOT_VLA(_model.BaseModel):
             "prefix_ar_mask": prefix_ar_mask,
             "prefix_out": prefix_out,
             "kv_cache": kv_cache,
+        }
+
+    def sample_actions_profile_prefix(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+    ) -> dict[str, Any]:
+        prefix_state = self._compute_prefix_state(observation)
+        observation = prefix_state["observation"]
+        batch_size = observation.state.shape[0]
+
+        ref_action_rng, expert_action_rng = jax.random.split(rng, 2)
+        ref_action_noise = jax.random.normal(ref_action_rng, (batch_size, self.coarse_action_horizon, self.action_dim))
+        expert_action_noise = jax.random.normal(expert_action_rng, (batch_size, self.action_horizon, self.action_dim))
+
+        result = {
+            **prefix_state,
             "ref_action_noise": ref_action_noise,
             "expert_action_noise": expert_action_noise,
         }
+        if self.execution_horizon_predictor_enabled:
+            result["execution_horizon_prefix_feature"] = jnp.asarray(
+                self._pool_prefix(prefix_state["prefix_out"], prefix_state["prefix_mask"]),
+                dtype=jnp.float32,
+            )
+        return result
+
+    def sample_actions_batched_mc(
+        self,
+        rngs: jax.Array,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 10,
+        action_cot_denoising_steps: int | at.Int[at.Array, ""] | None = 10,
+    ) -> dict[str, jax.Array]:
+        """Sample K complete action chunks while sharing one VLM/prefix pass.
+
+        ``rngs`` contains the exact per-sample policy keys.  Consequently a
+        batched request with seeds ``s..s+K-1`` has the same flow-noise seeds
+        as K legacy requests, without repeating image/language encoding.
+        """
+        prefix_state = self._compute_prefix_state(observation)
+        if prefix_state["observation"].state.shape[0] != 1:
+            raise ValueError("Batched MC teacher currently expects one decision observation per request.")
+        sample_count = rngs.shape[0]
+        split_rngs = jax.vmap(lambda key: jax.random.split(key, 2))(rngs)
+        ref_action_noise = jax.vmap(
+            lambda key: jax.random.normal(
+                key, (self.coarse_action_horizon, self.action_dim), dtype=jnp.float32
+            )
+        )(split_rngs[:, 0])
+        expert_action_noise = jax.vmap(
+            lambda key: jax.random.normal(
+                key, (self.action_horizon, self.action_dim), dtype=jnp.float32
+            )
+        )(split_rngs[:, 1])
+
+        def repeat_batch(value: jax.Array) -> jax.Array:
+            return jnp.repeat(value, sample_count, axis=0)
+
+        repeated_observation = jax.tree.map(repeat_batch, prefix_state["observation"])
+        cache_k, cache_v = prefix_state["kv_cache"]
+        batched_prefix_state = {
+            "observation": repeated_observation,
+            "prefix_tokens": repeat_batch(prefix_state["prefix_tokens"]),
+            "prefix_mask": repeat_batch(prefix_state["prefix_mask"]),
+            "prefix_ar_mask": prefix_state["prefix_ar_mask"],
+            "prefix_out": repeat_batch(prefix_state["prefix_out"]),
+            "kv_cache": (
+                jnp.repeat(cache_k, sample_count, axis=1),
+                jnp.repeat(cache_v, sample_count, axis=1),
+            ),
+            "ref_action_noise": ref_action_noise,
+            "expert_action_noise": expert_action_noise,
+        }
+        implicit_outputs = self.sample_actions_profile_implicit(prefix_state)
+        implicit_action_reason = implicit_outputs["implicit_action_reason"]
+        if implicit_action_reason is not None:
+            implicit_action_reason = repeat_batch(implicit_action_reason)
+        coarse_outputs = self.sample_actions_profile_coarse(
+            batched_prefix_state,
+            num_steps=num_steps,
+            action_cot_denoising_steps=action_cot_denoising_steps,
+            dynamic_denoising_steps=False,
+        )
+        expert_outputs = self.sample_actions_profile_expert(
+            batched_prefix_state,
+            coarse_outputs["explicit_action_reason"],
+            implicit_action_reason,
+            num_steps=num_steps,
+        )
+        all_actions = expert_outputs["actions"]
+        all_coarse_actions = coarse_outputs["explicit_action_reason"]
+        return {
+            # Keep a leading observation batch for Policy.infer's unbatching.
+            "actions": all_actions[:1],
+            "coarse_actions": all_coarse_actions[:1],
+            "action_cot_denoising_steps": coarse_outputs["action_cot_denoising_steps"][:1],
+            "mc_actions_normalized": all_actions[None, ...],
+            "mc_coarse_actions_normalized": all_coarse_actions[None, ...],
+            "execution_horizon_prefix_feature": jnp.asarray(
+                self._pool_prefix(prefix_state["prefix_out"], prefix_state["prefix_mask"]),
+                dtype=jnp.float32,
+            ),
+        }
+
+    def predict_execution_horizon(
+        self,
+        *,
+        prefix_feature: jax.Array,
+        state: jax.Array,
+        coarse_actions: jax.Array,
+        final_actions: jax.Array,
+        previous_actions: jax.Array,
+        previous_h: jax.Array,
+        budget_balance: jax.Array,
+        episode_progress: jax.Array,
+        previous_valid: jax.Array,
+    ) -> dict[str, jax.Array]:
+        if not self.execution_horizon_predictor_enabled:
+            raise ValueError("This model was created without execution_horizon_predictor=True.")
+        return self.execution_horizon_predictor(
+            prefix_feature=prefix_feature,
+            state=state,
+            coarse_actions=coarse_actions,
+            final_actions=final_actions,
+            previous_actions=previous_actions,
+            previous_h=previous_h,
+            budget_balance=budget_balance,
+            episode_progress=episode_progress,
+            previous_valid=previous_valid,
+        )
 
     def sample_actions_profile_implicit(self, prefix_state: dict[str, Any]) -> dict[str, Any]:
         if self.adopt_implicit_action_reasoner:
