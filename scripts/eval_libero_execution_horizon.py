@@ -59,6 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-max-timeout-probability", type=float, default=0.20)
     parser.add_argument("--q-risk-slack-steps", type=int, default=0)
     parser.add_argument("--warmup-requests", type=int, default=1)
+    parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Resume a matching interrupted evaluation from its per-episode CSV journal.",
+    )
     return parser
 
 
@@ -419,6 +425,115 @@ def _write_csv(path: pathlib.Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _append_csv(path: pathlib.Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    write_header = not path.exists() or path.stat().st_size == 0
+    with path.open("a", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
+        if write_header:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
+def _read_csv(path: pathlib.Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(newline="") as file:
+        return list(csv.DictReader(file))
+
+
+def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
+    integers = {
+        "task_id",
+        "episode",
+        "initial_state_id",
+        "success",
+        "timeout",
+        "steps",
+        "policy_calls",
+        "sampled_action_chunks",
+    }
+    floats = {
+        "avg_h",
+        "actual_wall_total_ms",
+        "actual_policy_total_ms",
+        "actual_server_total_ms",
+        "actual_predictor_total_ms",
+        "actual_batched_teacher_total_ms",
+    }
+    return {
+        key: int(value) if key in integers else float(value) if key in floats else value
+        for key, value in row.items()
+    }
+
+
+def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in vars(args).items()
+        if key not in {"output_dir", "resume"}
+    }
+
+
+def _prepare_journal(
+    output_dir: pathlib.Path,
+    args: argparse.Namespace,
+) -> tuple[list[dict[str, Any]], set[tuple[str, int, int]]]:
+    rollout_path = output_dir / "rollout_rows.csv"
+    decisions_path = output_dir / "decisions.csv"
+    signature_path = output_dir / "run_config.json"
+    summary_path = output_dir / "summary.json"
+    signature = _run_signature(args)
+
+    if summary_path.exists():
+        if args.resume:
+            print(summary_path.read_text(), flush=True)
+            return [], set()
+        raise FileExistsError(f"Evaluation is already complete: {summary_path}")
+
+    if not args.resume:
+        existing = [path for path in (rollout_path, decisions_path, signature_path) if path.exists()]
+        if existing:
+            raise FileExistsError(f"Refusing to overwrite existing evaluation journal: {existing}")
+        signature_path.write_text(json.dumps(signature, indent=2, sort_keys=True) + "\n")
+        return [], set()
+
+    if not signature_path.exists():
+        raise FileNotFoundError(
+            f"Cannot safely resume without the configuration signature: {signature_path}"
+        )
+    saved_signature = json.loads(signature_path.read_text())
+    if saved_signature != signature:
+        raise ValueError(
+            "Resume configuration differs from the saved evaluation configuration. "
+            f"saved={saved_signature}, requested={signature}"
+        )
+
+    rows = [_coerce_rollout_row(row) for row in _read_csv(rollout_path)]
+    completed: set[tuple[str, int, int]] = set()
+    for row in rows:
+        key = (str(row["mode"]), int(row["task_id"]), int(row["episode"]))
+        if key in completed:
+            raise ValueError(f"Duplicate completed rollout row while resuming: {key}")
+        completed.add(key)
+
+    # Decisions are journaled before their rollout completion row.  If the
+    # process died in that small window, discard the incomplete episode's
+    # decisions.  Also deduplicate a previously interrupted append.
+    cleaned_decisions: list[dict[str, Any]] = []
+    seen_decisions: set[tuple[str, int, int, int]] = set()
+    for row in _read_csv(decisions_path):
+        episode_key = (str(row["mode"]), int(row["task_id"]), int(row["episode"]))
+        decision_key = (*episode_key, int(row["environment_step"]))
+        if episode_key in completed and decision_key not in seen_decisions:
+            cleaned_decisions.append(row)
+            seen_decisions.add(decision_key)
+    decisions_path.unlink(missing_ok=True)
+    _write_csv(decisions_path, cleaned_decisions)
+    return rows, completed
+
+
 def main(args: argparse.Namespace) -> None:
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action_cot_denoising_steps must be positive.")
@@ -426,6 +541,9 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("Invalid V2 budget configuration.")
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    rows, completed = _prepare_journal(output_dir, args)
+    if (output_dir / "summary.json").exists():
+        return
     task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
     client = websocket_policy.WebsocketClientPolicy(
         args.host,
@@ -436,11 +554,12 @@ def main(args: argparse.Namespace) -> None:
     )
     _warmup(client, task_suite, args)
     task_end = min(task_suite.n_tasks, args.task_start + args.max_tasks)
-    rows: list[dict[str, Any]] = []
-    decisions: list[dict[str, Any]] = []
     for mode in args.modes:
         for task_id in range(args.task_start, task_end):
             for episode in range(args.num_trials_per_task):
+                episode_key = (mode, task_id, episode)
+                if episode_key in completed:
+                    continue
                 row, episode_decisions = _run_episode(
                     mode=mode,
                     task_id=task_id,
@@ -449,11 +568,11 @@ def main(args: argparse.Namespace) -> None:
                     client=client,
                     args=args,
                 )
+                _append_csv(output_dir / "decisions.csv", episode_decisions)
+                _append_csv(output_dir / "rollout_rows.csv", [row])
                 rows.append(row)
-                decisions.extend(episode_decisions)
+                completed.add(episode_key)
                 print(json.dumps(row, sort_keys=True), flush=True)
-                _write_csv(output_dir / "rollout_rows.csv", rows)
-                _write_csv(output_dir / "decisions.csv", decisions)
 
     per_task = [_aggregate(rows, mode, task_id) for mode in args.modes for task_id in range(args.task_start, task_end)]
     overall = {mode: _aggregate(rows, mode) for mode in args.modes}
