@@ -10,6 +10,7 @@ import hmac
 import json
 import os
 import pathlib
+import sys
 import time
 from typing import Any
 import urllib.error
@@ -94,6 +95,16 @@ def _send_feishu(text: str, *, webhook_url: str, secret: str) -> None:
     if code != 0:
         message = result.get("msg", result.get("StatusMessage", "unknown error"))
         raise RuntimeError(f"Feishu webhook rejected the message: code={code}, message={message}")
+
+
+def _try_send_feishu(text: str, *, webhook_url: str, secret: str) -> bool:
+    """Keep long-running watchers alive across transient webhook failures."""
+    try:
+        _send_feishu(text, webhook_url=webhook_url, secret=secret)
+    except Exception as exc:
+        print(f"Feishu send failed; watcher will retry: {exc}", file=sys.stderr, flush=True)
+        return False
+    return True
 
 
 def _finite_number(value: Any) -> float | None:
@@ -401,22 +412,26 @@ def main() -> None:
                 baseline_mode=args.baseline_mode,
                 comparison_summaries=args.comparison_summary,
             )
-            _send_feishu(message, webhook_url=webhook_url, secret=secret)
-            marker_path.write_text("completed\n", encoding="utf-8")
-            return
+            if _try_send_feishu(message, webhook_url=webhook_url, secret=secret):
+                marker_path.write_text("completed\n", encoding="utf-8")
+                return
+            time.sleep(args.poll_seconds)
+            continue
 
         if not _process_running(args.pid):
             time.sleep(5)
             if summary_path.exists():
                 continue
             message = _failure_message(output_dir, label=args.label, pid=args.pid)
-            _send_feishu(message, webhook_url=webhook_url, secret=secret)
-            marker_path.write_text("failed\n", encoding="utf-8")
-            return
+            if _try_send_feishu(message, webhook_url=webhook_url, secret=secret):
+                marker_path.write_text("failed\n", encoding="utf-8")
+                return
+            time.sleep(args.poll_seconds)
+            continue
 
         if next_progress is not None and time.monotonic() >= next_progress:
             message = _progress_message(output_dir, label=args.label, pid=args.pid)
-            _send_feishu(message, webhook_url=webhook_url, secret=secret)
+            _try_send_feishu(message, webhook_url=webhook_url, secret=secret)
             next_progress = time.monotonic() + args.progress_seconds
 
         time.sleep(args.poll_seconds)
