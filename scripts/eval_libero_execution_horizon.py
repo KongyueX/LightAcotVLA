@@ -407,6 +407,25 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
     def finite_count(field: str) -> int:
         return int(sum(np.isfinite(float(row.get(field, float("nan")))) for row in subset))
 
+    def outcome_mean(field: str, success: bool) -> float:
+        values = [
+            float(row.get(field, float("nan")))
+            for row in subset
+            if bool(int(row["success"])) == success
+        ]
+        values = [value for value in values if np.isfinite(value)]
+        return float(np.mean(values)) if values else float("nan")
+
+    def per_call(field: str) -> float:
+        pairs = [
+            (float(row.get(field, float("nan"))), int(row["policy_calls"]))
+            for row in subset
+        ]
+        pairs = [(value, calls) for value, calls in pairs if np.isfinite(value) and calls > 0]
+        if not pairs:
+            return float("nan")
+        return float(sum(value for value, _ in pairs) / sum(calls for _, calls in pairs))
+
     histogram = collections.Counter(all_horizons)
     return {
         "mode": mode,
@@ -415,16 +434,32 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
         "success_rate": mean("success"),
         "timeout_rate": mean("timeout"),
         "calls_per_episode": mean("policy_calls"),
+        "successful_calls_per_episode": outcome_mean("policy_calls", True),
+        "timeout_calls_per_episode": outcome_mean("policy_calls", False),
         "sampled_action_chunks_per_episode": mean("sampled_action_chunks"),
         "avg_h": float(np.mean(all_horizons)) if all_horizons else float("nan"),
         "h_distribution": dict(sorted(histogram.items())),
         "actual_wall_ms_per_episode": mean("actual_wall_total_ms"),
         "policy_rpc_wall_ms_per_episode": mean("policy_rpc_wall_total_ms"),
+        "policy_rpc_wall_ms_per_call": per_call("policy_rpc_wall_total_ms"),
+        "successful_policy_rpc_wall_ms_per_episode": outcome_mean(
+            "policy_rpc_wall_total_ms", True
+        ),
+        "timeout_policy_rpc_wall_ms_per_episode": outcome_mean("policy_rpc_wall_total_ms", False),
         "actual_episode_elapsed_ms_per_episode": mean("actual_episode_elapsed_total_ms"),
         "actual_episode_elapsed_episodes": finite_count("actual_episode_elapsed_total_ms"),
+        "successful_episode_elapsed_ms_per_episode": outcome_mean(
+            "actual_episode_elapsed_total_ms", True
+        ),
+        "timeout_episode_elapsed_ms_per_episode": outcome_mean("actual_episode_elapsed_total_ms", False),
         "actual_policy_ms_per_episode": mean("actual_policy_total_ms"),
+        "policy_ms_per_call": per_call("actual_policy_total_ms"),
+        "successful_policy_ms_per_episode": outcome_mean("actual_policy_total_ms", True),
+        "timeout_policy_ms_per_episode": outcome_mean("actual_policy_total_ms", False),
         "actual_server_ms_per_episode": mean("actual_server_total_ms"),
+        "server_ms_per_call": per_call("actual_server_total_ms"),
         "predictor_ms_per_episode": mean("actual_predictor_total_ms"),
+        "predictor_ms_per_call": per_call("actual_predictor_total_ms"),
         "batched_teacher_ms_per_episode": mean("actual_batched_teacher_total_ms"),
     }
 
