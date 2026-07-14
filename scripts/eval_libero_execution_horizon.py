@@ -407,20 +407,13 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
     def finite_count(field: str) -> int:
         return int(sum(np.isfinite(float(row.get(field, float("nan")))) for row in subset))
 
-    def outcome_mean(field: str, success: bool) -> float:
-        values = [
-            float(row.get(field, float("nan")))
-            for row in subset
-            if bool(int(row["success"])) == success
-        ]
+    def outcome_mean(field: str, success_value: int) -> float:
+        values = [float(row.get(field, float("nan"))) for row in subset if int(row["success"]) == success_value]
         values = [value for value in values if np.isfinite(value)]
         return float(np.mean(values)) if values else float("nan")
 
     def per_call(field: str) -> float:
-        pairs = [
-            (float(row.get(field, float("nan"))), int(row["policy_calls"]))
-            for row in subset
-        ]
+        pairs = [(float(row.get(field, float("nan"))), int(row["policy_calls"])) for row in subset]
         pairs = [(value, calls) for value, calls in pairs if np.isfinite(value) and calls > 0]
         if not pairs:
             return float("nan")
@@ -434,28 +427,24 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
         "success_rate": mean("success"),
         "timeout_rate": mean("timeout"),
         "calls_per_episode": mean("policy_calls"),
-        "successful_calls_per_episode": outcome_mean("policy_calls", True),
-        "timeout_calls_per_episode": outcome_mean("policy_calls", False),
+        "successful_calls_per_episode": outcome_mean("policy_calls", 1),
+        "timeout_calls_per_episode": outcome_mean("policy_calls", 0),
         "sampled_action_chunks_per_episode": mean("sampled_action_chunks"),
         "avg_h": float(np.mean(all_horizons)) if all_horizons else float("nan"),
         "h_distribution": dict(sorted(histogram.items())),
         "actual_wall_ms_per_episode": mean("actual_wall_total_ms"),
         "policy_rpc_wall_ms_per_episode": mean("policy_rpc_wall_total_ms"),
         "policy_rpc_wall_ms_per_call": per_call("policy_rpc_wall_total_ms"),
-        "successful_policy_rpc_wall_ms_per_episode": outcome_mean(
-            "policy_rpc_wall_total_ms", True
-        ),
-        "timeout_policy_rpc_wall_ms_per_episode": outcome_mean("policy_rpc_wall_total_ms", False),
+        "successful_policy_rpc_wall_ms_per_episode": outcome_mean("policy_rpc_wall_total_ms", 1),
+        "timeout_policy_rpc_wall_ms_per_episode": outcome_mean("policy_rpc_wall_total_ms", 0),
         "actual_episode_elapsed_ms_per_episode": mean("actual_episode_elapsed_total_ms"),
         "actual_episode_elapsed_episodes": finite_count("actual_episode_elapsed_total_ms"),
-        "successful_episode_elapsed_ms_per_episode": outcome_mean(
-            "actual_episode_elapsed_total_ms", True
-        ),
-        "timeout_episode_elapsed_ms_per_episode": outcome_mean("actual_episode_elapsed_total_ms", False),
+        "successful_episode_elapsed_ms_per_episode": outcome_mean("actual_episode_elapsed_total_ms", 1),
+        "timeout_episode_elapsed_ms_per_episode": outcome_mean("actual_episode_elapsed_total_ms", 0),
         "actual_policy_ms_per_episode": mean("actual_policy_total_ms"),
         "policy_ms_per_call": per_call("actual_policy_total_ms"),
-        "successful_policy_ms_per_episode": outcome_mean("actual_policy_total_ms", True),
-        "timeout_policy_ms_per_episode": outcome_mean("actual_policy_total_ms", False),
+        "successful_policy_ms_per_episode": outcome_mean("actual_policy_total_ms", 1),
+        "timeout_policy_ms_per_episode": outcome_mean("actual_policy_total_ms", 0),
         "actual_server_ms_per_episode": mean("actual_server_total_ms"),
         "server_ms_per_call": per_call("actual_server_total_ms"),
         "predictor_ms_per_episode": mean("actual_predictor_total_ms"),
@@ -513,8 +502,7 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "actual_batched_teacher_total_ms",
     }
     converted = {
-        key: int(value) if key in integers else float(value) if key in floats else value
-        for key, value in row.items()
+        key: int(value) if key in integers else float(value) if key in floats else value for key, value in row.items()
     }
     converted.setdefault("policy_rpc_wall_total_ms", converted.get("actual_wall_total_ms", float("nan")))
     converted.setdefault("actual_episode_elapsed_total_ms", float("nan"))
@@ -522,11 +510,7 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
 
 
 def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in vars(args).items()
-        if key not in {"output_dir", "resume"}
-    }
+    return {key: value for key, value in vars(args).items() if key not in {"output_dir", "resume"}}
 
 
 def _prepare_journal(
@@ -553,9 +537,7 @@ def _prepare_journal(
         return [], set()
 
     if not signature_path.exists():
-        raise FileNotFoundError(
-            f"Cannot safely resume without the configuration signature: {signature_path}"
-        )
+        raise FileNotFoundError(f"Cannot safely resume without the configuration signature: {signature_path}")
     saved_signature = json.loads(signature_path.read_text())
     if saved_signature != signature:
         raise ValueError(
