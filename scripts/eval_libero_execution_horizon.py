@@ -273,6 +273,7 @@ def _run_episode(
     client: websocket_policy.WebsocketClientPolicy,
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    episode_started = time.perf_counter()
     task = task_suite.get_task(task_id)
     states = task_suite.get_task_init_states(task_id)
     state_id = (args.initial_state_offset + episode) % len(states)
@@ -356,6 +357,7 @@ def _run_episode(
                     break
     finally:
         libero_eval._safe_close_env(env)
+    episode_elapsed_ms = (time.perf_counter() - episode_started) * 1000.0
 
     def total(field: str) -> float:
         values = [timing[field] for timing in timings if np.isfinite(timing[field])]
@@ -377,6 +379,10 @@ def _run_episode(
         "avg_h": float(np.mean(horizons)) if horizons else float("nan"),
         "h_distribution_json": json.dumps(dict(sorted(histogram.items()))),
         "actual_wall_total_ms": total("wall_ms"),
+        # Explicit alias for the legacy ``actual_wall_total_ms`` name.  This is
+        # client-observed policy-RPC wait, not full simulator episode time.
+        "policy_rpc_wall_total_ms": total("wall_ms"),
+        "actual_episode_elapsed_total_ms": episode_elapsed_ms,
         "actual_policy_total_ms": total("policy_ms"),
         "actual_server_total_ms": total("server_ms"),
         "actual_predictor_total_ms": total("predictor_ms"),
@@ -394,8 +400,12 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
             all_horizons.extend([int(horizon)] * int(count))
 
     def mean(field: str) -> float:
-        values = [float(row[field]) for row in subset if np.isfinite(float(row[field]))]
+        values = [float(row.get(field, float("nan"))) for row in subset]
+        values = [value for value in values if np.isfinite(value)]
         return float(np.mean(values)) if values else float("nan")
+
+    def finite_count(field: str) -> int:
+        return int(sum(np.isfinite(float(row.get(field, float("nan")))) for row in subset))
 
     histogram = collections.Counter(all_horizons)
     return {
@@ -409,6 +419,9 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
         "avg_h": float(np.mean(all_horizons)) if all_horizons else float("nan"),
         "h_distribution": dict(sorted(histogram.items())),
         "actual_wall_ms_per_episode": mean("actual_wall_total_ms"),
+        "policy_rpc_wall_ms_per_episode": mean("policy_rpc_wall_total_ms"),
+        "actual_episode_elapsed_ms_per_episode": mean("actual_episode_elapsed_total_ms"),
+        "actual_episode_elapsed_episodes": finite_count("actual_episode_elapsed_total_ms"),
         "actual_policy_ms_per_episode": mean("actual_policy_total_ms"),
         "actual_server_ms_per_episode": mean("actual_server_total_ms"),
         "predictor_ms_per_episode": mean("actual_predictor_total_ms"),
@@ -457,15 +470,20 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
     floats = {
         "avg_h",
         "actual_wall_total_ms",
+        "policy_rpc_wall_total_ms",
+        "actual_episode_elapsed_total_ms",
         "actual_policy_total_ms",
         "actual_server_total_ms",
         "actual_predictor_total_ms",
         "actual_batched_teacher_total_ms",
     }
-    return {
+    converted = {
         key: int(value) if key in integers else float(value) if key in floats else value
         for key, value in row.items()
     }
+    converted.setdefault("policy_rpc_wall_total_ms", converted.get("actual_wall_total_ms", float("nan")))
+    converted.setdefault("actual_episode_elapsed_total_ms", float("nan"))
+    return converted
 
 
 def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
@@ -589,7 +607,8 @@ def main(args: argparse.Namespace) -> None:
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "teacher_samples": args.teacher_samples,
         "timing_semantics": (
-            "actual synchronized policy/server/client-wall totals; predictor and batched sampling are included"
+            "actual synchronized policy/server/client-RPC-wall totals plus full episode elapsed time; "
+            "predictor and batched sampling are included"
         ),
         "config": vars(args),
         "overall": overall,
