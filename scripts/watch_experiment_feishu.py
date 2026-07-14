@@ -40,6 +40,13 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional summary.json providing the pure ACoT-VLA policy-time speedup denominator.",
     )
+    parser.add_argument(
+        "--comparison-summary",
+        action="append",
+        type=pathlib.Path,
+        default=[],
+        help="Additional summary.json whose modes should be merged into the evaluation table.",
+    )
     parser.add_argument("--baseline-mode", default="original")
     parser.add_argument("--label", default="ACoT-VLA experiment")
     parser.add_argument("--test_message", "--test-message", default=None)
@@ -159,8 +166,15 @@ def _evaluation_table(
     *,
     baseline_summary: pathlib.Path | None,
     baseline_mode: str,
+    comparison_summaries: list[pathlib.Path] | None = None,
 ) -> list[str]:
-    overall = summary.get("overall", {})
+    overall: dict[str, Any] = {}
+    for path in comparison_summaries or []:
+        comparison = json.loads(path.read_text(encoding="utf-8"))
+        overall.update(comparison.get("overall", {}))
+    # The monitored stage is authoritative when a comparison summary contains
+    # an older result for the same mode.
+    overall.update(summary.get("overall", {}))
     baseline_policy_ms = _load_baseline_policy_ms(
         summary,
         baseline_summary=baseline_summary,
@@ -210,6 +224,7 @@ def _summary_message(
     all_modes: bool = False,
     baseline_summary: pathlib.Path | None = None,
     baseline_mode: str = "original",
+    comparison_summaries: list[pathlib.Path] | None = None,
 ) -> str:
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     if summary.get("base_policy_frozen") is not None:
@@ -236,6 +251,7 @@ def _summary_message(
                         summary,
                         baseline_summary=baseline_summary,
                         baseline_mode=baseline_mode,
+                        comparison_summaries=comparison_summaries,
                     ),
                     f"output: {output_dir}",
                 ]
@@ -383,6 +399,7 @@ def main() -> None:
                 all_modes=args.all_modes,
                 baseline_summary=args.baseline_summary,
                 baseline_mode=args.baseline_mode,
+                comparison_summaries=args.comparison_summary,
             )
             _send_feishu(message, webhook_url=webhook_url, secret=secret)
             marker_path.write_text("completed\n", encoding="utf-8")
