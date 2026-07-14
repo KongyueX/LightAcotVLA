@@ -11,9 +11,9 @@ import json
 import os
 import pathlib
 import time
+from typing import Any
 import urllib.error
 import urllib.request
-from typing import Any
 
 
 def _parse_args() -> argparse.Namespace:
@@ -29,6 +29,18 @@ def _parse_args() -> argparse.Namespace:
         help="If positive, send a running progress update at this interval.",
     )
     parser.add_argument("--mode", default="full", help="Aggregate mode to summarize from summary.json.")
+    parser.add_argument(
+        "--all-modes",
+        action="store_true",
+        help="For execution-horizon evaluations, send a compact table containing every mode.",
+    )
+    parser.add_argument(
+        "--baseline-summary",
+        type=pathlib.Path,
+        default=None,
+        help="Optional summary.json providing the pure ACoT-VLA policy-time speedup denominator.",
+    )
+    parser.add_argument("--baseline-mode", default="original")
     parser.add_argument("--label", default="ACoT-VLA experiment")
     parser.add_argument("--test_message", "--test-message", default=None)
     parser.add_argument("--webhook_env", default="FEISHU_WEBHOOK_URL")
@@ -46,9 +58,9 @@ def _parse_args() -> argparse.Namespace:
 def _signed_payload(text: str, secret: str) -> dict[str, Any]:
     timestamp = int(time.time())
     string_to_sign = f"{timestamp}\n{secret}"
-    signature = base64.b64encode(
-        hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
-    ).decode("utf-8")
+    signature = base64.b64encode(hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()).decode(
+        "utf-8"
+    )
     return {
         "timestamp": timestamp,
         "sign": signature,
@@ -100,7 +112,105 @@ def _format_seconds(value: Any) -> str:
     return "n/a" if number is None else f"{number / 1000.0:.2f}s"
 
 
-def _summary_message(output_dir: pathlib.Path, *, label: str, mode: str) -> str:
+def _scheme_label(mode: str) -> str:
+    return {
+        "original": "ACoT-VLA original H5",
+        "fixed_h9": "ACoT-VLA Fixed H9",
+        "exact_batched_mc_v2": "Exact batched-MC V2 K20",
+        "v2_distilled": "V2-P distilled",
+        "v2_value_refined": "V2-P value-refined",
+    }.get(mode, mode)
+
+
+def _predictor_label(mode: str) -> str:
+    if mode in {"v2_distilled", "v2_value_refined"}:
+        return "Yes"
+    if mode == "exact_batched_mc_v2":
+        return "No(K20)"
+    return "No"
+
+
+def _policy_ms_per_call(metrics: dict[str, Any]) -> float | None:
+    direct = _finite_number(metrics.get("policy_ms_per_call"))
+    if direct is not None:
+        return direct
+    policy_ms = _finite_number(metrics.get("actual_policy_ms_per_episode"))
+    calls = _finite_number(metrics.get("calls_per_episode"))
+    if policy_ms is None or calls is None or calls <= 0:
+        return None
+    return policy_ms / calls
+
+
+def _load_baseline_policy_ms(
+    summary: dict[str, Any],
+    *,
+    baseline_summary: pathlib.Path | None,
+    baseline_mode: str,
+) -> float | None:
+    baseline_source = summary
+    if baseline_summary is not None:
+        baseline_source = json.loads(baseline_summary.read_text(encoding="utf-8"))
+    metrics = baseline_source.get("overall", {}).get(baseline_mode, {})
+    return _finite_number(metrics.get("actual_policy_ms_per_episode"))
+
+
+def _evaluation_table(
+    summary: dict[str, Any],
+    *,
+    baseline_summary: pathlib.Path | None,
+    baseline_mode: str,
+) -> list[str]:
+    overall = summary.get("overall", {})
+    baseline_policy_ms = _load_baseline_policy_ms(
+        summary,
+        baseline_summary=baseline_summary,
+        baseline_mode=baseline_mode,
+    )
+    preferred_order = (
+        "original",
+        "fixed_h9",
+        "exact_batched_mc_v2",
+        "v2_distilled",
+        "v2_value_refined",
+    )
+    modes = [mode for mode in preferred_order if mode in overall]
+    modes.extend(mode for mode in overall if mode not in modes)
+    lines = [
+        "方案 | Predictor | Success | Calls/ep | Avg H | Policy ms/call | Policy s/ep | Policy speedup vs ACoT-VLA H5"
+    ]
+    for mode in modes:
+        metrics = overall[mode]
+        policy_ms = _finite_number(metrics.get("actual_policy_ms_per_episode"))
+        speedup = None
+        if baseline_policy_ms is not None and policy_ms is not None and policy_ms > 0:
+            speedup = baseline_policy_ms / policy_ms
+        speedup_text = "n/a" if speedup is None else f"{speedup:.3f}x"
+        lines.append(
+            " | ".join(
+                [
+                    _scheme_label(mode),
+                    _predictor_label(mode),
+                    _format_percent(metrics.get("success_rate")),
+                    _format_number(metrics.get("calls_per_episode"), 3),
+                    _format_number(metrics.get("avg_h"), 3),
+                    _format_number(_policy_ms_per_call(metrics), 2),
+                    _format_number(None if policy_ms is None else policy_ms / 1000.0, 3),
+                    speedup_text,
+                ]
+            )
+        )
+    return lines
+
+
+def _summary_message(
+    output_dir: pathlib.Path,
+    *,
+    label: str,
+    mode: str,
+    all_modes: bool = False,
+    baseline_summary: pathlib.Path | None = None,
+    baseline_mode: str = "original",
+) -> str:
     summary = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
     if summary.get("base_policy_frozen") is not None:
         metrics = summary.get("last_train_metrics", {})
@@ -118,6 +228,18 @@ def _summary_message(output_dir: pathlib.Path, *, label: str, mode: str) -> str:
             ]
         )
     if "overall" in summary:
+        if all_modes:
+            return "\n".join(
+                [
+                    f"[ACoT-VLA] {label} completed",
+                    *_evaluation_table(
+                        summary,
+                        baseline_summary=baseline_summary,
+                        baseline_mode=baseline_mode,
+                    ),
+                    f"output: {output_dir}",
+                ]
+            )
         metrics = summary["overall"].get(mode)
         if metrics is None and summary["overall"]:
             mode, metrics = next(iter(summary["overall"].items()))
@@ -213,12 +335,7 @@ def _progress_message(output_dir: pathlib.Path, *, label: str, pid: int) -> str:
     if log_path.exists():
         log_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
         tail = "\n".join(log_lines[-5:])
-    return (
-        f"[ACoT-VLA] {label} running\n"
-        f"pid: {pid}\n"
-        f"output: {output_dir}\n"
-        f"latest log:\n{tail}"
-    )
+    return f"[ACoT-VLA] {label} running\npid: {pid}\noutput: {output_dir}\nlatest log:\n{tail}"
 
 
 def _failure_message(output_dir: pathlib.Path, *, label: str, pid: int) -> str:
@@ -226,12 +343,7 @@ def _failure_message(output_dir: pathlib.Path, *, label: str, pid: int) -> str:
     tail = "run.log is missing"
     if log_path.exists():
         tail = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
-    return (
-        f"[ACoT-VLA] {label} stopped without summary.json\n"
-        f"pid: {pid}\n"
-        f"output: {output_dir}\n"
-        f"last log lines:\n{tail}"
-    )
+    return f"[ACoT-VLA] {label} stopped without summary.json\npid: {pid}\noutput: {output_dir}\nlast log lines:\n{tail}"
 
 
 def _process_running(pid: int) -> bool:
@@ -264,7 +376,14 @@ def main() -> None:
     while True:
         summary_path = output_dir / "summary.json"
         if summary_path.exists():
-            message = _summary_message(output_dir, label=args.label, mode=args.mode)
+            message = _summary_message(
+                output_dir,
+                label=args.label,
+                mode=args.mode,
+                all_modes=args.all_modes,
+                baseline_summary=args.baseline_summary,
+                baseline_mode=args.baseline_mode,
+            )
             _send_feishu(message, webhook_url=webhook_url, secret=secret)
             marker_path.write_text("completed\n", encoding="utf-8")
             return
