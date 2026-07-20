@@ -54,6 +54,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--records-per-shard", type=int, default=1024)
     parser.add_argument("--source-iteration", type=int, default=0)
     parser.add_argument("--continuation-policy", choices=("fixed_h9", "current_student"), default="fixed_h9")
+    parser.add_argument(
+        "--branch-repeats",
+        type=int,
+        default=1,
+        help="Number of continuation-policy seeds to evaluate for selected forced horizons.",
+    )
+    parser.add_argument(
+        "--repeat-branch-horizons",
+        nargs="+",
+        type=int,
+        default=list(range(1, 11)),
+        help="Forced horizons that receive --branch-repeats trials; other horizons still run once.",
+    )
+    parser.add_argument(
+        "--branch-repeat-seed-stride",
+        type=int,
+        default=20_000_000,
+        help="Seed offset between repeated branches from the same simulator snapshot.",
+    )
     parser.add_argument("--student-mode", choices=("v2_distilled", "v2_value_refined"), default="v2_value_refined")
     parser.add_argument("--student-candidates", nargs="+", type=int, default=list(range(1, 11)))
     parser.add_argument("--v2-min-horizon", type=int, default=3)
@@ -412,10 +431,16 @@ def main(args: argparse.Namespace) -> None:
         args.root_stride_calls <= 0
         or args.root_call_offset_cycle <= 0
         or args.action_cot_denoising_steps <= 0
+        or args.branch_repeats <= 0
+        or args.branch_repeat_seed_stride <= 0
     ):
         raise ValueError(
-            "root_stride_calls, root_call_offset_cycle and action_cot_denoising_steps must be positive."
+            "root_stride_calls, root_call_offset_cycle, action_cot_denoising_steps, branch_repeats and "
+            "branch_repeat_seed_stride must be positive."
         )
+    repeated_horizons = sorted(set(args.repeat_branch_horizons))
+    if not repeated_horizons or any(horizon < 1 or horizon > 10 for horizon in repeated_horizons):
+        raise ValueError("repeat_branch_horizons must contain values from 1 through 10.")
     if args.continuation_policy == "current_student" and args.v2_budget_capacity <= 0:
         raise ValueError("v2_budget_capacity must be positive.")
     output_dir = pathlib.Path(args.output_dir)
@@ -446,17 +471,31 @@ def main(args: argparse.Namespace) -> None:
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "source_iteration": args.source_iteration,
         "root_call_offset_cycle": args.root_call_offset_cycle,
+        "branch_repeats": args.branch_repeats,
+        "repeat_branch_horizons": repeated_horizons,
+        "branch_repeat_seed_stride": args.branch_repeat_seed_stride,
         "risk_config": dataclasses.asdict(risk_config),
     }
     total_records = 0
     branch_successes = np.zeros((10,), dtype=np.int64)
+    repeated_branch_successes = np.zeros((10,), dtype=np.int64)
+    repeated_branch_trials = np.zeros((10,), dtype=np.int64)
     debug_videos = 0
     started = time.monotonic()
-    with horizon_dataset.ShardedCounterfactualWriter(
-        output_dir,
-        records_per_shard=args.records_per_shard,
-        metadata=metadata,
-    ) as writer:
+    repeated_outcomes_path = output_dir / "repeated_branch_outcomes.jsonl"
+    with contextlib.ExitStack() as stack:
+        writer = stack.enter_context(
+            horizon_dataset.ShardedCounterfactualWriter(
+                output_dir,
+                records_per_shard=args.records_per_shard,
+                metadata=metadata,
+            )
+        )
+        repeated_outcomes_writer = (
+            stack.enter_context(repeated_outcomes_path.open("w", encoding="utf-8"))
+            if args.branch_repeats > 1
+            else None
+        )
         for task_id in range(args.task_start, task_end):
             task = task_suite.get_task(task_id)
             initial_states = task_suite.get_task_init_states(task_id)
@@ -516,51 +555,97 @@ def main(args: argparse.Namespace) -> None:
                                 config=risk_config,
                             )
                             branch_rows: list[tuple[bool, bool, int, int]] = []
+                            repeated_outcomes: dict[str, list[dict[str, Any]]] = {}
                             for forced_horizon in range(1, 11):
-                                capture_video = debug_videos < args.debug_failure_videos
-                                success, timeout, remaining_steps, remaining_calls, frames = _run_branch(
-                                    env,
-                                    snapshot,
-                                    primary_actions,
-                                    forced_horizon=forced_horizon,
-                                    root_step=step,
-                                    episode_step_limit=episode_step_limit,
-                                    root_seed=root_seed,
-                                    task_description=task_description,
-                                    args=args,
-                                    client=client,
-                                    root_budget_state=budget_state,
-                                    capture_video=capture_video,
+                                repeat_count = (
+                                    args.branch_repeats if forced_horizon in repeated_horizons else 1
                                 )
-                                branch_rows.append((success, timeout, remaining_steps, remaining_calls))
-                                branch_successes[forced_horizon - 1] += int(success)
-                                if timeout and frames and debug_videos < args.debug_failure_videos:
-                                    debug_dir.mkdir(parents=True, exist_ok=True)
-                                    imageio.mimwrite(
-                                        debug_dir / f"task{task_id}_ep{episode_id}_step{step}_h{forced_horizon}.mp4",
-                                        frames,
-                                        fps=10,
+                                horizon_outcomes = []
+                                for repeat_index in range(repeat_count):
+                                    branch_seed = root_seed + repeat_index * args.branch_repeat_seed_stride
+                                    capture_video = (
+                                        repeat_index == 0 and debug_videos < args.debug_failure_videos
                                     )
-                                    debug_videos += 1
-                            writer.append(
-                                _root_record(
-                                    result=result,
-                                    risk=risk,
-                                    branches=branch_rows,
-                                    snapshot=snapshot,
-                                    task_id=task_id,
-                                    episode_id=episode_id,
-                                    decision_step=step,
-                                    root_seed=root_seed,
-                                    previous_actions_normalized=previous_actions_normalized,
-                                    previous_h=previous_h,
-                                    previous_valid=previous_actions_raw is not None,
-                                    budget_balance=budget_state.balance / args.v2_budget_capacity,
-                                    episode_progress=progress,
-                                    source_iteration=args.source_iteration,
-                                    v2_min_horizon=args.v2_min_horizon,
-                                )
+                                    success, timeout, remaining_steps, remaining_calls, frames = _run_branch(
+                                        env,
+                                        snapshot,
+                                        primary_actions,
+                                        forced_horizon=forced_horizon,
+                                        root_step=step,
+                                        episode_step_limit=episode_step_limit,
+                                        root_seed=branch_seed,
+                                        task_description=task_description,
+                                        args=args,
+                                        client=client,
+                                        root_budget_state=budget_state,
+                                        capture_video=capture_video,
+                                    )
+                                    repeated_branch_successes[forced_horizon - 1] += int(success)
+                                    repeated_branch_trials[forced_horizon - 1] += 1
+                                    horizon_outcomes.append(
+                                        {
+                                            "repeat_index": repeat_index,
+                                            "policy_seed": branch_seed,
+                                            "success": success,
+                                            "timeout": timeout,
+                                            "remaining_steps": remaining_steps,
+                                            "remaining_calls": remaining_calls,
+                                        }
+                                    )
+                                    if repeat_index == 0:
+                                        branch_rows.append((success, timeout, remaining_steps, remaining_calls))
+                                        branch_successes[forced_horizon - 1] += int(success)
+                                        if timeout and frames and debug_videos < args.debug_failure_videos:
+                                            debug_dir.mkdir(parents=True, exist_ok=True)
+                                            imageio.mimwrite(
+                                                debug_dir
+                                                / (
+                                                    f"task{task_id}_ep{episode_id}_step{step}"
+                                                    f"_h{forced_horizon}.mp4"
+                                                ),
+                                                frames,
+                                                fps=10,
+                                            )
+                                            debug_videos += 1
+                                repeated_outcomes[str(forced_horizon)] = horizon_outcomes
+                            root_record = _root_record(
+                                result=result,
+                                risk=risk,
+                                branches=branch_rows,
+                                snapshot=snapshot,
+                                task_id=task_id,
+                                episode_id=episode_id,
+                                decision_step=step,
+                                root_seed=root_seed,
+                                previous_actions_normalized=previous_actions_normalized,
+                                previous_h=previous_h,
+                                previous_valid=previous_actions_raw is not None,
+                                budget_balance=budget_state.balance / args.v2_budget_capacity,
+                                episode_progress=progress,
+                                source_iteration=args.source_iteration,
+                                v2_min_horizon=args.v2_min_horizon,
                             )
+                            writer.append(root_record)
+                            if repeated_outcomes_writer is not None:
+                                repeated_outcomes_writer.write(
+                                    json.dumps(
+                                        {
+                                            "schema_version": 1,
+                                            "task_id": task_id,
+                                            "episode_id": episode_id,
+                                            "decision_step": step,
+                                            "root_seed": root_seed,
+                                            "raw_h": int(root_record["raw_h"]),
+                                            "continuation_policy": args.continuation_policy,
+                                            "branch_repeats": args.branch_repeats,
+                                            "repeated_horizons": repeated_horizons,
+                                            "outcomes_by_h": repeated_outcomes,
+                                        },
+                                        sort_keys=True,
+                                    )
+                                    + "\n"
+                                )
+                                repeated_outcomes_writer.flush()
                             total_records += 1
                             roots_this_episode += 1
                             observation = _restore_snapshot(env, snapshot)
@@ -612,12 +697,24 @@ def main(args: argparse.Namespace) -> None:
                 finally:
                     libero_eval._safe_close_env(env)
 
+    repeated_branch_rates = np.divide(
+        repeated_branch_successes,
+        repeated_branch_trials,
+        out=np.zeros((10,), dtype=np.float64),
+        where=repeated_branch_trials > 0,
+    )
     summary = {
         "status": "complete",
         "num_records": total_records,
         "teacher_samples": args.teacher_samples,
         "branch_success_count_by_h": branch_successes.tolist(),
         "branch_success_rate_by_h": (branch_successes / max(total_records, 1)).tolist(),
+        "repeated_branch_success_count_by_h": repeated_branch_successes.tolist(),
+        "repeated_branch_trial_count_by_h": repeated_branch_trials.tolist(),
+        "repeated_branch_success_rate_by_h": repeated_branch_rates.tolist(),
+        "repeated_branch_outcomes_path": (
+            str(repeated_outcomes_path) if args.branch_repeats > 1 else None
+        ),
         "debug_failure_videos": debug_videos,
         "elapsed_seconds": time.monotonic() - started,
         "metadata": metadata,
