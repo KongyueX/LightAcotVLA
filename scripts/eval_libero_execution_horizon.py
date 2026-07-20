@@ -15,15 +15,18 @@ import eval_libero_action_cot_pruning as libero_eval
 import numpy as np
 from openpi_client import websocket_client_policy as websocket_policy
 
+from openpi.execution_horizon import rl_selector
 from openpi.execution_horizon import v2
 
-MODES = (
+LEGACY_MODES = (
     "original",
     "fixed_h9",
     "exact_batched_mc_v2",
     "v2_distilled",
     "v2_value_refined",
 )
+SELECTOR_MODES = ("q_guided_selector", "sft_selector", "ppo_selector")
+MODES = (*LEGACY_MODES, *SELECTOR_MODES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,8 +39,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-start", type=int, default=0)
     parser.add_argument("--max-tasks", type=int, default=10)
     parser.add_argument("--num-trials-per-task", type=int, default=20)
+    parser.add_argument(
+        "--episode-ids",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Optional explicit episode/state IDs. Overrides --num-trials-per-task.",
+    )
     parser.add_argument("--initial-state-offset", type=int, default=0)
-    parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
+    parser.add_argument("--modes", nargs="+", choices=MODES, default=list(LEGACY_MODES))
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--num-steps-wait", type=int, default=10)
@@ -58,6 +68,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-min-success-probability", type=float, default=0.90)
     parser.add_argument("--q-max-timeout-probability", type=float, default=0.20)
     parser.add_argument("--q-risk-slack-steps", type=int, default=0)
+    parser.add_argument("--q-guided-selector-params", default=None)
+    parser.add_argument("--ppo-selector-params", default=None)
+    parser.add_argument(
+        "--selector-sample-modes",
+        nargs="*",
+        choices=("sft_selector", "ppo_selector"),
+        default=[],
+        help="Sample the actor for online collection; normal evaluation stays deterministic.",
+    )
+    parser.add_argument("--selector-temperature", type=float, default=1.0)
+    parser.add_argument("--selector-min-success-probability", type=float, default=0.5)
+    parser.add_argument("--selector-reference-slack", type=float, default=0.05)
+    parser.add_argument("--selector-q-tie-margin", type=float, default=0.03)
+    parser.add_argument(
+        "--record-selector-features",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Persist frozen selector features in decisions.csv for an online RL update.",
+    )
     parser.add_argument("--warmup-requests", type=int, default=1)
     parser.add_argument(
         "--resume",
@@ -98,7 +127,7 @@ def _request(
     }
     if mode == "exact_batched_mc_v2":
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
-    if mode in {"v2_distilled", "v2_value_refined"}:
+    if mode in {"v2_distilled", "v2_value_refined", *SELECTOR_MODES}:
         request.update(
             {
                 "run_execution_horizon_predictor": np.asarray(1, dtype=np.bool_),
@@ -137,17 +166,60 @@ def _risk_config(args: argparse.Namespace) -> v2.V2RiskConfig:
     )
 
 
+def _load_selectors(args: argparse.Namespace) -> dict[str, rl_selector.FrozenFeatureSelector]:
+    selectors: dict[str, rl_selector.FrozenFeatureSelector] = {}
+    needs_q_selector = any(mode in {"q_guided_selector", "sft_selector"} for mode in args.modes)
+    if needs_q_selector:
+        if args.q_guided_selector_params is None:
+            raise ValueError("q_guided_selector/sft_selector requires --q-guided-selector-params.")
+        selector = rl_selector.FrozenFeatureSelector.load(args.q_guided_selector_params)
+        selectors["q_guided_selector"] = selector
+        selectors["sft_selector"] = selector
+    if "ppo_selector" in args.modes:
+        if args.ppo_selector_params is None:
+            raise ValueError("ppo_selector requires --ppo-selector-params.")
+        selectors["ppo_selector"] = rl_selector.FrozenFeatureSelector.load(args.ppo_selector_params)
+    return selectors
+
+
 def _select_horizon(
     mode: str,
     result: dict[str, Any],
     *,
     args: argparse.Namespace,
     budget_state: v2.EpisodeBudgetState,
+    selector: rl_selector.FrozenFeatureSelector | None = None,
+    selector_rng: np.random.Generator | None = None,
 ) -> tuple[int, dict[str, Any]]:
     if mode == "original":
         return args.original_horizon, {"raw_horizon": args.original_horizon, "budget_limited": 0.0}
     if mode == "fixed_h9":
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
+    if mode in SELECTOR_MODES:
+        if selector is None:
+            raise ValueError(f"{mode} requires a selector sidecar.")
+        feature = rl_selector.build_selector_feature(result)
+        policy = "q" if mode == "q_guided_selector" else "actor"
+        decision = selector.decide(
+            feature,
+            policy=policy,
+            minimum_success_probability=args.selector_min_success_probability,
+            reference_slack=args.selector_reference_slack,
+            q_tie_margin=args.selector_q_tie_margin,
+            sample=mode in args.selector_sample_modes,
+            temperature=args.selector_temperature,
+            rng=selector_rng,
+        )
+        selector_info = decision.as_json_dict()
+        if not args.record_selector_features:
+            selector_info.pop("selector_feature")
+        return decision.horizon, {
+            "raw_horizon": decision.horizon,
+            "budget_limited": 0.0,
+            "selector_policy": policy,
+            "selector_sampled": mode in args.selector_sample_modes,
+            **selector_info,
+        }
 
     risk_config = _risk_config(args)
     entropy_candidates = list(range(args.v2_min_horizon, 11))
@@ -272,6 +344,7 @@ def _run_episode(
     task_suite,
     client: websocket_policy.WebsocketClientPolicy,
     args: argparse.Namespace,
+    selector: rl_selector.FrozenFeatureSelector | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     episode_started = time.perf_counter()
     task = task_suite.get_task(task_id)
@@ -321,7 +394,15 @@ def _run_episode(
             sampled_chunks += args.teacher_samples if mode == "exact_batched_mc_v2" else 1
             timings.append(timing)
             action_chunk = np.asarray(result["actions"], dtype=np.float32)
-            horizon, selector_info = _select_horizon(mode, result, args=args, budget_state=budget_state)
+            horizon, selector_info = _select_horizon(
+                mode,
+                result,
+                args=args,
+                budget_state=budget_state,
+                selector=selector,
+                selector_rng=np.random.default_rng(request_seed + 991),
+            )
+            selected_horizon = horizon
             horizon = min(horizon, len(action_chunk), episode_step_limit - step)
             if horizon <= 0:
                 break
@@ -333,6 +414,7 @@ def _run_episode(
                     "episode": episode,
                     "initial_state_id": state_id,
                     "environment_step": step,
+                    "selected_horizon": selected_horizon,
                     "execution_horizon": horizon,
                     "wall_ms": timing["wall_ms"],
                     "policy_ms": timing["policy_ms"],
@@ -574,11 +656,19 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("action_cot_denoising_steps must be positive.")
     if args.v2_budget_capacity <= 0 or args.v2_initial_budget > args.v2_budget_capacity:
         raise ValueError("Invalid V2 budget configuration.")
+    if args.selector_temperature <= 0:
+        raise ValueError("selector_temperature must be positive.")
+    invalid_sample_modes = sorted(set(args.selector_sample_modes).difference(args.modes))
+    if invalid_sample_modes:
+        raise ValueError(f"selector_sample_modes were not requested in --modes: {invalid_sample_modes}")
+    if args.episode_ids is not None and (not args.episode_ids or len(set(args.episode_ids)) != len(args.episode_ids)):
+        raise ValueError("episode_ids must be non-empty and unique when provided.")
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows, completed = _prepare_journal(output_dir, args)
     if (output_dir / "summary.json").exists():
         return
+    selectors = _load_selectors(args)
     task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
     client = websocket_policy.WebsocketClientPolicy(
         args.host,
@@ -589,9 +679,10 @@ def main(args: argparse.Namespace) -> None:
     )
     _warmup(client, task_suite, args)
     task_end = min(task_suite.n_tasks, args.task_start + args.max_tasks)
+    episode_ids = args.episode_ids if args.episode_ids is not None else list(range(args.num_trials_per_task))
     for mode in args.modes:
         for task_id in range(args.task_start, task_end):
-            for episode in range(args.num_trials_per_task):
+            for episode in episode_ids:
                 episode_key = (mode, task_id, episode)
                 if episode_key in completed:
                     continue
@@ -602,6 +693,7 @@ def main(args: argparse.Namespace) -> None:
                     task_suite=task_suite,
                     client=client,
                     args=args,
+                    selector=selectors.get(mode),
                 )
                 _append_csv(output_dir / "decisions.csv", episode_decisions)
                 _append_csv(output_dir / "rollout_rows.csv", [row])
@@ -620,7 +712,8 @@ def main(args: argparse.Namespace) -> None:
         "paired_initial_states": True,
         "task_suite": args.task_suite_name,
         "num_tasks": task_end - args.task_start,
-        "num_trials_per_task": args.num_trials_per_task,
+        "num_trials_per_task": len(episode_ids),
+        "episode_ids": episode_ids,
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "teacher_samples": args.teacher_samples,
         "timing_semantics": (
