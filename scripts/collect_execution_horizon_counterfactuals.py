@@ -38,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-start", type=int, default=0)
     parser.add_argument("--max-tasks", type=int, default=None)
     parser.add_argument("--num-trials-per-task", type=int, default=1)
+    parser.add_argument(
+        "--episode-ids",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Optional explicit episode IDs; overrides the 0..num-trials-per-task-1 range.",
+    )
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--seed", type=int, default=7)
@@ -441,6 +448,13 @@ def main(args: argparse.Namespace) -> None:
     repeated_horizons = sorted(set(args.repeat_branch_horizons))
     if not repeated_horizons or any(horizon < 1 or horizon > 10 for horizon in repeated_horizons):
         raise ValueError("repeat_branch_horizons must contain values from 1 through 10.")
+    episode_ids = (
+        list(range(args.num_trials_per_task))
+        if args.episode_ids is None
+        else list(dict.fromkeys(args.episode_ids))
+    )
+    if not episode_ids or any(episode_id < 0 for episode_id in episode_ids):
+        raise ValueError("episode_ids must contain non-negative values.")
     if args.continuation_policy == "current_student" and args.v2_budget_capacity <= 0:
         raise ValueError("v2_budget_capacity must be positive.")
     output_dir = pathlib.Path(args.output_dir)
@@ -471,6 +485,7 @@ def main(args: argparse.Namespace) -> None:
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "source_iteration": args.source_iteration,
         "root_call_offset_cycle": args.root_call_offset_cycle,
+        "episode_ids": episode_ids,
         "branch_repeats": args.branch_repeats,
         "repeat_branch_horizons": repeated_horizons,
         "branch_repeat_seed_stride": args.branch_repeat_seed_stride,
@@ -499,7 +514,7 @@ def main(args: argparse.Namespace) -> None:
         for task_id in range(args.task_start, task_end):
             task = task_suite.get_task(task_id)
             initial_states = task_suite.get_task_init_states(task_id)
-            for episode_id in range(args.num_trials_per_task):
+            for episode_id in episode_ids:
                 env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
                 try:
                     env.reset()
