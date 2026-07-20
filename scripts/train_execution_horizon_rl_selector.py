@@ -485,6 +485,15 @@ def main(args: Args) -> None:
         },
     )
     selector_path = selector.save(output_dir / "selector_sft.npz")
+    replay_path = output_dir / "selector_replay.npz"
+    with replay_path.open("wb") as file:
+        np.savez_compressed(
+            file,
+            feature=data["feature"],
+            success=data["success"],
+            cost=data["cost"],
+            label_weight=data["label_weight"],
+        )
     audit = _full_metrics(params, data, args=args, reference_index=reference_index)
     summary = {
         "status": "complete",
@@ -498,6 +507,7 @@ def main(args: Args) -> None:
         "num_repeated_json_roots": len(repeated_records),
         "num_matched_repeated_roots": int(targets["matched_repeated"]),
         "selector_params": str(selector_path.resolve()),
+        "selector_replay": str(replay_path.resolve()),
         "feature_dim": int(feature.shape[-1]),
         "last_train_metrics": last_metrics,
         "offline_audit": audit,

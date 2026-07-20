@@ -158,7 +158,7 @@ class FrozenFeatureSelector:
         actor_logits = hidden @ self.params["actor_w"] + self.params["actor_b"]
         q_success_logits = hidden @ self.params["q_success_w"] + self.params["q_success_b"]
         q_cost_raw = hidden @ self.params["q_cost_w"] + self.params["q_cost_b"]
-        value_logit = float(hidden @ self.params["value_w"] + self.params["value_b"])
+        value_logit = float(np.asarray(hidden @ self.params["value_w"] + self.params["value_b"]).reshape(-1)[0])
         return {
             "actor_logits": np.asarray(actor_logits, dtype=np.float64),
             "q_success_probability": sigmoid(q_success_logits),

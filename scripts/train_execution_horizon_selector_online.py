@@ -35,6 +35,8 @@ class Args:
     rollout_dirs: tuple[str, ...]
     output_dir: str
     algorithm: Literal["q_distill", "ppo"]
+    offline_replay: str | None = None
+    offline_replay_weight: float = 0.5
     rollout_mode: str = "sft_selector"
     seed: int = 7
     steps: int = 750
@@ -173,6 +175,32 @@ def _load_rollouts(
     return data, stats
 
 
+def _load_offline_replay(
+    path: str | None,
+    *,
+    feature_dim: int,
+    num_actions: int,
+) -> dict[str, np.ndarray]:
+    if path is None:
+        return {
+            "feature": np.zeros((1, feature_dim), dtype=np.float32),
+            "success": np.zeros((1, num_actions), dtype=np.float32),
+            "cost": np.zeros((1, num_actions), dtype=np.float32),
+            "label_weight": np.zeros((1, num_actions), dtype=np.float32),
+        }
+    with np.load(path, allow_pickle=False) as archive:
+        result = {
+            name: np.asarray(archive[name], dtype=np.float32) for name in ("feature", "success", "cost", "label_weight")
+        }
+    if result["feature"].shape[1] != feature_dim:
+        raise ValueError(
+            f"Offline replay feature dim {result['feature'].shape[1]} does not match selector dim {feature_dim}."
+        )
+    if result["success"].shape[1] != num_actions:
+        raise ValueError("Offline replay action dimension does not match selector candidates.")
+    return result
+
+
 def _forward(params: dict[str, jax.Array], feature: jax.Array) -> dict[str, jax.Array]:
     hidden = jnp.tanh(feature @ params["trunk_w"] + params["trunk_b"])
     return {
@@ -219,7 +247,11 @@ def _make_train_step(
     else:
         trainable = {"actor_w", "actor_b", "value_w", "value_b"}
 
-    def loss_fn(params: dict[str, jax.Array], batch: dict[str, jax.Array]):
+    def loss_fn(
+        params: dict[str, jax.Array],
+        batch: dict[str, jax.Array],
+        offline_batch: dict[str, jax.Array],
+    ):
         outputs = _forward(params, batch["feature"])
         log_probabilities = _masked_log_probabilities(outputs["actor_logits"], batch["eligible"])
         selected_log_probability = jnp.take_along_axis(log_probabilities, batch["action"][:, None], axis=-1)[:, 0]
@@ -261,16 +293,29 @@ def _make_train_step(
                 reference_index=reference_index,
                 args=args,
             )
-            distillation_ce = -jnp.mean(jnp.take_along_axis(log_probabilities, q_target[:, None], axis=-1))
+            full_actor_log_probabilities = jax.nn.log_softmax(outputs["actor_logits"], axis=-1)
+            distillation_ce = -jnp.mean(jnp.take_along_axis(full_actor_log_probabilities, q_target[:, None], axis=-1))
+            offline_outputs = _forward(params, offline_batch["feature"])
+            offline_weight = offline_batch["label_weight"]
+            offline_q_bce = jnp.sum(
+                _bce(offline_outputs["q_success_logits"], offline_batch["success"]) * offline_weight
+            ) / jnp.maximum(jnp.sum(offline_weight), 1.0)
+            offline_cost_huber = jnp.sum(
+                optax.huber_loss(offline_outputs["q_cost"], offline_batch["cost"]) * offline_weight
+            ) / jnp.maximum(jnp.sum(offline_weight), 1.0)
             policy_loss = distillation_ce
             loss = (
                 args.online_q_weight * q_online_bce
                 + args.q_actor_distillation_weight * distillation_ce
+                + args.offline_replay_weight * (offline_q_bce + 0.25 * offline_cost_huber)
                 + args.value_weight * value_loss
                 + args.anchor_kl_weight * anchor_kl
                 - args.entropy_weight * entropy
             )
             clip_fraction = jnp.asarray(0.0)
+        if args.algorithm == "ppo":
+            offline_q_bce = jnp.asarray(0.0)
+            offline_cost_huber = jnp.asarray(0.0)
 
         parameter_anchor = sum(jnp.sum((params[name] - initial_params[name]) ** 2) for name in trainable)
         loss += args.parameter_anchor_weight * parameter_anchor
@@ -278,6 +323,8 @@ def _make_train_step(
             "loss": loss,
             "policy_loss": policy_loss,
             "q_online_bce": q_online_bce,
+            "offline_q_bce": offline_q_bce,
+            "offline_cost_huber": offline_cost_huber,
             "distillation_ce": distillation_ce,
             "value_mse": value_loss,
             "anchor_kl": anchor_kl,
@@ -294,8 +341,9 @@ def _make_train_step(
         params: dict[str, jax.Array],
         optimizer_state: optax.OptState,
         batch: dict[str, jax.Array],
+        offline_batch: dict[str, jax.Array],
     ):
-        (_, metrics), gradients = jax.value_and_grad(loss_fn, has_aux=True)(params, batch)
+        (_, metrics), gradients = jax.value_and_grad(loss_fn, has_aux=True)(params, batch, offline_batch)
         gradients = {
             name: gradient if name in trainable else jnp.zeros_like(gradient) for name, gradient in gradients.items()
         }
@@ -349,6 +397,11 @@ def main(args: Args) -> None:
     started = time.perf_counter()
     selector = rl_selector.FrozenFeatureSelector.load(args.selector_params)
     data, rollout_stats = _load_rollouts(args, selector)
+    offline_data = _load_offline_replay(
+        args.offline_replay,
+        feature_dim=selector.feature_mean.shape[0],
+        num_actions=len(selector.candidates),
+    )
     params = {name: jnp.asarray(value) for name, value in selector.params.items()}
     initial_params = {name: jnp.array(value) for name, value in params.items()}
     reference_index = selector.reference_index
@@ -365,7 +418,18 @@ def main(args: Args) -> None:
         for step in range(args.steps):
             selected = rng.choice(len(data["feature"]), size=args.batch_size, replace=True)
             batch = {name: jnp.asarray(value[selected]) for name, value in data.items()}
-            params, optimizer_state, metrics = train_step(params, optimizer_state, batch)
+            offline_selected = rng.choice(
+                len(offline_data["feature"]),
+                size=args.batch_size,
+                replace=True,
+            )
+            offline_batch = {name: jnp.asarray(value[offline_selected]) for name, value in offline_data.items()}
+            params, optimizer_state, metrics = train_step(
+                params,
+                optimizer_state,
+                batch,
+                offline_batch,
+            )
             if step % args.log_interval == 0 or step + 1 == args.steps:
                 last_metrics = {name: float(value) for name, value in jax.device_get(metrics).items()}
                 record = {"step": step + 1, "algorithm": args.algorithm, **last_metrics}
