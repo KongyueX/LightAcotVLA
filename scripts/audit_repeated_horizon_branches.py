@@ -76,9 +76,9 @@ def _indexed_outcomes(row: dict[str, Any], horizon: int) -> dict[int, dict[str, 
 
 
 def _candidate_horizons(rows: list[dict[str, Any]], requested: list[int] | None) -> list[int]:
-    available = set(int(horizon) for horizon in rows[0]["repeated_horizons"])
+    available = {int(horizon) for horizon in rows[0]["repeated_horizons"]}
     for row in rows[1:]:
-        available &= set(int(horizon) for horizon in row["repeated_horizons"])
+        available &= {int(horizon) for horizon in row["repeated_horizons"]}
     candidates = sorted(available if requested is None else set(requested))
     if not candidates or any(horizon not in available for horizon in candidates):
         raise ValueError(f"Candidate horizons must be present as repeats in every root; available={sorted(available)}.")
