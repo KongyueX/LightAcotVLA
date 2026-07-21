@@ -269,9 +269,7 @@ def _summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
                 outcome_vector("progress_selected_short", subset),
                 outcome_vector("candidate0_short", subset),
             ),
-            "per_arm_success_count": {
-                arm_name: sum(outcome_vector(arm_name, subset)) for arm_name in arm_names
-            },
+            "per_arm_success_count": {arm_name: sum(outcome_vector(arm_name, subset)) for arm_name in arm_names},
             "num_trials": len(subset) * subset[0]["repeats"],
         }
 
@@ -358,9 +356,7 @@ def _validate_args(args: argparse.Namespace) -> list[int]:
     ):
         raise ValueError("candidate-indices must be valid batched teacher sample indices.")
     episode_ids = (
-        list(range(args.num_trials_per_task))
-        if args.episode_ids is None
-        else list(dict.fromkeys(args.episode_ids))
+        list(range(args.num_trials_per_task)) if args.episode_ids is None else list(dict.fromkeys(args.episode_ids))
     )
     if not episode_ids or any(episode_id < 0 for episode_id in episode_ids):
         raise ValueError("episode-ids must contain non-negative values.")
@@ -382,9 +378,7 @@ def main(args: argparse.Namespace) -> None:
     task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
     max_steps = libero_eval._max_steps(args.task_suite_name)
     task_end = (
-        task_suite.n_tasks
-        if args.max_tasks is None
-        else min(task_suite.n_tasks, args.task_start + args.max_tasks)
+        task_suite.n_tasks if args.max_tasks is None else min(task_suite.n_tasks, args.task_start + args.max_tasks)
     )
     risk_config = v2.V2RiskConfig(
         risk_threshold=args.v2_risk_threshold,
@@ -424,9 +418,10 @@ def main(args: argparse.Namespace) -> None:
                     while not done and step < episode_step_limit:
                         if args.max_roots_per_episode and roots_this_episode >= args.max_roots_per_episode:
                             break
-                        scheduled_root = decision_index >= root_call_offset and (
-                            decision_index - root_call_offset
-                        ) % args.root_stride_calls == 0
+                        scheduled_root = (
+                            decision_index >= root_call_offset
+                            and (decision_index - root_call_offset) % args.root_stride_calls == 0
+                        )
                         root_seed = args.seed + task_id * 1_000_000 + episode_id * 10_000 + step
                         policy_input = libero_eval._observation_to_policy_input(
                             observation,

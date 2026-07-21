@@ -247,9 +247,7 @@ def score_libero_goal_progress(
 
     satisfied_count = sum(bool(component["satisfied"]) for component in components)
     unfinished_placements = [
-        component
-        for component in components
-        if component["kind"] == "placement" and not bool(component["satisfied"])
+        component for component in components if component["kind"] == "placement" and not bool(component["satisfied"])
     ]
     unfinished_articulations = [
         component
