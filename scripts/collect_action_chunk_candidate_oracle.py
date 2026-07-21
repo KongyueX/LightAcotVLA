@@ -86,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--v2-risk-threshold", type=float, default=1.5)
     parser.add_argument("--v2-final-weight", type=float, default=0.5)
     parser.add_argument("--v2-action-cot-weight", type=float, default=0.5)
+    parser.add_argument(
+        "--v2-budget-capacity",
+        type=float,
+        default=12.0,
+        help="Shared branch-runner normalization constant; fixed-H9 does not update this budget.",
+    )
     # collector._run_branch reads this only when video capture is enabled.  The
     # candidate audit never records videos, but retaining the field keeps the
     # shared branch runner's argument contract explicit.
@@ -403,6 +409,7 @@ def main(args: argparse.Namespace) -> None:
         args.root_stride_calls,
         args.root_call_offset_cycle,
         args.action_cot_denoising_steps,
+        args.v2_budget_capacity,
     )
     if any(value <= 0 for value in positive_values):
         raise ValueError("Sample, horizon, repeat, stride, cycle, and denoising values must be positive.")
