@@ -233,6 +233,24 @@ class Policy(BasePolicy):
 
         # Unbatch and convert to np.ndarray.
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+        mc_actions = None
+        if "mc_actions_normalized" in outputs:
+            # The regular output pipeline only knows how to transform one
+            # action chunk stored under the ``actions`` key.  Apply that same
+            # pipeline independently to every MC candidate so collectors can
+            # execute them in the environment while retaining the normalized
+            # tensor for uncertainty/risk targets.
+            candidate_state = np.asarray(outputs["state"])
+            transformed_candidates = []
+            for candidate in np.asarray(outputs["mc_actions_normalized"]):
+                candidate_outputs = self._output_transform(
+                    {
+                        "state": np.array(candidate_state, copy=True),
+                        "actions": np.array(candidate, copy=True),
+                    }
+                )
+                transformed_candidates.append(np.asarray(candidate_outputs["actions"]))
+            mc_actions = np.stack(transformed_candidates, axis=0)
         model_time = time.monotonic() - start_time
         if detailed_timing:
             stage_total_ms = sum(
@@ -249,6 +267,10 @@ class Policy(BasePolicy):
             detailed_timing["profile_overhead_ms"] = max(0.0, model_time * 1000 - stage_total_ms)
 
         outputs = self._output_transform(outputs)
+        if mc_actions is not None:
+            # Environment-space K x T x D action chunks.  This is additive and
+            # does not change the existing candidate-0 ``actions`` response.
+            outputs["mc_actions"] = mc_actions
         outputs["policy_timing"] = {
             "infer_ms": model_time * 1000,
             **detailed_timing,
