@@ -111,10 +111,7 @@ def _candidate_indices(normalized: np.ndarray, args: argparse.Namespace) -> list
         remaining = [index for index in range(sample_count) if index not in selected]
         min_distances = []
         for index in remaining:
-            distances = [
-                float(np.sqrt(np.mean((prefix[index] - prefix[chosen]) ** 2)))
-                for chosen in selected
-            ]
+            distances = [float(np.sqrt(np.mean((prefix[index] - prefix[chosen]) ** 2))) for chosen in selected]
             min_distances.append(min(distances))
         selected.append(remaining[int(np.argmax(min_distances))])
     return selected
@@ -223,8 +220,7 @@ def _evaluate_root(
         branch_seed = root_seed + repeat_index * args.repeat_seed_stride
         arm_specs = [("reference_candidate0", 0, args.reference_horizon)]
         arm_specs.extend(
-            (f"candidate_rank{rank}", index, args.candidate_horizon)
-            for rank, index in enumerate(selected)
+            (f"candidate_rank{rank}", index, args.candidate_horizon) for rank, index in enumerate(selected)
         )
         for arm_name, candidate_index, horizon in arm_specs:
             outcome = _branch_outcome(
@@ -244,9 +240,7 @@ def _evaluate_root(
                     "repeat_index": repeat_index,
                     "continuation_seed": branch_seed,
                     "candidate_rank": (
-                        0
-                        if arm_name == "reference_candidate0"
-                        else int(arm_name.removeprefix("candidate_rank"))
+                        0 if arm_name == "reference_candidate0" else int(arm_name.removeprefix("candidate_rank"))
                     ),
                     "candidate_index": candidate_index,
                     "forced_horizon": horizon,
@@ -322,22 +316,16 @@ def _summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     root_comparisons = []
     for record in records:
         reference_root = [bool(item["success"]) for item in record["arms"]["reference_candidate0"]]
-        candidate_root = [
-            [bool(item["success"]) for item in record["arms"][name]] for name in candidate_arm_names
-        ]
+        candidate_root = [[bool(item["success"]) for item in record["arms"][name]] for name in candidate_arm_names]
         candidate0_root = candidate_root[0]
         alternative_root = candidate_root[1:]
         per_repeat_any_alternative = (
-            [
-                any(outcomes[repeat] for outcomes in alternative_root)
-                for repeat in range(record["repeats"])
-            ]
+            [any(outcomes[repeat] for outcomes in alternative_root) for repeat in range(record["repeats"])]
             if alternative_root
             else list(candidate0_root)
         )
         per_repeat_any_candidate = [
-            any(outcomes[repeat] for outcomes in candidate_root)
-            for repeat in range(record["repeats"])
+            any(outcomes[repeat] for outcomes in candidate_root) for repeat in range(record["repeats"])
         ]
         reference.extend(reference_root)
         candidate0_short.extend(candidate0_root)
@@ -377,9 +365,7 @@ def _summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         task_summary[str(task_id)] = {
             name: {
                 "success_count": sum(
-                    bool(outcome["success"])
-                    for record in task_records
-                    for outcome in record["arms"][name]
+                    bool(outcome["success"]) for record in task_records for outcome in record["arms"][name]
                 ),
                 "num_trials": len(task_records) * task_records[0]["repeats"],
             }
@@ -388,14 +374,10 @@ def _summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "num_roots": len(records),
-        "num_branch_rollouts": sum(
-            len(outcomes) for record in records for outcomes in record["arms"].values()
-        ),
+        "num_branch_rollouts": sum(len(outcomes) for record in records for outcomes in record["arms"].values()),
         "per_arm": per_arm,
         "candidate0_short_h_vs_reference_h": _paired_counts(candidate0_short, reference),
-        "hindsight_any_alternative_chunk_vs_candidate0_same_h": _paired_counts(
-            action_oracle, candidate0_short
-        ),
+        "hindsight_any_alternative_chunk_vs_candidate0_same_h": _paired_counts(action_oracle, candidate0_short),
         "hindsight_any_candidate_short_h_vs_reference_h": _paired_counts(full_oracle, reference),
         "hindsight_any_candidate_short_h_success_rate": sum(full_oracle) / trial_count,
         "in_sample_root_empirical_best_candidate_success_rate": empirical_best_successes / trial_count,
@@ -433,9 +415,7 @@ def main(args: argparse.Namespace) -> None:
     ):
         raise ValueError("candidate-indices must be valid batched teacher sample indices.")
     episode_ids = (
-        list(range(args.num_trials_per_task))
-        if args.episode_ids is None
-        else list(dict.fromkeys(args.episode_ids))
+        list(range(args.num_trials_per_task)) if args.episode_ids is None else list(dict.fromkeys(args.episode_ids))
     )
     if not episode_ids or any(episode_id < 0 for episode_id in episode_ids):
         raise ValueError("episode-ids must contain non-negative values.")
@@ -453,9 +433,7 @@ def main(args: argparse.Namespace) -> None:
     task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
     max_steps = libero_eval._max_steps(args.task_suite_name)
     task_end = (
-        task_suite.n_tasks
-        if args.max_tasks is None
-        else min(task_suite.n_tasks, args.task_start + args.max_tasks)
+        task_suite.n_tasks if args.max_tasks is None else min(task_suite.n_tasks, args.task_start + args.max_tasks)
     )
     risk_config = v2.V2RiskConfig(
         risk_threshold=args.v2_risk_threshold,
@@ -470,9 +448,7 @@ def main(args: argparse.Namespace) -> None:
             task = task_suite.get_task(task_id)
             initial_states = task_suite.get_task_init_states(task_id)
             for episode_id in episode_ids:
-                env, task_description = libero_eval._get_libero_env(
-                    task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed
-                )
+                env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
                 try:
                     env.reset()
                     observation = env.set_init_state(initial_states[episode_id % len(initial_states)])
@@ -493,9 +469,10 @@ def main(args: argparse.Namespace) -> None:
                     while not done and step < episode_step_limit:
                         if args.max_roots_per_episode and roots_this_episode >= args.max_roots_per_episode:
                             break
-                        scheduled_root = decision_index >= root_call_offset and (
-                            decision_index - root_call_offset
-                        ) % args.root_stride_calls == 0
+                        scheduled_root = (
+                            decision_index >= root_call_offset
+                            and (decision_index - root_call_offset) % args.root_stride_calls == 0
+                        )
                         root_seed = args.seed + task_id * 1_000_000 + episode_id * 10_000 + step
                         policy_input = libero_eval._observation_to_policy_input(
                             observation, task_description, args.resize_size

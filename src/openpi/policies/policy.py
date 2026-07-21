@@ -3,7 +3,7 @@ import logging
 import pathlib
 import time
 from typing import Any, TypeAlias
-import copy
+
 import flax
 import flax.traverse_util
 import jax
