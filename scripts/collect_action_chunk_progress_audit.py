@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--progress-minimum-margin",
         type=float,
-        default=0.002,
+        default=0.0005,
         help="Minimum raw dense-score advantage over candidate 0 before selecting an alternative.",
     )
     return parser
