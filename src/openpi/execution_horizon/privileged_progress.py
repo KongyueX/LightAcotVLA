@@ -4,6 +4,7 @@ This module is intentionally simulator-side only. It turns the logical BDDL
 goal into a stage-aware continuous score that can label action-chunk
 candidates without looking at their later terminal outcomes.
 """
+# ruff: noqa: SLF001
 
 from __future__ import annotations
 
@@ -12,7 +13,6 @@ import math
 from typing import Any
 
 import numpy as np
-
 
 _PLACEMENT_PREDICATES = frozenset({"in", "on", "stack"})
 _ARTICULATION_PREDICATES = frozenset({"close", "open", "turnoff", "turnon"})
