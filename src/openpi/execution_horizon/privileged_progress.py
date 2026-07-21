@@ -66,8 +66,11 @@ def _position(state: Any) -> np.ndarray:
 
 
 def _eef_position(task_env: Any, observation: dict[str, Any] | None) -> np.ndarray:
-    if observation is not None and "robot0_eef_pos" in observation:
-        return np.asarray(observation["robot0_eef_pos"], dtype=np.float64)
+    del observation
+    # Read the site directly from the restored simulator. LIBERO's observation
+    # wrapper can retain robot0_eef_pos from the state immediately before a
+    # set_state/forward call, which would leak one candidate prefix into the
+    # next candidate's progress score.
     robot = task_env.robots[0]
     return np.asarray(task_env.sim.data.site_xpos[robot.eef_site_id], dtype=np.float64)
 
