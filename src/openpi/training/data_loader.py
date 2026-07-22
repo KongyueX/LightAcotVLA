@@ -183,7 +183,7 @@ def create_torch_dataset(
     else:
         action_chunk_size = model_config.action_horizon
 
-    if isinstance(repo_id, (list, tuple)):
+    if isinstance(repo_id, list | tuple):
         repo_ids = list(repo_id)
         # If repo_id is a list, create a dataset for each repo_id and concatenate them.
         dataset_metas = [

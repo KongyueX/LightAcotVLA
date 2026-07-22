@@ -134,9 +134,7 @@ def _validate_args(args: argparse.Namespace) -> None:
 def _training_frame(observation: dict[str, Any], action: np.ndarray, task_description: str) -> dict[str, Any]:
     return {
         "image": np.ascontiguousarray(observation["agentview_image"][::-1, ::-1], dtype=np.uint8),
-        "wrist_image": np.ascontiguousarray(
-            observation["robot0_eye_in_hand_image"][::-1, ::-1], dtype=np.uint8
-        ),
+        "wrist_image": np.ascontiguousarray(observation["robot0_eye_in_hand_image"][::-1, ::-1], dtype=np.uint8),
         "state": np.asarray(
             np.concatenate(
                 (
@@ -198,9 +196,7 @@ def _replay_student(
     return bool(done or libero_eval._env_success(env)), step, roots
 
 
-def _select_hard_roots(
-    roots: list[HardRoot], episode_step_limit: int, args: argparse.Namespace
-) -> list[HardRoot]:
+def _select_hard_roots(roots: list[HardRoot], episode_step_limit: int, args: argparse.Namespace) -> list[HardRoot]:
     eligible = [root for root in roots if episode_step_limit - root.step >= args.min_trajectory_steps]
     selected = []
     for target in args.hard_root_progress:
@@ -374,9 +370,7 @@ def _prepare_outputs(args: argparse.Namespace) -> tuple[Path, Path]:
     return args.output_dir, dataset_root
 
 
-def _write_training_manifest(
-    path: Path, correction_records: list[dict[str, Any]], dataset_repo_id: str
-) -> None:
+def _write_training_manifest(path: Path, correction_records: list[dict[str, Any]], dataset_repo_id: str) -> None:
     corrections_by_root = Counter(record["root_id"] for record in correction_records)
     with path.open("w", encoding="utf-8") as handle:
         for record in correction_records:
@@ -432,9 +426,7 @@ def main(args: argparse.Namespace) -> None:
             task = task_suite.get_task(task_id)
             initial_states = task_suite.get_task_init_states(task_id)
             initial_state_id = episode_id % len(initial_states)
-            env, task_description = libero_eval._get_libero_env(
-                task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed
-            )
+            env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
             try:
                 env.reset()
                 observation = env.set_init_state(initial_states[initial_state_id])
