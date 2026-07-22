@@ -192,6 +192,7 @@ def _policy_request(
     seed: int,
     args: argparse.Namespace,
     teacher: bool = False,
+    profile: bool | None = None,
     run_student: bool = False,
     previous_actions: np.ndarray | None = None,
     previous_h: int = 1,
@@ -204,7 +205,7 @@ def _policy_request(
     # Branch continuation can contain hundreds of calls.  Only the root
     # teacher needs stage-synchronized timings; disabling it elsewhere keeps
     # labels identical while avoiding four host synchronization points/call.
-    request["profile_policy_timing"] = np.asarray(teacher, dtype=np.bool_)
+    request["profile_policy_timing"] = np.asarray(teacher if profile is None else profile, dtype=np.bool_)
     if teacher:
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
     if run_student:

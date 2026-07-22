@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--student-action-cot-denoising-steps",
         type=int,
-        default=5,
+        default=10,
         help="Deployment-time Action-CoT denoising steps used to reproduce the frozen student.",
     )
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
@@ -185,7 +185,7 @@ def _replay_student(
             )
         )
         policy_input = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
-        result = collector._policy_request(client, policy_input, seed=request_seed, args=args)
+        result = collector._policy_request(client, policy_input, seed=request_seed, args=args, profile=True)
         actions = np.asarray(result["actions"], dtype=np.float32)[: args.student_horizon]
         for action in actions:
             if step >= episode_step_limit:
@@ -255,7 +255,7 @@ def _run_teacher_branch(
 
         policy_input = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
         continuation_seed = branch_seed + 100_000 + continuation_index
-        result = collector._policy_request(client, policy_input, seed=continuation_seed, args=args)
+        result = collector._policy_request(client, policy_input, seed=continuation_seed, args=args, profile=True)
         action_plan = np.asarray(result["actions"], dtype=np.float32)[: args.continuation_horizon]
         calls += 1
         continuation_index += 1
