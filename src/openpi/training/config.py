@@ -1748,8 +1748,8 @@ _CONFIGS = [
             "acot_libero_long_run1/50999/params"
         ),
         num_train_steps=1_000,
-        save_interval=250,
-        keep_period=250,
+        save_interval=500,
+        keep_period=500,
         num_workers=24,
         batch_size=16,
         freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(
