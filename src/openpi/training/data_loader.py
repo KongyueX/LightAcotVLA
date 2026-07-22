@@ -183,13 +183,14 @@ def create_torch_dataset(
     else:
         action_chunk_size = model_config.action_horizon
 
-    if isinstance(repo_id, list):
+    if isinstance(repo_id, (list, tuple)):
+        repo_ids = list(repo_id)
         # If repo_id is a list, create a dataset for each repo_id and concatenate them.
         dataset_metas = [
-            lerobot_dataset.LeRobotDatasetMetadata(r) for r in repo_id
+            lerobot_dataset.LeRobotDatasetMetadata(r) for r in repo_ids
         ]
         dataset = lerobot_dataset.MultiLeRobotDataset(
-            repo_id,
+            repo_ids,
             delta_timestamps={
                 key: [t / dataset_meta.fps for t in range(action_chunk_size)]
                 for dataset_meta in dataset_metas
