@@ -100,6 +100,18 @@ class DataConfig:
 
     dataloader_sampler: str | None = ''
 
+    # Optional mixture-sampler settings for targeted SFT / DAgger. The
+    # resulting sampling distribution is an additive mixture of uniform
+    # all-frame replay, frames whose episode task matches one of the target
+    # strings, and frame ranges listed in a JSONL manifest.
+    sampler_manifest_path: str | None = None
+    sampler_manifest_split: str = "train"
+    sampler_target_tasks: tuple[str, ...] = ()
+    sampler_general_fraction: float = 1.0
+    sampler_target_fraction: float = 0.0
+    sampler_manifest_fraction: float = 0.0
+    sampler_num_samples: int | None = None
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -1625,6 +1637,73 @@ _CONFIGS = [
         num_workers=48 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
         batch_size=16,
         freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(freeze_vision = False, freeze_llm = True, freeze_dual_ae=[False, False]),
+    ),
+    # Phase-0 Task8/9 targeted SFT. Evaluation refers to these as Task8/9,
+    # while the LeRobot dataset assigns them task indices 6 and 2, so the
+    # sampler intentionally matches task text instead of numeric task IDs.
+    TrainConfig(
+        name="acot_libero_task89_targeted_sft",
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=15,
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            coarse_action_expert_variant="gemma_300m",
+            action_expert_variant="gemma_300m",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+        ),
+        data=LeRobotACOTLiberoDataConfig(
+            repo_id="your_hf_username/libero",
+            base_config=DataConfig(
+                prompt_from_task=True,
+                dataloader_sampler="mixture",
+                sampler_manifest_path=(
+                    "/root/autodl-tmp/acotvla/hard_state_dagger/manifests/"
+                    "task89_targeted_sft_round0.jsonl"
+                ),
+                sampler_target_tasks=(
+                    "put both moka pots on the stove",
+                    "put the yellow and white mug in the microwave and close it",
+                ),
+                sampler_general_fraction=0.50,
+                sampler_target_fraction=0.25,
+                sampler_manifest_fraction=0.25,
+            ),
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/root/autodl-tmp/acotvla/assets/"
+                    "acot_libero_action_cot_explicit_implicit_co_fusion"
+                ),
+                asset_id="your_hf_username/libero",
+            ),
+            extra_delta_transform=(False, False),
+            joint_action_shifts=(2, 1),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=200,
+            peak_lr=1e-5,
+            decay_steps=5_000,
+            decay_lr=2e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/"
+            "acot_libero_action_cot_explicit_implicit_co_fusion/"
+            "acot_libero_long_run1/50999/params"
+        ),
+        num_train_steps=5_000,
+        save_interval=1_000,
+        keep_period=1_000,
+        num_workers=24,
+        batch_size=16,
+        freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(
+            freeze_vision=True,
+            freeze_llm=True,
+            freeze_dual_ae=[False, False],
+        ),
     ),
     # Budgeted Event V2-P keeps the full base policy frozen.  Its standalone
     # trainer consumes counterfactual HDF5 features and writes only the

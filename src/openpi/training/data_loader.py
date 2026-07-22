@@ -380,9 +380,21 @@ def create_torch_data_loader(
         )
 
     sampler = None
-    if data_config.dataloader_sampler != '':
+    if data_config.dataloader_sampler:
         from openpi.training.sampler import FrameSampler
-        sampler = FrameSampler(dataset, data_config.dataloader_sampler)
+
+        sampler = FrameSampler(
+            dataset,
+            data_config.dataloader_sampler,
+            seed=seed,
+            manifest_path=data_config.sampler_manifest_path,
+            manifest_split=data_config.sampler_manifest_split,
+            target_tasks=data_config.sampler_target_tasks,
+            general_fraction=data_config.sampler_general_fraction,
+            target_fraction=data_config.sampler_target_fraction,
+            manifest_fraction=data_config.sampler_manifest_fraction,
+            num_samples=data_config.sampler_num_samples,
+        )
         shuffle = False
 
     dataset = SafeDataset(dataset)
