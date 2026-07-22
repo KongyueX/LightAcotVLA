@@ -1705,6 +1705,59 @@ _CONFIGS = [
             freeze_dual_ae=[False, False],
         ),
     ),
+    # Causal control for the Task8/9 targeted-SFT pilot. Keep the initialization,
+    # optimizer, trainable parameters, and evaluation protocol unchanged while
+    # reverting the data distribution to ordinary uniform all-frame replay.
+    TrainConfig(
+        name="acot_libero_task89_uniform_control",
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=15,
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            coarse_action_expert_variant="gemma_300m",
+            action_expert_variant="gemma_300m",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+        ),
+        data=LeRobotACOTLiberoDataConfig(
+            repo_id="your_hf_username/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/root/autodl-tmp/acotvla/assets/"
+                    "acot_libero_action_cot_explicit_implicit_co_fusion"
+                ),
+                asset_id="your_hf_username/libero",
+            ),
+            extra_delta_transform=(False, False),
+            joint_action_shifts=(2, 1),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=200,
+            peak_lr=1e-5,
+            decay_steps=5_000,
+            decay_lr=2e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/"
+            "acot_libero_action_cot_explicit_implicit_co_fusion/"
+            "acot_libero_long_run1/50999/params"
+        ),
+        num_train_steps=1_000,
+        save_interval=250,
+        keep_period=250,
+        num_workers=24,
+        batch_size=16,
+        freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(
+            freeze_vision=True,
+            freeze_llm=True,
+            freeze_dual_ae=[False, False],
+        ),
+    ),
     # Budgeted Event V2-P keeps the full base policy frozen.  Its standalone
     # trainer consumes counterfactual HDF5 features and writes only the
     # execution_horizon_predictor subtree as a sidecar checkpoint.
