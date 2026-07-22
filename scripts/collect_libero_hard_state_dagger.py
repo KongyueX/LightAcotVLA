@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import copy
 import dataclasses
 import json
 import os
@@ -73,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--student-horizon", type=int, default=9)
+    parser.add_argument(
+        "--student-action-cot-denoising-steps",
+        type=int,
+        default=5,
+        help="Deployment-time Action-CoT denoising steps used to reproduce the frozen student.",
+    )
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument("--teacher-samples", type=int, choices=(10, 20, 32), default=20)
     parser.add_argument("--candidate-count", type=int, default=8)
@@ -111,6 +118,7 @@ def _parse_task_episodes(values: list[str]) -> list[tuple[int, int]]:
 def _validate_args(args: argparse.Namespace) -> None:
     positive = {
         "student_horizon": args.student_horizon,
+        "student_action_cot_denoising_steps": args.student_action_cot_denoising_steps,
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "candidate_count": args.candidate_count,
         "candidate_horizon": args.candidate_horizon,
@@ -395,6 +403,8 @@ def _write_training_manifest(path: Path, correction_records: list[dict[str, Any]
 def main(args: argparse.Namespace) -> None:
     _validate_args(args)
     task_episodes = _parse_task_episodes(args.task_episode)
+    student_args = copy.copy(args)
+    student_args.action_cot_denoising_steps = args.student_action_cot_denoising_steps
     output_dir, dataset_root = _prepare_outputs(args)
     dataset = LeRobotDataset.create(
         repo_id=args.dataset_repo_id,
@@ -446,7 +456,7 @@ def main(args: argparse.Namespace) -> None:
                     episode_id=episode_id,
                     task_description=task_description,
                     episode_step_limit=episode_step_limit,
-                    args=args,
+                    args=student_args,
                     client=client,
                 )
                 if base_success:
@@ -537,6 +547,8 @@ def main(args: argparse.Namespace) -> None:
         "collection_records": str(collection_path),
         "training_manifest": str(manifest_path),
         "confidence_repeats": args.confidence_repeats,
+        "student_action_cot_denoising_steps": args.student_action_cot_denoising_steps,
+        "teacher_action_cot_denoising_steps": args.action_cot_denoising_steps,
         "min_trajectory_steps": args.min_trajectory_steps,
         "elapsed_seconds": time.monotonic() - started,
     }
