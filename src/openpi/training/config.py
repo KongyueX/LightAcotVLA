@@ -1825,6 +1825,79 @@ _CONFIGS = [
             freeze_dual_ae=[True, False],
         ),
     ),
+    # Parameter-isolated control for the round-1 hard-state DAgger pilot.
+    # ``ACOTConfig.get_freeze_filter`` freezes the requested LLM branches, but
+    # intentionally leaves non-LLM reasoning/fusion modules trainable.  That is
+    # useful for ordinary fine-tuning but confounds this conservative pilot.
+    # Here the entire base policy stays frozen except for the fine action
+    # expert and its local input/time/output projections.
+    TrainConfig(
+        name="acot_libero_task89_hard_state_dagger_round1_strict_fine",
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=15,
+            action_horizon=10,
+            pi05=True,
+            discrete_state_input=False,
+            coarse_action_expert_variant="gemma_300m",
+            action_expert_variant="gemma_300m",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+        ),
+        data=LeRobotACOTLiberoDataConfig(
+            repo_id=[
+                "your_hf_username/libero",
+                "local/task89_hard_state_dagger_round1",
+            ],
+            base_config=DataConfig(
+                prompt_from_task=True,
+                dataloader_sampler="mixture",
+                sampler_manifest_path=(
+                    "/root/autodl-tmp/acotvla/hard_state_dagger/round1/"
+                    "training_manifest.jsonl"
+                ),
+                sampler_general_fraction=0.85,
+                sampler_target_fraction=0.0,
+                sampler_manifest_fraction=0.15,
+            ),
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/root/autodl-tmp/acotvla/assets/"
+                    "acot_libero_action_cot_explicit_implicit_co_fusion"
+                ),
+                asset_id="your_hf_username/libero",
+            ),
+            extra_delta_transform=(False, False),
+            joint_action_shifts=(2, 1),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100,
+            peak_lr=3e-6,
+            decay_steps=1_000,
+            decay_lr=1e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/"
+            "acot_libero_action_cot_explicit_implicit_co_fusion/"
+            "acot_libero_long_run1/50999/params"
+        ),
+        num_train_steps=1_000,
+        save_interval=500,
+        keep_period=500,
+        num_workers=24,
+        batch_size=16,
+        freeze_filter=nnx.Not(
+            nnx.Any(
+                nnx_utils.PathRegex(r"PaliGemma/llm/.*_2(?:/.*)?"),
+                nnx_utils.PathRegex(r"action_in_proj/.*"),
+                nnx_utils.PathRegex(r"time_mlp_in/.*"),
+                nnx_utils.PathRegex(r"time_mlp_out/.*"),
+                nnx_utils.PathRegex(r"action_out_proj/.*"),
+            )
+        ),
+    ),
     # Budgeted Event V2-P keeps the full base policy frozen.  Its standalone
     # trainer consumes counterfactual HDF5 features and writes only the
     # execution_horizon_predictor subtree as a sidecar checkpoint.
