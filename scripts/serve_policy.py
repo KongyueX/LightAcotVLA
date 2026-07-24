@@ -33,6 +33,8 @@ class Checkpoint:
     dir: str
     # Optional standalone Budgeted Event V2-P predictor params directory.
     execution_horizon_predictor_params: str | None = None
+    # Optional one-step EAR/final endpoint-student delta checkpoint.
+    acot_endpoint_student_params: str | None = None
 
 
 @dataclasses.dataclass
@@ -115,6 +117,7 @@ def create_policy(args: Args) -> _policy.Policy:
                 args.policy.dir,
                 default_prompt=args.default_prompt,
                 execution_horizon_predictor_params=args.policy.execution_horizon_predictor_params,
+                acot_endpoint_student_params=args.policy.acot_endpoint_student_params,
             )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)

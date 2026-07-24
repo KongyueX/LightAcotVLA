@@ -964,6 +964,189 @@ class ACOT_VLA(_model.BaseModel):
 
         return total_loss
 
+    def _one_step_coarse_endpoint(
+        self,
+        prefix_state: dict[str, Any],
+        coarse_noise: jax.Array,
+    ) -> jax.Array:
+        """Predict x(0) directly from x(1) for the explicit action reasoner."""
+
+        if not self.adopt_explicit_action_reasoner:
+            raise ValueError("One-step coarse endpoint prediction requires the explicit action reasoner.")
+        observation = prefix_state["observation"]
+        prefix_mask = prefix_state["prefix_mask"]
+        kv_cache = prefix_state["kv_cache"]
+        batch_size = observation.state.shape[0]
+        time = jnp.ones((batch_size,), dtype=jnp.float32)
+
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+            observation,
+            coarse_noise,
+            time,
+            suf_type="reasoner",
+        )
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+        full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+        positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+        (_, suffix_out, _), _ = self.PaliGemma.llm(
+            [None, suffix_tokens, None],
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=kv_cache,
+            adarms_cond=[None, adarms_cond, None],
+        )
+        velocity = self.coarse_action_out_proj(suffix_out[:, -self.coarse_action_horizon :])
+        # Rectified-flow inference starts at x(1)=noise and takes dt=-1.
+        return coarse_noise - velocity
+
+    def _one_step_action_endpoint(
+        self,
+        prefix_state: dict[str, Any],
+        action_noise: jax.Array,
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+    ) -> jax.Array:
+        """Predict x(0) directly from x(1) for the final action expert."""
+
+        observation = prefix_state["observation"]
+        prefix_mask = prefix_state["prefix_mask"]
+        kv_cache = prefix_state["kv_cache"]
+        batch_size = observation.state.shape[0]
+        time = jnp.ones((batch_size,), dtype=jnp.float32)
+
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+            observation,
+            action_noise,
+            time,
+            explicit_action_reason=explicit_action_reason,
+            implicit_action_reason=implicit_action_reason,
+            suf_type="expert",
+        )
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+        full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+        positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+        (_, _, suffix_out), _ = self.PaliGemma.llm(
+            [None, None, suffix_tokens],
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=kv_cache,
+            adarms_cond=[None, None, adarms_cond],
+        )
+        velocity = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        return action_noise - velocity
+
+    def compute_endpoint_distillation_loss(
+        self,
+        observation: _model.Observation,
+        teacher_coarse: _model.CoarseActions,
+        teacher_actions: _model.Actions,
+        coarse_noise: jax.Array,
+        action_noise: jax.Array,
+        intervention_coarse: _model.CoarseActions | None = None,
+        teacher_intervention_actions: _model.Actions | None = None,
+        *,
+        stage: str = "dual",
+        use_student_coarse: bool = False,
+        coarse_loss_weight: float = 1.0,
+        final_loss_weight: float = 1.0,
+        ir_loss_weight: float = 0.0,
+        compute_ir_metrics: bool = False,
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
+        """Distill ten-step teacher endpoints into the existing flow branches.
+
+        B6-lite uses the clean coarse/final endpoint terms. IR-lite adds a
+        response-alignment term: changing EAR while holding observation, IAR,
+        and final-action noise fixed must induce the same final-action delta in
+        student and teacher.
+        """
+
+        if stage not in {"coarse", "final", "dual"}:
+            raise ValueError(f"stage must be coarse, final, or dual; got {stage!r}.")
+        if ir_loss_weight < 0:
+            raise ValueError("ir_loss_weight must be non-negative.")
+        if not self.adopt_explicit_action_reasoner:
+            raise ValueError("Endpoint distillation requires adopt_explicit_action_reasoner=True.")
+        need_final = stage in {"final", "dual"}
+        need_coarse_prediction = stage in {"coarse", "dual"} or use_student_coarse
+        need_ir = need_final and (ir_loss_weight > 0 or compute_ir_metrics)
+        if need_ir and (intervention_coarse is None or teacher_intervention_actions is None):
+            raise ValueError("IR loss/metrics require intervention coarse and teacher action targets.")
+
+        # Teacher endpoints were exported with inference preprocessing. Using
+        # train=False here keeps the student input exactly aligned with them.
+        prefix_state = self._compute_prefix_state(observation)
+        implicit_action_reason = self.sample_actions_profile_implicit(prefix_state)[
+            "implicit_action_reason"
+        ]
+
+        zero = jnp.asarray(0.0, dtype=jnp.float32)
+        total_loss = zero
+        metrics: dict[str, jax.Array] = {}
+        predicted_coarse = None
+        if need_coarse_prediction:
+            predicted_coarse = self._one_step_coarse_endpoint(prefix_state, coarse_noise)
+        if stage in {"coarse", "dual"}:
+            assert predicted_coarse is not None
+            coarse_error = predicted_coarse - teacher_coarse.astype(predicted_coarse.dtype)
+            coarse_mse = jnp.mean(jnp.square(coarse_error))
+            total_loss = total_loss + coarse_loss_weight * coarse_mse
+            metrics["coarse_mse"] = coarse_mse
+            metrics["coarse_rmse"] = jnp.sqrt(coarse_mse)
+
+        if need_final:
+            explicit_action_reason = teacher_coarse
+            if use_student_coarse:
+                assert predicted_coarse is not None
+                explicit_action_reason = jax.lax.stop_gradient(predicted_coarse)
+            predicted_actions = self._one_step_action_endpoint(
+                prefix_state,
+                action_noise,
+                explicit_action_reason,
+                implicit_action_reason,
+            )
+            final_error = predicted_actions - teacher_actions.astype(predicted_actions.dtype)
+            final_mse = jnp.mean(jnp.square(final_error))
+            total_loss = total_loss + final_loss_weight * final_mse
+            metrics["final_mse"] = final_mse
+            metrics["final_rmse"] = jnp.sqrt(final_mse)
+
+            if need_ir:
+                assert intervention_coarse is not None
+                assert teacher_intervention_actions is not None
+                predicted_intervention_actions = self._one_step_action_endpoint(
+                    prefix_state,
+                    action_noise,
+                    intervention_coarse,
+                    implicit_action_reason,
+                )
+                student_delta = predicted_intervention_actions - predicted_actions
+                teacher_delta = teacher_intervention_actions.astype(predicted_actions.dtype)
+                teacher_delta = teacher_delta - teacher_actions.astype(predicted_actions.dtype)
+                delta_error = student_delta - teacher_delta
+                ir_mse = jnp.mean(jnp.square(delta_error))
+                total_loss = total_loss + ir_loss_weight * ir_mse
+
+                flattened_student = student_delta.reshape((student_delta.shape[0], -1))
+                flattened_teacher = teacher_delta.reshape((teacher_delta.shape[0], -1))
+                numerator = jnp.sum(flattened_student * flattened_teacher, axis=-1)
+                student_norm = jnp.sqrt(jnp.sum(jnp.square(flattened_student), axis=-1) + 1e-12)
+                teacher_norm = jnp.sqrt(jnp.sum(jnp.square(flattened_teacher), axis=-1) + 1e-12)
+                cosine = numerator / jnp.maximum(student_norm * teacher_norm, 1e-8)
+                metrics["ir_delta_mse"] = ir_mse
+                metrics["ir_delta_rmse"] = jnp.sqrt(ir_mse)
+                metrics["ir_delta_cosine"] = jnp.mean(cosine)
+                metrics["student_response_l2"] = jnp.mean(
+                    jnp.linalg.norm(flattened_student, axis=-1)
+                )
+                metrics["teacher_response_l2"] = jnp.mean(
+                    jnp.linalg.norm(flattened_teacher, axis=-1)
+                )
+
+        metrics["loss"] = total_loss
+        return total_loss, metrics
+
     @override
     def sample_actions(
         self,
