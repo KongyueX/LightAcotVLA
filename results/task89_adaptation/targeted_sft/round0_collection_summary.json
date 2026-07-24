@@ -1,0 +1,21 @@
+{
+  "episodes_by_task": {
+    "put both moka pots on the stove": 29,
+    "put the yellow and white mug in the microwave and close it": 34
+  },
+  "manifest_entries": 180,
+  "manifest_frames": 12777,
+  "manifest_frames_by_task": {
+    "put both moka pots on the stove": 6548,
+    "put the yellow and white mug in the microwave and close it": 6229
+  },
+  "repo_id": "your_hf_username/libero",
+  "tail_frames": 80,
+  "target_episodes": 63,
+  "target_tasks": [
+    "put both moka pots on the stove",
+    "put the yellow and white mug in the microwave and close it"
+  ],
+  "transition_after": 30,
+  "transition_before": 20
+}

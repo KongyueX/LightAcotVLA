@@ -1,0 +1,70 @@
+{
+  "audit_thresholds": {
+    "min_semantic_null_ratio": 3.0,
+    "min_semantic_response_l2": 0.05
+  },
+  "dataset_indices_already_present": 0,
+  "dataset_indices_requested": 2000,
+  "ear_causal_audit_pass": false,
+  "failed_records": 0,
+  "interventions": {
+    "gripper_shift": {
+      "count": 685,
+      "mean_response_l2": 0.24114591906486202,
+      "median_response_l2": 0.15594816207885742,
+      "p90_response_l2": 0.43747329711914074
+    },
+    "null": {
+      "count": 0,
+      "mean_response_l2": null,
+      "median_response_l2": null,
+      "p90_response_l2": null
+    },
+    "rotate": {
+      "count": 665,
+      "mean_response_l2": 1.3827620112526238,
+      "median_response_l2": 0.9826291799545288,
+      "p90_response_l2": 3.2660447120666505
+    },
+    "swap": {
+      "count": 0,
+      "mean_response_l2": null,
+      "median_response_l2": null,
+      "p90_response_l2": null
+    },
+    "translate": {
+      "count": 650,
+      "mean_response_l2": 0.06570981474306721,
+      "median_response_l2": 0.05177672393620014,
+      "p90_response_l2": 0.1085643194615841
+    }
+  },
+  "max_semantic_median_response_l2": 0.9826291799545288,
+  "mean_clean_policy_infer_ms": 71.53485737368464,
+  "metadata": {
+    "action_cot_denoising_steps": 10,
+    "checkpoint_dir": "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999",
+    "clean_only": false,
+    "coarse_overrides_from": [
+      "/root/autodl-tmp/acotvla/ir_acot_pilot/student_coarse_2k"
+    ],
+    "config_name": "acot_libero_action_cot_explicit_implicit_co_fusion",
+    "endpoint_student_params": null,
+    "gripper_shift": 1,
+    "interventions": [
+      "translate",
+      "rotate",
+      "gripper_shift"
+    ],
+    "num_steps": 10,
+    "one_intervention_per_record": true,
+    "rotation_magnitude": 0.1,
+    "selection": "random",
+    "selection_seed": 7,
+    "translation_magnitude": 0.02
+  },
+  "new_records": 2000,
+  "note": "This is an open-loop causal sensitivity gate, not a success-rate result. Closed-loop LIBERO evaluation is still required.",
+  "processed_records": 2000,
+  "semantic_to_null_median_ratio": null
+}

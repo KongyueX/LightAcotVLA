@@ -1,0 +1,5887 @@
+{
+  "dataset_inputs": [
+    "/root/autodl-tmp/acotvla/execution_horizon_v2p/initial_k20_fixedh9_10tasks_20trials_parallel/part_tasks_0_2/data",
+    "/root/autodl-tmp/acotvla/execution_horizon_v2p/initial_k20_fixedh9_10tasks_20trials_parallel/part_tasks_3_5/data",
+    "/root/autodl-tmp/acotvla/execution_horizon_v2p/initial_k20_fixedh9_10tasks_20trials_parallel/part_tasks_6_7/data",
+    "/root/autodl-tmp/acotvla/execution_horizon_v2p/initial_k20_fixedh9_10tasks_20trials_parallel/part_tasks_8_9/data",
+    "/root/autodl-tmp/acotvla/execution_horizon_v2p/iter01_student_value_k20_10tasks_20trials_2roots_parallel/part_tasks_0_2/data",
+    "/root/autodl-tmp/acotvla/execution_horizon_v2p/iter01_student_value_k20_10tasks_20trials_2roots_parallel/part_tasks_3_5/data",
+    "/root/autodl-tmp/acotvla/execution_horizon_v2p/iter01_student_value_k20_10tasks_20trials_2roots_parallel/part_tasks_6_7/data",
+    "/root/autodl-tmp/acotvla/execution_horizon_v2p/iter01_student_value_k20_10tasks_20trials_2roots_parallel/part_tasks_8_9/data"
+  ],
+  "num_records": 596,
+  "references": [
+    "raw_h",
+    "h9",
+    "h10"
+  ],
+  "semantics": "Optimistic root-state counterfactual upper bound under the stored continuation policy. Rows are decision roots, not independent full episodes; this audit cannot establish closed-loop LIBERO success or prove rescue of the formal failed episodes.",
+  "status": "complete",
+  "subsets": {
+    "hard_tasks_8_9": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 41.316666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.716666666666667,
+            "average_remaining_calls": 25.983333333333334,
+            "average_remaining_steps": 236.28333333333333,
+            "h_distribution": {
+              "1": 9,
+              "10": 28,
+              "2": 6,
+              "3": 7,
+              "4": 6,
+              "5": 13,
+              "6": 11,
+              "7": 10,
+              "8": 11,
+              "9": 19
+            },
+            "num_roots": 120,
+            "success_count": 120,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 25.983333333333334,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 15.333333333666664
+        },
+        {
+          "average_call_budget": 41.441666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.716666666666667,
+            "average_remaining_calls": 25.983333333333334,
+            "average_remaining_steps": 236.28333333333333,
+            "h_distribution": {
+              "1": 9,
+              "10": 28,
+              "2": 6,
+              "3": 7,
+              "4": 6,
+              "5": 13,
+              "6": 11,
+              "7": 10,
+              "8": 11,
+              "9": 19
+            },
+            "num_roots": 120,
+            "success_count": 120,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 25.983333333333334,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 15.458333333666664
+        },
+        {
+          "average_call_budget": 42.375,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.716666666666667,
+            "average_remaining_calls": 25.983333333333334,
+            "average_remaining_steps": 236.28333333333333,
+            "h_distribution": {
+              "1": 9,
+              "10": 28,
+              "2": 6,
+              "3": 7,
+              "4": 6,
+              "5": 13,
+              "6": 11,
+              "7": 10,
+              "8": 11,
+              "9": 19
+            },
+            "num_roots": 120,
+            "success_count": 120,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 25.983333333333334,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 16.391666666666666
+        },
+        {
+          "average_call_budget": 42.658333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.716666666666667,
+            "average_remaining_calls": 25.983333333333334,
+            "average_remaining_steps": 236.28333333333333,
+            "h_distribution": {
+              "1": 9,
+              "10": 28,
+              "2": 6,
+              "3": 7,
+              "4": 6,
+              "5": 13,
+              "6": 11,
+              "7": 10,
+              "8": 11,
+              "9": 19
+            },
+            "num_roots": 120,
+            "success_count": 120,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 25.983333333333334,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 16.67499999966667
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 40.80833333333333,
+          "average_remaining_steps": 365.21666666666664,
+          "h_distribution": {
+            "1": 120
+          },
+          "num_roots": 120,
+          "success_count": 100,
+          "success_rate": 0.8333333333333334,
+          "timeout_count": 20,
+          "timeout_rate": 0.16666666666666666
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 42.65833333333333,
+          "average_remaining_steps": 394.55833333333334,
+          "h_distribution": {
+            "10": 120
+          },
+          "num_roots": 120,
+          "success_count": 97,
+          "success_rate": 0.8083333333333333,
+          "timeout_count": 23,
+          "timeout_rate": 0.19166666666666668
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 41.358333333333334,
+          "average_remaining_steps": 375.925,
+          "h_distribution": {
+            "2": 120
+          },
+          "num_roots": 120,
+          "success_count": 99,
+          "success_rate": 0.825,
+          "timeout_count": 21,
+          "timeout_rate": 0.175
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 40.875,
+          "average_remaining_steps": 370.7083333333333,
+          "h_distribution": {
+            "3": 120
+          },
+          "num_roots": 120,
+          "success_count": 101,
+          "success_rate": 0.8416666666666667,
+          "timeout_count": 19,
+          "timeout_rate": 0.15833333333333333
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 42.525,
+          "average_remaining_steps": 388.1166666666667,
+          "h_distribution": {
+            "4": 120
+          },
+          "num_roots": 120,
+          "success_count": 97,
+          "success_rate": 0.8083333333333333,
+          "timeout_count": 23,
+          "timeout_rate": 0.19166666666666668
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 41.44166666666667,
+          "average_remaining_steps": 378.98333333333335,
+          "h_distribution": {
+            "5": 120
+          },
+          "num_roots": 120,
+          "success_count": 99,
+          "success_rate": 0.825,
+          "timeout_count": 21,
+          "timeout_rate": 0.175
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 38.425,
+          "average_remaining_steps": 351.56666666666666,
+          "h_distribution": {
+            "6": 120
+          },
+          "num_roots": 120,
+          "success_count": 105,
+          "success_rate": 0.875,
+          "timeout_count": 15,
+          "timeout_rate": 0.125
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 40.391666666666666,
+          "average_remaining_steps": 369.05,
+          "h_distribution": {
+            "7": 120
+          },
+          "num_roots": 120,
+          "success_count": 100,
+          "success_rate": 0.8333333333333334,
+          "timeout_count": 20,
+          "timeout_rate": 0.16666666666666666
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 41.266666666666666,
+          "average_remaining_steps": 378.2916666666667,
+          "h_distribution": {
+            "8": 120
+          },
+          "num_roots": 120,
+          "success_count": 100,
+          "success_rate": 0.8333333333333334,
+          "timeout_count": 20,
+          "timeout_rate": 0.16666666666666666
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 41.31666666666667,
+          "average_remaining_steps": 380.6666666666667,
+          "h_distribution": {
+            "9": 120
+          },
+          "num_roots": 120,
+          "success_count": 97,
+          "success_rate": 0.8083333333333333,
+          "timeout_count": 23,
+          "timeout_rate": 0.19166666666666668
+        }
+      },
+      "num_roots": 120,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -16.675,
+          "average_rescue_calls_delta_vs_reference": -64.0,
+          "fixable_failure_count": 23,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 9,
+            "10": 28,
+            "2": 6,
+            "3": 7,
+            "4": 6,
+            "5": 13,
+            "6": 11,
+            "7": 10,
+            "8": 11,
+            "9": 19
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 42.65833333333333,
+            "average_remaining_steps": 394.55833333333334,
+            "h_distribution": {
+              "10": 120
+            },
+            "num_roots": 120,
+            "success_count": 97,
+            "success_rate": 0.8083333333333333,
+            "timeout_count": 23,
+            "timeout_rate": 0.19166666666666668
+          },
+          "reference_failure_count": 23,
+          "success_first_oracle": {
+            "average_horizon": 6.716666666666667,
+            "average_remaining_calls": 25.983333333333334,
+            "average_remaining_steps": 236.28333333333333,
+            "h_distribution": {
+              "1": 9,
+              "10": 28,
+              "2": 6,
+              "3": 7,
+              "4": 6,
+              "5": 13,
+              "6": 11,
+              "7": 10,
+              "8": 11,
+              "9": 19
+            },
+            "num_roots": 120,
+            "success_count": 120,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 19,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 116,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 19,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 116,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 20,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 117,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -15.333333333333334,
+          "average_rescue_calls_delta_vs_reference": -65.78260869565217,
+          "fixable_failure_count": 23,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 9,
+            "10": 28,
+            "2": 6,
+            "3": 7,
+            "4": 6,
+            "5": 13,
+            "6": 11,
+            "7": 10,
+            "8": 11,
+            "9": 19
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 41.31666666666667,
+            "average_remaining_steps": 380.6666666666667,
+            "h_distribution": {
+              "9": 120
+            },
+            "num_roots": 120,
+            "success_count": 97,
+            "success_rate": 0.8083333333333333,
+            "timeout_count": 23,
+            "timeout_rate": 0.19166666666666668
+          },
+          "reference_failure_count": 23,
+          "success_first_oracle": {
+            "average_horizon": 6.716666666666667,
+            "average_remaining_calls": 25.983333333333334,
+            "average_remaining_steps": 236.28333333333333,
+            "h_distribution": {
+              "1": 9,
+              "10": 28,
+              "2": 6,
+              "3": 7,
+              "4": 6,
+              "5": 13,
+              "6": 11,
+              "7": 10,
+              "8": 11,
+              "9": 19
+            },
+            "num_roots": 120,
+            "success_count": 120,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 19,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 116,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 19,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 116,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 20,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 117,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -16.391666666666666,
+          "average_rescue_calls_delta_vs_reference": -63.17391304347826,
+          "fixable_failure_count": 23,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 9,
+            "10": 28,
+            "2": 6,
+            "3": 7,
+            "4": 6,
+            "5": 13,
+            "6": 11,
+            "7": 10,
+            "8": 11,
+            "9": 19
+          },
+          "reference": {
+            "average_horizon": 7.375,
+            "average_remaining_calls": 42.375,
+            "average_remaining_steps": 389.9,
+            "h_distribution": {
+              "10": 45,
+              "3": 36,
+              "4": 1,
+              "6": 1,
+              "7": 1,
+              "8": 14,
+              "9": 22
+            },
+            "num_roots": 120,
+            "success_count": 97,
+            "success_rate": 0.8083333333333333,
+            "timeout_count": 23,
+            "timeout_rate": 0.19166666666666668
+          },
+          "reference_failure_count": 23,
+          "success_first_oracle": {
+            "average_horizon": 6.716666666666667,
+            "average_remaining_calls": 25.983333333333334,
+            "average_remaining_steps": 236.28333333333333,
+            "h_distribution": {
+              "1": 9,
+              "10": 28,
+              "2": 6,
+              "3": 7,
+              "4": 6,
+              "5": 13,
+              "6": 11,
+              "7": 10,
+              "8": 11,
+              "9": 19
+            },
+            "num_roots": 120,
+            "success_count": 120,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 19,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 116,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 19,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 116,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 20,
+              "minimum_average_remaining_calls": 25.983333333333334,
+              "target_success_count": 117,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        }
+      }
+    },
+    "overall": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 27.397651007,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.565436241610739,
+            "average_remaining_calls": 19.12751677852349,
+            "average_remaining_steps": 171.74328859060404,
+            "h_distribution": {
+              "1": 55,
+              "10": 250,
+              "2": 17,
+              "3": 21,
+              "4": 16,
+              "5": 28,
+              "6": 30,
+              "7": 39,
+              "8": 60,
+              "9": 80
+            },
+            "num_roots": 596,
+            "success_count": 589,
+            "success_rate": 0.988255033557047,
+            "timeout_count": 7,
+            "timeout_rate": 0.01174496644295302
+          },
+          "minimum_achievable_average_calls": 19.12751677852349,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 8.27013422847651
+        },
+        {
+          "average_call_budget": 28.42114094,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.565436241610739,
+            "average_remaining_calls": 19.12751677852349,
+            "average_remaining_steps": 171.74328859060404,
+            "h_distribution": {
+              "1": 55,
+              "10": 250,
+              "2": 17,
+              "3": 21,
+              "4": 16,
+              "5": 28,
+              "6": 30,
+              "7": 39,
+              "8": 60,
+              "9": 80
+            },
+            "num_roots": 596,
+            "success_count": 589,
+            "success_rate": 0.988255033557047,
+            "timeout_count": 7,
+            "timeout_rate": 0.01174496644295302
+          },
+          "minimum_achievable_average_calls": 19.12751677852349,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 9.293624161476512
+        },
+        {
+          "average_call_budget": 28.773489933,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.565436241610739,
+            "average_remaining_calls": 19.12751677852349,
+            "average_remaining_steps": 171.74328859060404,
+            "h_distribution": {
+              "1": 55,
+              "10": 250,
+              "2": 17,
+              "3": 21,
+              "4": 16,
+              "5": 28,
+              "6": 30,
+              "7": 39,
+              "8": 60,
+              "9": 80
+            },
+            "num_roots": 596,
+            "success_count": 589,
+            "success_rate": 0.988255033557047,
+            "timeout_count": 7,
+            "timeout_rate": 0.01174496644295302
+          },
+          "minimum_achievable_average_calls": 19.12751677852349,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 9.645973154476511
+        },
+        {
+          "average_call_budget": 28.780201342,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.565436241610739,
+            "average_remaining_calls": 19.12751677852349,
+            "average_remaining_steps": 171.74328859060404,
+            "h_distribution": {
+              "1": 55,
+              "10": 250,
+              "2": 17,
+              "3": 21,
+              "4": 16,
+              "5": 28,
+              "6": 30,
+              "7": 39,
+              "8": 60,
+              "9": 80
+            },
+            "num_roots": 596,
+            "success_count": 589,
+            "success_rate": 0.988255033557047,
+            "timeout_count": 7,
+            "timeout_rate": 0.01174496644295302
+          },
+          "minimum_achievable_average_calls": 19.12751677852349,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 9.652684563476512
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 25.068791946308725,
+          "average_remaining_steps": 220.3255033557047,
+          "h_distribution": {
+            "1": 596
+          },
+          "num_roots": 596,
+          "success_count": 557,
+          "success_rate": 0.9345637583892618,
+          "timeout_count": 39,
+          "timeout_rate": 0.06543624161073826
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 28.773489932885905,
+          "average_remaining_steps": 263.5469798657718,
+          "h_distribution": {
+            "10": 596
+          },
+          "num_roots": 596,
+          "success_count": 530,
+          "success_rate": 0.889261744966443,
+          "timeout_count": 66,
+          "timeout_rate": 0.11073825503355705
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 28.375838926174495,
+          "average_remaining_steps": 252.8489932885906,
+          "h_distribution": {
+            "2": 596
+          },
+          "num_roots": 596,
+          "success_count": 541,
+          "success_rate": 0.9077181208053692,
+          "timeout_count": 55,
+          "timeout_rate": 0.09228187919463088
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 28.22986577181208,
+          "average_remaining_steps": 252.14429530201343,
+          "h_distribution": {
+            "3": 596
+          },
+          "num_roots": 596,
+          "success_count": 539,
+          "success_rate": 0.9043624161073825,
+          "timeout_count": 57,
+          "timeout_rate": 0.09563758389261745
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 29.461409395973153,
+          "average_remaining_steps": 264.50671140939596,
+          "h_distribution": {
+            "4": 596
+          },
+          "num_roots": 596,
+          "success_count": 531,
+          "success_rate": 0.8909395973154363,
+          "timeout_count": 65,
+          "timeout_rate": 0.10906040268456375
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 27.39765100671141,
+          "average_remaining_steps": 245.7701342281879,
+          "h_distribution": {
+            "5": 596
+          },
+          "num_roots": 596,
+          "success_count": 542,
+          "success_rate": 0.9093959731543624,
+          "timeout_count": 54,
+          "timeout_rate": 0.09060402684563758
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 28.107382550335572,
+          "average_remaining_steps": 253.10738255033556,
+          "h_distribution": {
+            "6": 596
+          },
+          "num_roots": 596,
+          "success_count": 541,
+          "success_rate": 0.9077181208053692,
+          "timeout_count": 55,
+          "timeout_rate": 0.09228187919463088
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 28.0,
+          "average_remaining_steps": 252.84395973154363,
+          "h_distribution": {
+            "7": 596
+          },
+          "num_roots": 596,
+          "success_count": 539,
+          "success_rate": 0.9043624161073825,
+          "timeout_count": 57,
+          "timeout_rate": 0.09563758389261745
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 28.73993288590604,
+          "average_remaining_steps": 260.77852348993287,
+          "h_distribution": {
+            "8": 596
+          },
+          "num_roots": 596,
+          "success_count": 535,
+          "success_rate": 0.8976510067114094,
+          "timeout_count": 61,
+          "timeout_rate": 0.10234899328859061
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 28.780201342281877,
+          "average_remaining_steps": 261.9043624161074,
+          "h_distribution": {
+            "9": 596
+          },
+          "num_roots": 596,
+          "success_count": 531,
+          "success_rate": 0.8909395973154363,
+          "timeout_count": 65,
+          "timeout_rate": 0.10906040268456375
+        }
+      },
+      "num_roots": 596,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -9.645973154362416,
+          "average_rescue_calls_delta_vs_reference": -72.8135593220339,
+          "fixable_failure_count": 59,
+          "fixable_fraction_of_reference_failures": 0.8939393939393939,
+          "oracle_h_distribution": {
+            "1": 55,
+            "10": 250,
+            "2": 17,
+            "3": 21,
+            "4": 16,
+            "5": 28,
+            "6": 30,
+            "7": 39,
+            "8": 60,
+            "9": 80
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 28.773489932885905,
+            "average_remaining_steps": 263.5469798657718,
+            "h_distribution": {
+              "10": 596
+            },
+            "num_roots": 596,
+            "success_count": 530,
+            "success_rate": 0.889261744966443,
+            "timeout_count": 66,
+            "timeout_rate": 0.11073825503355705
+          },
+          "reference_failure_count": 66,
+          "success_first_oracle": {
+            "average_horizon": 7.565436241610739,
+            "average_remaining_calls": 19.12751677852349,
+            "average_remaining_steps": 171.74328859060404,
+            "h_distribution": {
+              "1": 55,
+              "10": 250,
+              "2": 17,
+              "3": 21,
+              "4": 16,
+              "5": 28,
+              "6": 30,
+              "7": 39,
+              "8": 60,
+              "9": 80
+            },
+            "num_roots": 596,
+            "success_count": 589,
+            "success_rate": 0.988255033557047,
+            "timeout_count": 7,
+            "timeout_rate": 0.01174496644295302
+          },
+          "success_upper_bound": 0.988255033557047,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 43,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 573,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 46,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 576,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 49,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 579,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 7
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -9.65268456375839,
+          "average_rescue_calls_delta_vs_reference": -74.03448275862068,
+          "fixable_failure_count": 58,
+          "fixable_fraction_of_reference_failures": 0.8923076923076924,
+          "oracle_h_distribution": {
+            "1": 55,
+            "10": 250,
+            "2": 17,
+            "3": 21,
+            "4": 16,
+            "5": 28,
+            "6": 30,
+            "7": 39,
+            "8": 60,
+            "9": 80
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 28.780201342281877,
+            "average_remaining_steps": 261.9043624161074,
+            "h_distribution": {
+              "9": 596
+            },
+            "num_roots": 596,
+            "success_count": 531,
+            "success_rate": 0.8909395973154363,
+            "timeout_count": 65,
+            "timeout_rate": 0.10906040268456375
+          },
+          "reference_failure_count": 65,
+          "success_first_oracle": {
+            "average_horizon": 7.565436241610739,
+            "average_remaining_calls": 19.12751677852349,
+            "average_remaining_steps": 171.74328859060404,
+            "h_distribution": {
+              "1": 55,
+              "10": 250,
+              "2": 17,
+              "3": 21,
+              "4": 16,
+              "5": 28,
+              "6": 30,
+              "7": 39,
+              "8": 60,
+              "9": 80
+            },
+            "num_roots": 596,
+            "success_count": 589,
+            "success_rate": 0.988255033557047,
+            "timeout_count": 7,
+            "timeout_rate": 0.01174496644295302
+          },
+          "success_upper_bound": 0.988255033557047,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 42,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 573,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 45,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 576,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 48,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 579,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 7
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -9.293624161073826,
+          "average_rescue_calls_delta_vs_reference": -72.31481481481481,
+          "fixable_failure_count": 54,
+          "fixable_fraction_of_reference_failures": 0.8852459016393442,
+          "oracle_h_distribution": {
+            "1": 55,
+            "10": 250,
+            "2": 17,
+            "3": 21,
+            "4": 16,
+            "5": 28,
+            "6": 30,
+            "7": 39,
+            "8": 60,
+            "9": 80
+          },
+          "reference": {
+            "average_horizon": 7.174496644295302,
+            "average_remaining_calls": 28.421140939597315,
+            "average_remaining_steps": 257.7953020134228,
+            "h_distribution": {
+              "10": 256,
+              "3": 206,
+              "4": 6,
+              "5": 2,
+              "6": 2,
+              "7": 6,
+              "8": 52,
+              "9": 66
+            },
+            "num_roots": 596,
+            "success_count": 535,
+            "success_rate": 0.8976510067114094,
+            "timeout_count": 61,
+            "timeout_rate": 0.10234899328859061
+          },
+          "reference_failure_count": 61,
+          "success_first_oracle": {
+            "average_horizon": 7.565436241610739,
+            "average_remaining_calls": 19.12751677852349,
+            "average_remaining_steps": 171.74328859060404,
+            "h_distribution": {
+              "1": 55,
+              "10": 250,
+              "2": 17,
+              "3": 21,
+              "4": 16,
+              "5": 28,
+              "6": 30,
+              "7": 39,
+              "8": 60,
+              "9": 80
+            },
+            "num_roots": 596,
+            "success_count": 589,
+            "success_rate": 0.988255033557047,
+            "timeout_count": 7,
+            "timeout_rate": 0.01174496644295302
+          },
+          "success_upper_bound": 0.988255033557047,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 38,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 573,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 41,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 576,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 44,
+              "minimum_average_remaining_calls": 19.12751677852349,
+              "target_success_count": 579,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 7
+        }
+      }
+    },
+    "task0": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 26.266666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.266666666666667,
+            "average_remaining_calls": 20.616666666666667,
+            "average_remaining_steps": 192.38333333333333,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "3": 3,
+              "4": 2,
+              "5": 4,
+              "6": 2,
+              "7": 8,
+              "8": 4,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 20.616666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 5.650000000333334
+        },
+        {
+          "average_call_budget": 28.566666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.266666666666667,
+            "average_remaining_calls": 20.616666666666667,
+            "average_remaining_steps": 192.38333333333333,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "3": 3,
+              "4": 2,
+              "5": 4,
+              "6": 2,
+              "7": 8,
+              "8": 4,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 20.616666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 7.9500000003333335
+        },
+        {
+          "average_call_budget": 29.216666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.266666666666667,
+            "average_remaining_calls": 20.616666666666667,
+            "average_remaining_steps": 192.38333333333333,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "3": 3,
+              "4": 2,
+              "5": 4,
+              "6": 2,
+              "7": 8,
+              "8": 4,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 20.616666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 8.60000000033333
+        },
+        {
+          "average_call_budget": 30.433333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.266666666666667,
+            "average_remaining_calls": 20.616666666666667,
+            "average_remaining_steps": 192.38333333333333,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "3": 3,
+              "4": 2,
+              "5": 4,
+              "6": 2,
+              "7": 8,
+              "8": 4,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 20.616666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 9.816666666333333
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 22.816666666666666,
+          "average_remaining_steps": 204.21666666666667,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 59,
+          "success_rate": 0.9833333333333333,
+          "timeout_count": 1,
+          "timeout_rate": 0.016666666666666666
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 29.216666666666665,
+          "average_remaining_steps": 273.46666666666664,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 55,
+          "success_rate": 0.9166666666666666,
+          "timeout_count": 5,
+          "timeout_rate": 0.08333333333333333
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 30.283333333333335,
+          "average_remaining_steps": 275.1166666666667,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 28.45,
+          "average_remaining_steps": 259.93333333333334,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 31.666666666666668,
+          "average_remaining_steps": 291.1,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 55,
+          "success_rate": 0.9166666666666666,
+          "timeout_count": 5,
+          "timeout_rate": 0.08333333333333333
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 26.266666666666666,
+          "average_remaining_steps": 240.58333333333334,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 31.333333333333332,
+          "average_remaining_steps": 290.8333333333333,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 54,
+          "success_rate": 0.9,
+          "timeout_count": 6,
+          "timeout_rate": 0.1
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 28.233333333333334,
+          "average_remaining_steps": 260.55,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 31.083333333333332,
+          "average_remaining_steps": 287.2,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 30.433333333333334,
+          "average_remaining_steps": 283.4166666666667,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -8.6,
+          "average_rescue_calls_delta_vs_reference": -77.0,
+          "fixable_failure_count": 4,
+          "fixable_fraction_of_reference_failures": 0.8,
+          "oracle_h_distribution": {
+            "1": 7,
+            "10": 22,
+            "3": 3,
+            "4": 2,
+            "5": 4,
+            "6": 2,
+            "7": 8,
+            "8": 4,
+            "9": 8
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 29.216666666666665,
+            "average_remaining_steps": 273.46666666666664,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 55,
+            "success_rate": 0.9166666666666666,
+            "timeout_count": 5,
+            "timeout_rate": 0.08333333333333333
+          },
+          "reference_failure_count": 5,
+          "success_first_oracle": {
+            "average_horizon": 7.266666666666667,
+            "average_remaining_calls": 20.616666666666667,
+            "average_remaining_steps": 192.38333333333333,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "3": 3,
+              "4": 2,
+              "5": 4,
+              "6": 2,
+              "7": 8,
+              "8": 4,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -9.816666666666666,
+          "average_rescue_calls_delta_vs_reference": -77.0,
+          "fixable_failure_count": 6,
+          "fixable_fraction_of_reference_failures": 0.8571428571428571,
+          "oracle_h_distribution": {
+            "1": 7,
+            "10": 22,
+            "3": 3,
+            "4": 2,
+            "5": 4,
+            "6": 2,
+            "7": 8,
+            "8": 4,
+            "9": 8
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 30.433333333333334,
+            "average_remaining_steps": 283.4166666666667,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 53,
+            "success_rate": 0.8833333333333333,
+            "timeout_count": 7,
+            "timeout_rate": 0.11666666666666667
+          },
+          "reference_failure_count": 7,
+          "success_first_oracle": {
+            "average_horizon": 7.266666666666667,
+            "average_remaining_calls": 20.616666666666667,
+            "average_remaining_steps": 192.38333333333333,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "3": 3,
+              "4": 2,
+              "5": 4,
+              "6": 2,
+              "7": 8,
+              "8": 4,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -7.95,
+          "average_rescue_calls_delta_vs_reference": -76.66666666666667,
+          "fixable_failure_count": 3,
+          "fixable_fraction_of_reference_failures": 0.75,
+          "oracle_h_distribution": {
+            "1": 7,
+            "10": 22,
+            "3": 3,
+            "4": 2,
+            "5": 4,
+            "6": 2,
+            "7": 8,
+            "8": 4,
+            "9": 8
+          },
+          "reference": {
+            "average_horizon": 7.816666666666666,
+            "average_remaining_calls": 28.566666666666666,
+            "average_remaining_steps": 265.51666666666665,
+            "h_distribution": {
+              "10": 32,
+              "3": 15,
+              "4": 1,
+              "5": 1,
+              "8": 4,
+              "9": 7
+            },
+            "num_roots": 60,
+            "success_count": 56,
+            "success_rate": 0.9333333333333333,
+            "timeout_count": 4,
+            "timeout_rate": 0.06666666666666667
+          },
+          "reference_failure_count": 4,
+          "success_first_oracle": {
+            "average_horizon": 7.266666666666667,
+            "average_remaining_calls": 20.616666666666667,
+            "average_remaining_steps": 192.38333333333333,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "3": 3,
+              "4": 2,
+              "5": 4,
+              "6": 2,
+              "7": 8,
+              "8": 4,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 2,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 2,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": 20.616666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        }
+      }
+    },
+    "task1": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 29.283333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.6,
+            "average_remaining_calls": 19.966666666666665,
+            "average_remaining_steps": 175.0,
+            "h_distribution": {
+              "1": 12,
+              "10": 21,
+              "2": 1,
+              "3": 6,
+              "4": 1,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 7
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 19.966666666666665,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 9.316666666333337
+        },
+        {
+          "average_call_budget": 30.266666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.6,
+            "average_remaining_calls": 19.966666666666665,
+            "average_remaining_steps": 175.0,
+            "h_distribution": {
+              "1": 12,
+              "10": 21,
+              "2": 1,
+              "3": 6,
+              "4": 1,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 7
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 19.966666666666665,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 10.300000000333334
+        },
+        {
+          "average_call_budget": 31.333333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.6,
+            "average_remaining_calls": 19.966666666666665,
+            "average_remaining_steps": 175.0,
+            "h_distribution": {
+              "1": 12,
+              "10": 21,
+              "2": 1,
+              "3": 6,
+              "4": 1,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 7
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 19.966666666666665,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 11.366666666333334
+        },
+        {
+          "average_call_budget": 31.916666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.6,
+            "average_remaining_calls": 19.966666666666665,
+            "average_remaining_steps": 175.0,
+            "h_distribution": {
+              "1": 12,
+              "10": 21,
+              "2": 1,
+              "3": 6,
+              "4": 1,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 7
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 19.966666666666665,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 11.950000000333334
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 21.766666666666666,
+          "average_remaining_steps": 186.06666666666666,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 59,
+          "success_rate": 0.9833333333333333,
+          "timeout_count": 1,
+          "timeout_rate": 0.016666666666666666
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 31.333333333333332,
+          "average_remaining_steps": 283.46666666666664,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 32.03333333333333,
+          "average_remaining_steps": 284.85,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 30.483333333333334,
+          "average_remaining_steps": 271.06666666666666,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 31.083333333333332,
+          "average_remaining_steps": 277.18333333333334,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 30.266666666666666,
+          "average_remaining_steps": 270.1666666666667,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 29.55,
+          "average_remaining_steps": 264.3333333333333,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 30.283333333333335,
+          "average_remaining_steps": 270.53333333333336,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 28.5,
+          "average_remaining_steps": 256.96666666666664,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 54,
+          "success_rate": 0.9,
+          "timeout_count": 6,
+          "timeout_rate": 0.1
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 31.916666666666668,
+          "average_remaining_steps": 288.8666666666667,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -11.366666666666667,
+          "average_rescue_calls_delta_vs_reference": -77.0,
+          "fixable_failure_count": 7,
+          "fixable_fraction_of_reference_failures": 0.875,
+          "oracle_h_distribution": {
+            "1": 12,
+            "10": 21,
+            "2": 1,
+            "3": 6,
+            "4": 1,
+            "5": 1,
+            "6": 2,
+            "7": 2,
+            "8": 7,
+            "9": 7
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 31.333333333333332,
+            "average_remaining_steps": 283.46666666666664,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 52,
+            "success_rate": 0.8666666666666667,
+            "timeout_count": 8,
+            "timeout_rate": 0.13333333333333333
+          },
+          "reference_failure_count": 8,
+          "success_first_oracle": {
+            "average_horizon": 6.6,
+            "average_remaining_calls": 19.966666666666665,
+            "average_remaining_steps": 175.0,
+            "h_distribution": {
+              "1": 12,
+              "10": 21,
+              "2": 1,
+              "3": 6,
+              "4": 1,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 7
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 7,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -11.95,
+          "average_rescue_calls_delta_vs_reference": -77.28571428571429,
+          "fixable_failure_count": 7,
+          "fixable_fraction_of_reference_failures": 0.875,
+          "oracle_h_distribution": {
+            "1": 12,
+            "10": 21,
+            "2": 1,
+            "3": 6,
+            "4": 1,
+            "5": 1,
+            "6": 2,
+            "7": 2,
+            "8": 7,
+            "9": 7
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 31.916666666666668,
+            "average_remaining_steps": 288.8666666666667,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 52,
+            "success_rate": 0.8666666666666667,
+            "timeout_count": 8,
+            "timeout_rate": 0.13333333333333333
+          },
+          "reference_failure_count": 8,
+          "success_first_oracle": {
+            "average_horizon": 6.6,
+            "average_remaining_calls": 19.966666666666665,
+            "average_remaining_steps": 175.0,
+            "h_distribution": {
+              "1": 12,
+              "10": 21,
+              "2": 1,
+              "3": 6,
+              "4": 1,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 7
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 7,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -9.316666666666666,
+          "average_rescue_calls_delta_vs_reference": -78.6,
+          "fixable_failure_count": 5,
+          "fixable_fraction_of_reference_failures": 0.8333333333333334,
+          "oracle_h_distribution": {
+            "1": 12,
+            "10": 21,
+            "2": 1,
+            "3": 6,
+            "4": 1,
+            "5": 1,
+            "6": 2,
+            "7": 2,
+            "8": 7,
+            "9": 7
+          },
+          "reference": {
+            "average_horizon": 7.116666666666666,
+            "average_remaining_calls": 29.283333333333335,
+            "average_remaining_steps": 261.6333333333333,
+            "h_distribution": {
+              "10": 24,
+              "3": 21,
+              "7": 2,
+              "8": 7,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 54,
+            "success_rate": 0.9,
+            "timeout_count": 6,
+            "timeout_rate": 0.1
+          },
+          "reference_failure_count": 6,
+          "success_first_oracle": {
+            "average_horizon": 6.6,
+            "average_remaining_calls": 19.966666666666665,
+            "average_remaining_steps": 175.0,
+            "h_distribution": {
+              "1": 12,
+              "10": 21,
+              "2": 1,
+              "3": 6,
+              "4": 1,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 7
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 19.966666666666665,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        }
+      }
+    },
+    "task2": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 19.583333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.933333333333334,
+            "average_remaining_calls": 16.716666666666665,
+            "average_remaining_steps": 143.53333333333333,
+            "h_distribution": {
+              "1": 1,
+              "10": 27,
+              "2": 5,
+              "3": 2,
+              "5": 2,
+              "6": 3,
+              "7": 7,
+              "8": 5,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 16.716666666666665,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 2.866666666333333
+        },
+        {
+          "average_call_budget": 19.833333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.933333333333334,
+            "average_remaining_calls": 16.716666666666665,
+            "average_remaining_steps": 143.53333333333333,
+            "h_distribution": {
+              "1": 1,
+              "10": 27,
+              "2": 5,
+              "3": 2,
+              "5": 2,
+              "6": 3,
+              "7": 7,
+              "8": 5,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 16.716666666666665,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 3.116666666333333
+        },
+        {
+          "average_call_budget": 20.8,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.933333333333334,
+            "average_remaining_calls": 16.716666666666665,
+            "average_remaining_steps": 143.53333333333333,
+            "h_distribution": {
+              "1": 1,
+              "10": 27,
+              "2": 5,
+              "3": 2,
+              "5": 2,
+              "6": 3,
+              "7": 7,
+              "8": 5,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 16.716666666666665,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 4.083333333333333
+        },
+        {
+          "average_call_budget": 21.083333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.933333333333334,
+            "average_remaining_calls": 16.716666666666665,
+            "average_remaining_steps": 143.53333333333333,
+            "h_distribution": {
+              "1": 1,
+              "10": 27,
+              "2": 5,
+              "3": 2,
+              "5": 2,
+              "6": 3,
+              "7": 7,
+              "8": 5,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 16.716666666666665,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 4.366666666333333
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 21.266666666666666,
+          "average_remaining_steps": 179.33333333333334,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 20.8,
+          "average_remaining_steps": 181.11666666666667,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 21.533333333333335,
+          "average_remaining_steps": 182.76666666666668,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 20.016666666666666,
+          "average_remaining_steps": 168.7,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 59,
+          "success_rate": 0.9833333333333333,
+          "timeout_count": 1,
+          "timeout_rate": 0.016666666666666666
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 24.233333333333334,
+          "average_remaining_steps": 208.5,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 21.083333333333332,
+          "average_remaining_steps": 179.85,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 22.4,
+          "average_remaining_steps": 192.33333333333334,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 19.566666666666666,
+          "average_remaining_steps": 168.68333333333334,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 59,
+          "success_rate": 0.9833333333333333,
+          "timeout_count": 1,
+          "timeout_rate": 0.016666666666666666
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 22.183333333333334,
+          "average_remaining_steps": 192.5,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 19.583333333333332,
+          "average_remaining_steps": 169.61666666666667,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 60,
+          "success_rate": 1.0,
+          "timeout_count": 0,
+          "timeout_rate": 0.0
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -4.083333333333333,
+          "average_rescue_calls_delta_vs_reference": -83.0,
+          "fixable_failure_count": 2,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 1,
+            "10": 27,
+            "2": 5,
+            "3": 2,
+            "5": 2,
+            "6": 3,
+            "7": 7,
+            "8": 5,
+            "9": 8
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 20.8,
+            "average_remaining_steps": 181.11666666666667,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 58,
+            "success_rate": 0.9666666666666667,
+            "timeout_count": 2,
+            "timeout_rate": 0.03333333333333333
+          },
+          "reference_failure_count": 2,
+          "success_first_oracle": {
+            "average_horizon": 7.933333333333334,
+            "average_remaining_calls": 16.716666666666665,
+            "average_remaining_steps": 143.53333333333333,
+            "h_distribution": {
+              "1": 1,
+              "10": 27,
+              "2": 5,
+              "3": 2,
+              "5": 2,
+              "6": 3,
+              "7": 7,
+              "8": 5,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 1,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -2.8666666666666667,
+          "average_rescue_calls_delta_vs_reference": null,
+          "fixable_failure_count": 0,
+          "fixable_fraction_of_reference_failures": 0.0,
+          "oracle_h_distribution": {
+            "1": 1,
+            "10": 27,
+            "2": 5,
+            "3": 2,
+            "5": 2,
+            "6": 3,
+            "7": 7,
+            "8": 5,
+            "9": 8
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 19.583333333333332,
+            "average_remaining_steps": 169.61666666666667,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "reference_failure_count": 0,
+          "success_first_oracle": {
+            "average_horizon": 7.933333333333334,
+            "average_remaining_calls": 16.716666666666665,
+            "average_remaining_steps": 143.53333333333333,
+            "h_distribution": {
+              "1": 1,
+              "10": 27,
+              "2": 5,
+              "3": 2,
+              "5": 2,
+              "6": 3,
+              "7": 7,
+              "8": 5,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -3.1166666666666667,
+          "average_rescue_calls_delta_vs_reference": -88.0,
+          "fixable_failure_count": 1,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 1,
+            "10": 27,
+            "2": 5,
+            "3": 2,
+            "5": 2,
+            "6": 3,
+            "7": 7,
+            "8": 5,
+            "9": 8
+          },
+          "reference": {
+            "average_horizon": 7.35,
+            "average_remaining_calls": 19.833333333333332,
+            "average_remaining_steps": 170.7,
+            "h_distribution": {
+              "10": 28,
+              "3": 20,
+              "8": 7,
+              "9": 5
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "reference_failure_count": 1,
+          "success_first_oracle": {
+            "average_horizon": 7.933333333333334,
+            "average_remaining_calls": 16.716666666666665,
+            "average_remaining_steps": 143.53333333333333,
+            "h_distribution": {
+              "1": 1,
+              "10": 27,
+              "2": 5,
+              "3": 2,
+              "5": 2,
+              "6": 3,
+              "7": 7,
+              "8": 5,
+              "9": 8
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 16.716666666666665,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        }
+      }
+    },
+    "task3": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 28.466666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.483333333333333,
+            "average_remaining_calls": 15.616666666666667,
+            "average_remaining_steps": 135.95,
+            "h_distribution": {
+              "1": 17,
+              "10": 21,
+              "4": 1,
+              "5": 2,
+              "6": 3,
+              "7": 4,
+              "8": 6,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 15.616666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 12.85000000033333
+        },
+        {
+          "average_call_budget": 29.766666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.483333333333333,
+            "average_remaining_calls": 15.616666666666667,
+            "average_remaining_steps": 135.95,
+            "h_distribution": {
+              "1": 17,
+              "10": 21,
+              "4": 1,
+              "5": 2,
+              "6": 3,
+              "7": 4,
+              "8": 6,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 15.616666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 14.150000000333334
+        },
+        {
+          "average_call_budget": 30.283333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.483333333333333,
+            "average_remaining_calls": 15.616666666666667,
+            "average_remaining_steps": 135.95,
+            "h_distribution": {
+              "1": 17,
+              "10": 21,
+              "4": 1,
+              "5": 2,
+              "6": 3,
+              "7": 4,
+              "8": 6,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 15.616666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 14.666666666333336
+        },
+        {
+          "average_call_budget": 34.216666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.483333333333333,
+            "average_remaining_calls": 15.616666666666667,
+            "average_remaining_steps": 135.95,
+            "h_distribution": {
+              "1": 17,
+              "10": 21,
+              "4": 1,
+              "5": 2,
+              "6": 3,
+              "7": 4,
+              "8": 6,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 15.616666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 18.60000000033333
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 17.683333333333334,
+          "average_remaining_steps": 151.2,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 60,
+          "success_rate": 1.0,
+          "timeout_count": 0,
+          "timeout_rate": 0.0
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 29.766666666666666,
+          "average_remaining_steps": 270.18333333333334,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 27.583333333333332,
+          "average_remaining_steps": 244.7,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 55,
+          "success_rate": 0.9166666666666666,
+          "timeout_count": 5,
+          "timeout_rate": 0.08333333333333333
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 29.95,
+          "average_remaining_steps": 268.23333333333335,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 31.283333333333335,
+          "average_remaining_steps": 279.03333333333336,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 28.466666666666665,
+          "average_remaining_steps": 253.48333333333332,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 28.95,
+          "average_remaining_steps": 258.76666666666665,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 29.966666666666665,
+          "average_remaining_steps": 269.7,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 28.0,
+          "average_remaining_steps": 252.41666666666666,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 54,
+          "success_rate": 0.9,
+          "timeout_count": 6,
+          "timeout_rate": 0.1
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 34.21666666666667,
+          "average_remaining_steps": 311.48333333333335,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 50,
+          "success_rate": 0.8333333333333334,
+          "timeout_count": 10,
+          "timeout_rate": 0.16666666666666666
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -14.15,
+          "average_rescue_calls_delta_vs_reference": -79.375,
+          "fixable_failure_count": 8,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 17,
+            "10": 21,
+            "4": 1,
+            "5": 2,
+            "6": 3,
+            "7": 4,
+            "8": 6,
+            "9": 6
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 29.766666666666666,
+            "average_remaining_steps": 270.18333333333334,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 52,
+            "success_rate": 0.8666666666666667,
+            "timeout_count": 8,
+            "timeout_rate": 0.13333333333333333
+          },
+          "reference_failure_count": 8,
+          "success_first_oracle": {
+            "average_horizon": 6.483333333333333,
+            "average_remaining_calls": 15.616666666666667,
+            "average_remaining_steps": 135.95,
+            "h_distribution": {
+              "1": 17,
+              "10": 21,
+              "4": 1,
+              "5": 2,
+              "6": 3,
+              "7": 4,
+              "8": 6,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 7,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -18.6,
+          "average_rescue_calls_delta_vs_reference": -79.9,
+          "fixable_failure_count": 10,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 17,
+            "10": 21,
+            "4": 1,
+            "5": 2,
+            "6": 3,
+            "7": 4,
+            "8": 6,
+            "9": 6
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 34.21666666666667,
+            "average_remaining_steps": 311.48333333333335,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 50,
+            "success_rate": 0.8333333333333334,
+            "timeout_count": 10,
+            "timeout_rate": 0.16666666666666666
+          },
+          "reference_failure_count": 10,
+          "success_first_oracle": {
+            "average_horizon": 6.483333333333333,
+            "average_remaining_calls": 15.616666666666667,
+            "average_remaining_steps": 135.95,
+            "h_distribution": {
+              "1": 17,
+              "10": 21,
+              "4": 1,
+              "5": 2,
+              "6": 3,
+              "7": 4,
+              "8": 6,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 8,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 8,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 9,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -14.666666666666666,
+          "average_rescue_calls_delta_vs_reference": -79.625,
+          "fixable_failure_count": 8,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 17,
+            "10": 21,
+            "4": 1,
+            "5": 2,
+            "6": 3,
+            "7": 4,
+            "8": 6,
+            "9": 6
+          },
+          "reference": {
+            "average_horizon": 6.933333333333334,
+            "average_remaining_calls": 30.283333333333335,
+            "average_remaining_steps": 273.31666666666666,
+            "h_distribution": {
+              "10": 28,
+              "3": 24,
+              "5": 1,
+              "8": 4,
+              "9": 3
+            },
+            "num_roots": 60,
+            "success_count": 52,
+            "success_rate": 0.8666666666666667,
+            "timeout_count": 8,
+            "timeout_rate": 0.13333333333333333
+          },
+          "reference_failure_count": 8,
+          "success_first_oracle": {
+            "average_horizon": 6.483333333333333,
+            "average_remaining_calls": 15.616666666666667,
+            "average_remaining_steps": 135.95,
+            "h_distribution": {
+              "1": 17,
+              "10": 21,
+              "4": 1,
+              "5": 2,
+              "6": 3,
+              "7": 4,
+              "8": 6,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 7,
+              "minimum_average_remaining_calls": 15.616666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        }
+      }
+    },
+    "task4": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 22.533333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 8.4,
+            "average_remaining_calls": 18.366666666666667,
+            "average_remaining_steps": 161.18333333333334,
+            "h_distribution": {
+              "1": 4,
+              "10": 36,
+              "2": 1,
+              "3": 2,
+              "4": 1,
+              "5": 1,
+              "6": 1,
+              "7": 1,
+              "8": 7,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 18.366666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 4.166666666333337
+        },
+        {
+          "average_call_budget": 25.85,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 8.4,
+            "average_remaining_calls": 18.366666666666667,
+            "average_remaining_steps": 161.18333333333334,
+            "h_distribution": {
+              "1": 4,
+              "10": 36,
+              "2": 1,
+              "3": 2,
+              "4": 1,
+              "5": 1,
+              "6": 1,
+              "7": 1,
+              "8": 7,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 18.366666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 7.483333333333333
+        },
+        {
+          "average_call_budget": 27.033333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 8.4,
+            "average_remaining_calls": 18.366666666666667,
+            "average_remaining_steps": 161.18333333333334,
+            "h_distribution": {
+              "1": 4,
+              "10": 36,
+              "2": 1,
+              "3": 2,
+              "4": 1,
+              "5": 1,
+              "6": 1,
+              "7": 1,
+              "8": 7,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 18.366666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 8.666666666333336
+        },
+        {
+          "average_call_budget": 28.0,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 8.4,
+            "average_remaining_calls": 18.366666666666667,
+            "average_remaining_steps": 161.18333333333334,
+            "h_distribution": {
+              "1": 4,
+              "10": 36,
+              "2": 1,
+              "3": 2,
+              "4": 1,
+              "5": 1,
+              "6": 1,
+              "7": 1,
+              "8": 7,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 18.366666666666667,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 9.633333333333333
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 21.766666666666666,
+          "average_remaining_steps": 187.86666666666667,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 28.0,
+          "average_remaining_steps": 252.08333333333334,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 21.183333333333334,
+          "average_remaining_steps": 180.65,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 23.45,
+          "average_remaining_steps": 204.81666666666666,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 24.733333333333334,
+          "average_remaining_steps": 216.53333333333333,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 55,
+          "success_rate": 0.9166666666666666,
+          "timeout_count": 5,
+          "timeout_rate": 0.08333333333333333
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 22.533333333333335,
+          "average_remaining_steps": 194.9,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 27.366666666666667,
+          "average_remaining_steps": 242.3,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 23.466666666666665,
+          "average_remaining_steps": 205.51666666666668,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 28.2,
+          "average_remaining_steps": 252.96666666666667,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 25.85,
+          "average_remaining_steps": 230.75,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 54,
+          "success_rate": 0.9,
+          "timeout_count": 6,
+          "timeout_rate": 0.1
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -9.633333333333333,
+          "average_rescue_calls_delta_vs_reference": -79.14285714285714,
+          "fixable_failure_count": 7,
+          "fixable_fraction_of_reference_failures": 0.875,
+          "oracle_h_distribution": {
+            "1": 4,
+            "10": 36,
+            "2": 1,
+            "3": 2,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 7,
+            "9": 6
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 28.0,
+            "average_remaining_steps": 252.08333333333334,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 52,
+            "success_rate": 0.8666666666666667,
+            "timeout_count": 8,
+            "timeout_rate": 0.13333333333333333
+          },
+          "reference_failure_count": 8,
+          "success_first_oracle": {
+            "average_horizon": 8.4,
+            "average_remaining_calls": 18.366666666666667,
+            "average_remaining_steps": 161.18333333333334,
+            "h_distribution": {
+              "1": 4,
+              "10": 36,
+              "2": 1,
+              "3": 2,
+              "4": 1,
+              "5": 1,
+              "6": 1,
+              "7": 1,
+              "8": 7,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 7,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -7.483333333333333,
+          "average_rescue_calls_delta_vs_reference": -79.6,
+          "fixable_failure_count": 5,
+          "fixable_fraction_of_reference_failures": 0.8333333333333334,
+          "oracle_h_distribution": {
+            "1": 4,
+            "10": 36,
+            "2": 1,
+            "3": 2,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 7,
+            "9": 6
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 25.85,
+            "average_remaining_steps": 230.75,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 54,
+            "success_rate": 0.9,
+            "timeout_count": 6,
+            "timeout_rate": 0.1
+          },
+          "reference_failure_count": 6,
+          "success_first_oracle": {
+            "average_horizon": 8.4,
+            "average_remaining_calls": 18.366666666666667,
+            "average_remaining_steps": 161.18333333333334,
+            "h_distribution": {
+              "1": 4,
+              "10": 36,
+              "2": 1,
+              "3": 2,
+              "4": 1,
+              "5": 1,
+              "6": 1,
+              "7": 1,
+              "8": 7,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -8.666666666666666,
+          "average_rescue_calls_delta_vs_reference": -80.33333333333333,
+          "fixable_failure_count": 6,
+          "fixable_fraction_of_reference_failures": 0.8571428571428571,
+          "oracle_h_distribution": {
+            "1": 4,
+            "10": 36,
+            "2": 1,
+            "3": 2,
+            "4": 1,
+            "5": 1,
+            "6": 1,
+            "7": 1,
+            "8": 7,
+            "9": 6
+          },
+          "reference": {
+            "average_horizon": 6.95,
+            "average_remaining_calls": 27.033333333333335,
+            "average_remaining_steps": 240.25,
+            "h_distribution": {
+              "10": 26,
+              "3": 24,
+              "7": 1,
+              "8": 3,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 53,
+            "success_rate": 0.8833333333333333,
+            "timeout_count": 7,
+            "timeout_rate": 0.11666666666666667
+          },
+          "reference_failure_count": 7,
+          "success_first_oracle": {
+            "average_horizon": 8.4,
+            "average_remaining_calls": 18.366666666666667,
+            "average_remaining_steps": 161.18333333333334,
+            "h_distribution": {
+              "1": 4,
+              "10": 36,
+              "2": 1,
+              "3": 2,
+              "4": 1,
+              "5": 1,
+              "6": 1,
+              "7": 1,
+              "8": 7,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 18.366666666666667,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        }
+      }
+    },
+    "task5": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 15.696428571,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 9.214285714285714,
+            "average_remaining_calls": 13.375,
+            "average_remaining_steps": 123.14285714285714,
+            "h_distribution": {
+              "1": 1,
+              "10": 40,
+              "2": 1,
+              "5": 1,
+              "7": 1,
+              "8": 7,
+              "9": 5
+            },
+            "num_roots": 56,
+            "success_count": 53,
+            "success_rate": 0.9464285714285714,
+            "timeout_count": 3,
+            "timeout_rate": 0.05357142857142857
+          },
+          "minimum_achievable_average_calls": 13.375,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 2.3214285710000007
+        },
+        {
+          "average_call_budget": 16.089285714,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 9.214285714285714,
+            "average_remaining_calls": 13.375,
+            "average_remaining_steps": 123.14285714285714,
+            "h_distribution": {
+              "1": 1,
+              "10": 40,
+              "2": 1,
+              "5": 1,
+              "7": 1,
+              "8": 7,
+              "9": 5
+            },
+            "num_roots": 56,
+            "success_count": 53,
+            "success_rate": 0.9464285714285714,
+            "timeout_count": 3,
+            "timeout_rate": 0.05357142857142857
+          },
+          "minimum_achievable_average_calls": 13.375,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 2.714285713999999
+        },
+        {
+          "average_call_budget": 16.142857143,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 9.214285714285714,
+            "average_remaining_calls": 13.375,
+            "average_remaining_steps": 123.14285714285714,
+            "h_distribution": {
+              "1": 1,
+              "10": 40,
+              "2": 1,
+              "5": 1,
+              "7": 1,
+              "8": 7,
+              "9": 5
+            },
+            "num_roots": 56,
+            "success_count": 53,
+            "success_rate": 0.9464285714285714,
+            "timeout_count": 3,
+            "timeout_rate": 0.05357142857142857
+          },
+          "minimum_achievable_average_calls": 13.375,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 2.7678571430000005
+        },
+        {
+          "average_call_budget": 17.035714286,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 9.214285714285714,
+            "average_remaining_calls": 13.375,
+            "average_remaining_steps": 123.14285714285714,
+            "h_distribution": {
+              "1": 1,
+              "10": 40,
+              "2": 1,
+              "5": 1,
+              "7": 1,
+              "8": 7,
+              "9": 5
+            },
+            "num_roots": 56,
+            "success_count": 53,
+            "success_rate": 0.9464285714285714,
+            "timeout_count": 3,
+            "timeout_rate": 0.05357142857142857
+          },
+          "minimum_achievable_average_calls": 13.375,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 3.660714286000001
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 15.25,
+          "average_remaining_steps": 130.03571428571428,
+          "h_distribution": {
+            "1": 56
+          },
+          "num_roots": 56,
+          "success_count": 53,
+          "success_rate": 0.9464285714285714,
+          "timeout_count": 3,
+          "timeout_rate": 0.05357142857142857
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 17.035714285714285,
+          "average_remaining_steps": 157.64285714285714,
+          "h_distribution": {
+            "10": 56
+          },
+          "num_roots": 56,
+          "success_count": 51,
+          "success_rate": 0.9107142857142857,
+          "timeout_count": 5,
+          "timeout_rate": 0.08928571428571429
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 16.767857142857142,
+          "average_remaining_steps": 145.30357142857142,
+          "h_distribution": {
+            "2": 56
+          },
+          "num_roots": 56,
+          "success_count": 52,
+          "success_rate": 0.9285714285714286,
+          "timeout_count": 4,
+          "timeout_rate": 0.07142857142857142
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 16.553571428571427,
+          "average_remaining_steps": 145.07142857142858,
+          "h_distribution": {
+            "3": 56
+          },
+          "num_roots": 56,
+          "success_count": 52,
+          "success_rate": 0.9285714285714286,
+          "timeout_count": 4,
+          "timeout_rate": 0.07142857142857142
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 18.25,
+          "average_remaining_steps": 161.08928571428572,
+          "h_distribution": {
+            "4": 56
+          },
+          "num_roots": 56,
+          "success_count": 51,
+          "success_rate": 0.9107142857142857,
+          "timeout_count": 5,
+          "timeout_rate": 0.08928571428571429
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 16.089285714285715,
+          "average_remaining_steps": 143.07142857142858,
+          "h_distribution": {
+            "5": 56
+          },
+          "num_roots": 56,
+          "success_count": 52,
+          "success_rate": 0.9285714285714286,
+          "timeout_count": 4,
+          "timeout_rate": 0.07142857142857142
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 18.303571428571427,
+          "average_remaining_steps": 162.07142857142858,
+          "h_distribution": {
+            "6": 56
+          },
+          "num_roots": 56,
+          "success_count": 51,
+          "success_rate": 0.9107142857142857,
+          "timeout_count": 5,
+          "timeout_rate": 0.08928571428571429
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 16.017857142857142,
+          "average_remaining_steps": 143.30357142857142,
+          "h_distribution": {
+            "7": 56
+          },
+          "num_roots": 56,
+          "success_count": 52,
+          "success_rate": 0.9285714285714286,
+          "timeout_count": 4,
+          "timeout_rate": 0.07142857142857142
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 17.410714285714285,
+          "average_remaining_steps": 156.30357142857142,
+          "h_distribution": {
+            "8": 56
+          },
+          "num_roots": 56,
+          "success_count": 51,
+          "success_rate": 0.9107142857142857,
+          "timeout_count": 5,
+          "timeout_rate": 0.08928571428571429
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 15.696428571428571,
+          "average_remaining_steps": 141.17857142857142,
+          "h_distribution": {
+            "9": 56
+          },
+          "num_roots": 56,
+          "success_count": 52,
+          "success_rate": 0.9285714285714286,
+          "timeout_count": 4,
+          "timeout_rate": 0.07142857142857142
+        }
+      },
+      "num_roots": 56,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -3.6607142857142856,
+          "average_rescue_calls_delta_vs_reference": -87.0,
+          "fixable_failure_count": 2,
+          "fixable_fraction_of_reference_failures": 0.4,
+          "oracle_h_distribution": {
+            "1": 1,
+            "10": 40,
+            "2": 1,
+            "5": 1,
+            "7": 1,
+            "8": 7,
+            "9": 5
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 17.035714285714285,
+            "average_remaining_steps": 157.64285714285714,
+            "h_distribution": {
+              "10": 56
+            },
+            "num_roots": 56,
+            "success_count": 51,
+            "success_rate": 0.9107142857142857,
+            "timeout_count": 5,
+            "timeout_rate": 0.08928571428571429
+          },
+          "reference_failure_count": 5,
+          "success_first_oracle": {
+            "average_horizon": 9.214285714285714,
+            "average_remaining_calls": 13.375,
+            "average_remaining_steps": 123.14285714285714,
+            "h_distribution": {
+              "1": 1,
+              "10": 40,
+              "2": 1,
+              "5": 1,
+              "7": 1,
+              "8": 7,
+              "9": 5
+            },
+            "num_roots": 56,
+            "success_count": 53,
+            "success_rate": 0.9464285714285714,
+            "timeout_count": 3,
+            "timeout_rate": 0.05357142857142857
+          },
+          "success_upper_bound": 0.9464285714285714,
+          "targets": [
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 54,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 55,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 55,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 3
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -2.3214285714285716,
+          "average_rescue_calls_delta_vs_reference": -88.0,
+          "fixable_failure_count": 1,
+          "fixable_fraction_of_reference_failures": 0.25,
+          "oracle_h_distribution": {
+            "1": 1,
+            "10": 40,
+            "2": 1,
+            "5": 1,
+            "7": 1,
+            "8": 7,
+            "9": 5
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 15.696428571428571,
+            "average_remaining_steps": 141.17857142857142,
+            "h_distribution": {
+              "9": 56
+            },
+            "num_roots": 56,
+            "success_count": 52,
+            "success_rate": 0.9285714285714286,
+            "timeout_count": 4,
+            "timeout_rate": 0.07142857142857142
+          },
+          "reference_failure_count": 4,
+          "success_first_oracle": {
+            "average_horizon": 9.214285714285714,
+            "average_remaining_calls": 13.375,
+            "average_remaining_steps": 123.14285714285714,
+            "h_distribution": {
+              "1": 1,
+              "10": 40,
+              "2": 1,
+              "5": 1,
+              "7": 1,
+              "8": 7,
+              "9": 5
+            },
+            "num_roots": 56,
+            "success_count": 53,
+            "success_rate": 0.9464285714285714,
+            "timeout_count": 3,
+            "timeout_rate": 0.05357142857142857
+          },
+          "success_upper_bound": 0.9464285714285714,
+          "targets": [
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 2,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 54,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 55,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 55,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 3
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -2.767857142857143,
+          "average_rescue_calls_delta_vs_reference": -89.0,
+          "fixable_failure_count": 1,
+          "fixable_fraction_of_reference_failures": 0.25,
+          "oracle_h_distribution": {
+            "1": 1,
+            "10": 40,
+            "2": 1,
+            "5": 1,
+            "7": 1,
+            "8": 7,
+            "9": 5
+          },
+          "reference": {
+            "average_horizon": 7.125,
+            "average_remaining_calls": 16.142857142857142,
+            "average_remaining_steps": 145.21428571428572,
+            "h_distribution": {
+              "10": 27,
+              "3": 20,
+              "4": 1,
+              "7": 1,
+              "8": 5,
+              "9": 2
+            },
+            "num_roots": 56,
+            "success_count": 52,
+            "success_rate": 0.9285714285714286,
+            "timeout_count": 4,
+            "timeout_rate": 0.07142857142857142
+          },
+          "reference_failure_count": 4,
+          "success_first_oracle": {
+            "average_horizon": 9.214285714285714,
+            "average_remaining_calls": 13.375,
+            "average_remaining_steps": 123.14285714285714,
+            "h_distribution": {
+              "1": 1,
+              "10": 40,
+              "2": 1,
+              "5": 1,
+              "7": 1,
+              "8": 7,
+              "9": 5
+            },
+            "num_roots": 56,
+            "success_count": 53,
+            "success_rate": 0.9464285714285714,
+            "timeout_count": 3,
+            "timeout_rate": 0.05357142857142857
+          },
+          "success_upper_bound": 0.9464285714285714,
+          "targets": [
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 2,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 54,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 55,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": false,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": null,
+              "target_success_count": 55,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 3
+        }
+      }
+    },
+    "task6": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 20.516666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 8.65,
+            "average_remaining_calls": 15.316666666666666,
+            "average_remaining_steps": 136.43333333333334,
+            "h_distribution": {
+              "1": 2,
+              "10": 31,
+              "4": 3,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 12
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 15.316666666666666,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 5.2000000003333335
+        },
+        {
+          "average_call_budget": 22.25,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 8.65,
+            "average_remaining_calls": 15.316666666666666,
+            "average_remaining_steps": 136.43333333333334,
+            "h_distribution": {
+              "1": 2,
+              "10": 31,
+              "4": 3,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 12
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 15.316666666666666,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 6.933333333333334
+        },
+        {
+          "average_call_budget": 24.6,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 8.65,
+            "average_remaining_calls": 15.316666666666666,
+            "average_remaining_steps": 136.43333333333334,
+            "h_distribution": {
+              "1": 2,
+              "10": 31,
+              "4": 3,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 12
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 15.316666666666666,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 9.283333333333333
+        },
+        {
+          "average_call_budget": 25.183333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 8.65,
+            "average_remaining_calls": 15.316666666666666,
+            "average_remaining_steps": 136.43333333333334,
+            "h_distribution": {
+              "1": 2,
+              "10": 31,
+              "4": 3,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 12
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 15.316666666666666,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 9.866666666333334
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 26.016666666666666,
+          "average_remaining_steps": 232.0,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 20.516666666666666,
+          "average_remaining_steps": 188.08333333333334,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 28.15,
+          "average_remaining_steps": 251.8,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 26.583333333333332,
+          "average_remaining_steps": 235.56666666666666,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 25.083333333333332,
+          "average_remaining_steps": 225.36666666666667,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 54,
+          "success_rate": 0.9,
+          "timeout_count": 6,
+          "timeout_rate": 0.1
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 22.25,
+          "average_remaining_steps": 197.51666666666668,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 23.833333333333332,
+          "average_remaining_steps": 213.11666666666667,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 28.466666666666665,
+          "average_remaining_steps": 259.21666666666664,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 51,
+          "success_rate": 0.85,
+          "timeout_count": 9,
+          "timeout_rate": 0.15
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 26.416666666666668,
+          "average_remaining_steps": 240.98333333333332,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 25.183333333333334,
+          "average_remaining_steps": 227.9,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 54,
+          "success_rate": 0.9,
+          "timeout_count": 6,
+          "timeout_rate": 0.1
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -5.2,
+          "average_rescue_calls_delta_vs_reference": -77.66666666666667,
+          "fixable_failure_count": 3,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 31,
+            "4": 3,
+            "5": 1,
+            "6": 2,
+            "7": 2,
+            "8": 7,
+            "9": 12
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 20.516666666666666,
+            "average_remaining_steps": 188.08333333333334,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 57,
+            "success_rate": 0.95,
+            "timeout_count": 3,
+            "timeout_rate": 0.05
+          },
+          "reference_failure_count": 3,
+          "success_first_oracle": {
+            "average_horizon": 8.65,
+            "average_remaining_calls": 15.316666666666666,
+            "average_remaining_steps": 136.43333333333334,
+            "h_distribution": {
+              "1": 2,
+              "10": 31,
+              "4": 3,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 12
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 1,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 1,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 2,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -9.866666666666667,
+          "average_rescue_calls_delta_vs_reference": -82.16666666666667,
+          "fixable_failure_count": 6,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 31,
+            "4": 3,
+            "5": 1,
+            "6": 2,
+            "7": 2,
+            "8": 7,
+            "9": 12
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 25.183333333333334,
+            "average_remaining_steps": 227.9,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 54,
+            "success_rate": 0.9,
+            "timeout_count": 6,
+            "timeout_rate": 0.1
+          },
+          "reference_failure_count": 6,
+          "success_first_oracle": {
+            "average_horizon": 8.65,
+            "average_remaining_calls": 15.316666666666666,
+            "average_remaining_steps": 136.43333333333334,
+            "h_distribution": {
+              "1": 2,
+              "10": 31,
+              "4": 3,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 12
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -9.283333333333333,
+          "average_rescue_calls_delta_vs_reference": -77.0,
+          "fixable_failure_count": 6,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 31,
+            "4": 3,
+            "5": 1,
+            "6": 2,
+            "7": 2,
+            "8": 7,
+            "9": 12
+          },
+          "reference": {
+            "average_horizon": 6.783333333333333,
+            "average_remaining_calls": 24.6,
+            "average_remaining_steps": 223.66666666666666,
+            "h_distribution": {
+              "10": 24,
+              "3": 25,
+              "4": 1,
+              "7": 1,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 54,
+            "success_rate": 0.9,
+            "timeout_count": 6,
+            "timeout_rate": 0.1
+          },
+          "reference_failure_count": 6,
+          "success_first_oracle": {
+            "average_horizon": 8.65,
+            "average_remaining_calls": 15.316666666666666,
+            "average_remaining_steps": 136.43333333333334,
+            "h_distribution": {
+              "1": 2,
+              "10": 31,
+              "4": 3,
+              "5": 1,
+              "6": 2,
+              "7": 2,
+              "8": 7,
+              "9": 12
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 4,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 15.316666666666666,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        }
+      }
+    },
+    "task7": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 21.416666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.783333333333333,
+            "average_remaining_calls": 18.95,
+            "average_remaining_steps": 174.0,
+            "h_distribution": {
+              "1": 2,
+              "10": 24,
+              "2": 3,
+              "3": 1,
+              "4": 2,
+              "5": 3,
+              "6": 6,
+              "7": 4,
+              "8": 6,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 18.95,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 2.466666667
+        },
+        {
+          "average_call_budget": 22.9,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.783333333333333,
+            "average_remaining_calls": 18.95,
+            "average_remaining_steps": 174.0,
+            "h_distribution": {
+              "1": 2,
+              "10": 24,
+              "2": 3,
+              "3": 1,
+              "4": 2,
+              "5": 3,
+              "6": 6,
+              "7": 4,
+              "8": 6,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 18.95,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 3.95
+        },
+        {
+          "average_call_budget": 23.383333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.783333333333333,
+            "average_remaining_calls": 18.95,
+            "average_remaining_steps": 174.0,
+            "h_distribution": {
+              "1": 2,
+              "10": 24,
+              "2": 3,
+              "3": 1,
+              "4": 2,
+              "5": 3,
+              "6": 6,
+              "7": 4,
+              "8": 6,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 18.95,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 4.433333332999999
+        },
+        {
+          "average_call_budget": 24.966666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.783333333333333,
+            "average_remaining_calls": 18.95,
+            "average_remaining_steps": 174.0,
+            "h_distribution": {
+              "1": 2,
+              "10": 24,
+              "2": 3,
+              "3": 1,
+              "4": 2,
+              "5": 3,
+              "6": 6,
+              "7": 4,
+              "8": 6,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "minimum_achievable_average_calls": 18.95,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 6.016666666999996
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 21.85,
+          "average_remaining_steps": 196.08333333333334,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 24.966666666666665,
+          "average_remaining_steps": 233.25,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 22.733333333333334,
+          "average_remaining_steps": 204.28333333333333,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 24.283333333333335,
+          "average_remaining_steps": 219.5,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 22.483333333333334,
+          "average_remaining_steps": 203.13333333333333,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 23.383333333333333,
+          "average_remaining_steps": 213.31666666666666,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 57,
+          "success_rate": 0.95,
+          "timeout_count": 3,
+          "timeout_rate": 0.05
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 21.833333333333332,
+          "average_remaining_steps": 198.11666666666667,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 59,
+          "success_rate": 0.9833333333333333,
+          "timeout_count": 1,
+          "timeout_rate": 0.016666666666666666
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 22.416666666666668,
+          "average_remaining_steps": 205.53333333333333,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 22.316666666666666,
+          "average_remaining_steps": 204.9,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 58,
+          "success_rate": 0.9666666666666667,
+          "timeout_count": 2,
+          "timeout_rate": 0.03333333333333333
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 21.416666666666668,
+          "average_remaining_steps": 196.45,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 59,
+          "success_rate": 0.9833333333333333,
+          "timeout_count": 1,
+          "timeout_rate": 0.016666666666666666
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -6.016666666666667,
+          "average_rescue_calls_delta_vs_reference": -71.66666666666667,
+          "fixable_failure_count": 3,
+          "fixable_fraction_of_reference_failures": 0.75,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 24,
+            "2": 3,
+            "3": 1,
+            "4": 2,
+            "5": 3,
+            "6": 6,
+            "7": 4,
+            "8": 6,
+            "9": 9
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 24.966666666666665,
+            "average_remaining_steps": 233.25,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 56,
+            "success_rate": 0.9333333333333333,
+            "timeout_count": 4,
+            "timeout_rate": 0.06666666666666667
+          },
+          "reference_failure_count": 4,
+          "success_first_oracle": {
+            "average_horizon": 7.783333333333333,
+            "average_remaining_calls": 18.95,
+            "average_remaining_steps": 174.0,
+            "h_distribution": {
+              "1": 2,
+              "10": 24,
+              "2": 3,
+              "3": 1,
+              "4": 2,
+              "5": 3,
+              "6": 6,
+              "7": 4,
+              "8": 6,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 2,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 2,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 3,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -2.466666666666667,
+          "average_rescue_calls_delta_vs_reference": null,
+          "fixable_failure_count": 0,
+          "fixable_fraction_of_reference_failures": 0.0,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 24,
+            "2": 3,
+            "3": 1,
+            "4": 2,
+            "5": 3,
+            "6": 6,
+            "7": 4,
+            "8": 6,
+            "9": 9
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 21.416666666666668,
+            "average_remaining_steps": 196.45,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "reference_failure_count": 1,
+          "success_first_oracle": {
+            "average_horizon": 7.783333333333333,
+            "average_remaining_calls": 18.95,
+            "average_remaining_steps": 174.0,
+            "h_distribution": {
+              "1": 2,
+              "10": 24,
+              "2": 3,
+              "3": 1,
+              "4": 2,
+              "5": 3,
+              "6": 6,
+              "7": 4,
+              "8": 6,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -3.95,
+          "average_rescue_calls_delta_vs_reference": -71.0,
+          "fixable_failure_count": 1,
+          "fixable_fraction_of_reference_failures": 0.5,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 24,
+            "2": 3,
+            "3": 1,
+            "4": 2,
+            "5": 3,
+            "6": 6,
+            "7": 4,
+            "8": 6,
+            "9": 9
+          },
+          "reference": {
+            "average_horizon": 6.916666666666667,
+            "average_remaining_calls": 22.9,
+            "average_remaining_steps": 210.35,
+            "h_distribution": {
+              "10": 22,
+              "3": 21,
+              "4": 2,
+              "6": 1,
+              "8": 8,
+              "9": 6
+            },
+            "num_roots": 60,
+            "success_count": 58,
+            "success_rate": 0.9666666666666667,
+            "timeout_count": 2,
+            "timeout_rate": 0.03333333333333333
+          },
+          "reference_failure_count": 2,
+          "success_first_oracle": {
+            "average_horizon": 7.783333333333333,
+            "average_remaining_calls": 18.95,
+            "average_remaining_steps": 174.0,
+            "h_distribution": {
+              "1": 2,
+              "10": 24,
+              "2": 3,
+              "3": 1,
+              "4": 2,
+              "5": 3,
+              "6": 6,
+              "7": 4,
+              "8": 6,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 59,
+            "success_rate": 0.9833333333333333,
+            "timeout_count": 1,
+            "timeout_rate": 0.016666666666666666
+          },
+          "success_upper_bound": 0.9833333333333333,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 0,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 1,
+              "minimum_average_remaining_calls": 18.95,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 1
+        }
+      }
+    },
+    "task8": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 51.25,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.133333333333334,
+            "average_remaining_calls": 34.266666666666666,
+            "average_remaining_steps": 309.05,
+            "h_distribution": {
+              "1": 2,
+              "10": 6,
+              "2": 3,
+              "3": 5,
+              "4": 6,
+              "5": 9,
+              "6": 9,
+              "7": 7,
+              "8": 4,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 34.266666666666666,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 16.983333333333334
+        },
+        {
+          "average_call_budget": 51.35,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.133333333333334,
+            "average_remaining_calls": 34.266666666666666,
+            "average_remaining_steps": 309.05,
+            "h_distribution": {
+              "1": 2,
+              "10": 6,
+              "2": 3,
+              "3": 5,
+              "4": 6,
+              "5": 9,
+              "6": 9,
+              "7": 7,
+              "8": 4,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 34.266666666666666,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 17.083333333333332
+        },
+        {
+          "average_call_budget": 53.866666667,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.133333333333334,
+            "average_remaining_calls": 34.266666666666666,
+            "average_remaining_steps": 309.05,
+            "h_distribution": {
+              "1": 2,
+              "10": 6,
+              "2": 3,
+              "3": 5,
+              "4": 6,
+              "5": 9,
+              "6": 9,
+              "7": 7,
+              "8": 4,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 34.266666666666666,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 19.60000000033333
+        },
+        {
+          "average_call_budget": 54.483333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 6.133333333333334,
+            "average_remaining_calls": 34.266666666666666,
+            "average_remaining_steps": 309.05,
+            "h_distribution": {
+              "1": 2,
+              "10": 6,
+              "2": 3,
+              "3": 5,
+              "4": 6,
+              "5": 9,
+              "6": 9,
+              "7": 7,
+              "8": 4,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 34.266666666666666,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 20.216666666333328
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 53.05,
+          "average_remaining_steps": 478.46666666666664,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 46,
+          "success_rate": 0.7666666666666667,
+          "timeout_count": 14,
+          "timeout_rate": 0.23333333333333334
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 54.483333333333334,
+          "average_remaining_steps": 501.05,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 44,
+          "success_rate": 0.7333333333333333,
+          "timeout_count": 16,
+          "timeout_rate": 0.26666666666666666
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 49.68333333333333,
+          "average_remaining_steps": 451.28333333333336,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 49,
+          "success_rate": 0.8166666666666667,
+          "timeout_count": 11,
+          "timeout_rate": 0.18333333333333332
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 49.416666666666664,
+          "average_remaining_steps": 448.56666666666666,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 49,
+          "success_rate": 0.8166666666666667,
+          "timeout_count": 11,
+          "timeout_rate": 0.18333333333333332
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 51.6,
+          "average_remaining_steps": 472.0,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 46,
+          "success_rate": 0.7666666666666667,
+          "timeout_count": 14,
+          "timeout_rate": 0.23333333333333334
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 51.35,
+          "average_remaining_steps": 467.71666666666664,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 48,
+          "success_rate": 0.8,
+          "timeout_count": 12,
+          "timeout_rate": 0.2
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 49.7,
+          "average_remaining_steps": 454.21666666666664,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 49,
+          "success_rate": 0.8166666666666667,
+          "timeout_count": 11,
+          "timeout_rate": 0.18333333333333332
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 52.11666666666667,
+          "average_remaining_steps": 475.5,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 47,
+          "success_rate": 0.7833333333333333,
+          "timeout_count": 13,
+          "timeout_rate": 0.21666666666666667
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 54.86666666666667,
+          "average_remaining_steps": 501.05,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 45,
+          "success_rate": 0.75,
+          "timeout_count": 15,
+          "timeout_rate": 0.25
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 51.25,
+          "average_remaining_steps": 471.7,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 46,
+          "success_rate": 0.7666666666666667,
+          "timeout_count": 14,
+          "timeout_rate": 0.23333333333333334
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -20.216666666666665,
+          "average_rescue_calls_delta_vs_reference": -58.6875,
+          "fixable_failure_count": 16,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 6,
+            "2": 3,
+            "3": 5,
+            "4": 6,
+            "5": 9,
+            "6": 9,
+            "7": 7,
+            "8": 4,
+            "9": 9
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 54.483333333333334,
+            "average_remaining_steps": 501.05,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 44,
+            "success_rate": 0.7333333333333333,
+            "timeout_count": 16,
+            "timeout_rate": 0.26666666666666666
+          },
+          "reference_failure_count": 16,
+          "success_first_oracle": {
+            "average_horizon": 6.133333333333334,
+            "average_remaining_calls": 34.266666666666666,
+            "average_remaining_steps": 309.05,
+            "h_distribution": {
+              "1": 2,
+              "10": 6,
+              "2": 3,
+              "3": 5,
+              "4": 6,
+              "5": 9,
+              "6": 9,
+              "7": 7,
+              "8": 4,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 14,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 14,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 15,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -16.983333333333334,
+          "average_rescue_calls_delta_vs_reference": -58.142857142857146,
+          "fixable_failure_count": 14,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 6,
+            "2": 3,
+            "3": 5,
+            "4": 6,
+            "5": 9,
+            "6": 9,
+            "7": 7,
+            "8": 4,
+            "9": 9
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 51.25,
+            "average_remaining_steps": 471.7,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 46,
+            "success_rate": 0.7666666666666667,
+            "timeout_count": 14,
+            "timeout_rate": 0.23333333333333334
+          },
+          "reference_failure_count": 14,
+          "success_first_oracle": {
+            "average_horizon": 6.133333333333334,
+            "average_remaining_calls": 34.266666666666666,
+            "average_remaining_steps": 309.05,
+            "h_distribution": {
+              "1": 2,
+              "10": 6,
+              "2": 3,
+              "3": 5,
+              "4": 6,
+              "5": 9,
+              "6": 9,
+              "7": 7,
+              "8": 4,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 12,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 12,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 13,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -19.6,
+          "average_rescue_calls_delta_vs_reference": -57.375,
+          "fixable_failure_count": 16,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 2,
+            "10": 6,
+            "2": 3,
+            "3": 5,
+            "4": 6,
+            "5": 9,
+            "6": 9,
+            "7": 7,
+            "8": 4,
+            "9": 9
+          },
+          "reference": {
+            "average_horizon": 7.066666666666666,
+            "average_remaining_calls": 53.86666666666667,
+            "average_remaining_steps": 494.15,
+            "h_distribution": {
+              "10": 22,
+              "3": 21,
+              "4": 1,
+              "7": 1,
+              "8": 5,
+              "9": 10
+            },
+            "num_roots": 60,
+            "success_count": 44,
+            "success_rate": 0.7333333333333333,
+            "timeout_count": 16,
+            "timeout_rate": 0.26666666666666666
+          },
+          "reference_failure_count": 16,
+          "success_first_oracle": {
+            "average_horizon": 6.133333333333334,
+            "average_remaining_calls": 34.266666666666666,
+            "average_remaining_steps": 309.05,
+            "h_distribution": {
+              "1": 2,
+              "10": 6,
+              "2": 3,
+              "3": 5,
+              "4": 6,
+              "5": 9,
+              "6": 9,
+              "7": 7,
+              "8": 4,
+              "9": 9
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 14,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 14,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 15,
+              "minimum_average_remaining_calls": 34.266666666666666,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        }
+      }
+    },
+    "task9": {
+      "budgeted_success_oracles": [
+        {
+          "average_call_budget": 30.833333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.3,
+            "average_remaining_calls": 17.7,
+            "average_remaining_steps": 163.51666666666668,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "2": 3,
+              "3": 2,
+              "5": 4,
+              "6": 2,
+              "7": 3,
+              "8": 7,
+              "9": 10
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 17.7,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 13.133333333
+        },
+        {
+          "average_call_budget": 30.883333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.3,
+            "average_remaining_calls": 17.7,
+            "average_remaining_steps": 163.51666666666668,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "2": 3,
+              "3": 2,
+              "5": 4,
+              "6": 2,
+              "7": 3,
+              "8": 7,
+              "9": 10
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 17.7,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 13.183333333
+        },
+        {
+          "average_call_budget": 31.383333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.3,
+            "average_remaining_calls": 17.7,
+            "average_remaining_steps": 163.51666666666668,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "2": 3,
+              "3": 2,
+              "5": 4,
+              "6": 2,
+              "7": 3,
+              "8": 7,
+              "9": 10
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 17.7,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 13.683333333
+        },
+        {
+          "average_call_budget": 31.533333333,
+          "feasible": true,
+          "metrics": {
+            "average_horizon": 7.3,
+            "average_remaining_calls": 17.7,
+            "average_remaining_steps": 163.51666666666668,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "2": 3,
+              "3": 2,
+              "5": 4,
+              "6": 2,
+              "7": 3,
+              "8": 7,
+              "9": 10
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "minimum_achievable_average_calls": 17.7,
+          "selected_successful_upgrades": 0,
+          "unused_average_call_budget": 13.833333333000004
+        }
+      ],
+      "fixed_horizons": {
+        "h1": {
+          "average_horizon": 1.0,
+          "average_remaining_calls": 28.566666666666666,
+          "average_remaining_steps": 251.96666666666667,
+          "h_distribution": {
+            "1": 60
+          },
+          "num_roots": 60,
+          "success_count": 54,
+          "success_rate": 0.9,
+          "timeout_count": 6,
+          "timeout_rate": 0.1
+        },
+        "h10": {
+          "average_horizon": 10.0,
+          "average_remaining_calls": 30.833333333333332,
+          "average_remaining_steps": 288.06666666666666,
+          "h_distribution": {
+            "10": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h2": {
+          "average_horizon": 2.0,
+          "average_remaining_calls": 33.03333333333333,
+          "average_remaining_steps": 300.56666666666666,
+          "h_distribution": {
+            "2": 60
+          },
+          "num_roots": 60,
+          "success_count": 50,
+          "success_rate": 0.8333333333333334,
+          "timeout_count": 10,
+          "timeout_rate": 0.16666666666666666
+        },
+        "h3": {
+          "average_horizon": 3.0,
+          "average_remaining_calls": 32.333333333333336,
+          "average_remaining_steps": 292.85,
+          "h_distribution": {
+            "3": 60
+          },
+          "num_roots": 60,
+          "success_count": 52,
+          "success_rate": 0.8666666666666667,
+          "timeout_count": 8,
+          "timeout_rate": 0.13333333333333333
+        },
+        "h4": {
+          "average_horizon": 4.0,
+          "average_remaining_calls": 33.45,
+          "average_remaining_steps": 304.23333333333335,
+          "h_distribution": {
+            "4": 60
+          },
+          "num_roots": 60,
+          "success_count": 51,
+          "success_rate": 0.85,
+          "timeout_count": 9,
+          "timeout_rate": 0.15
+        },
+        "h5": {
+          "average_horizon": 5.0,
+          "average_remaining_calls": 31.533333333333335,
+          "average_remaining_steps": 290.25,
+          "h_distribution": {
+            "5": 60
+          },
+          "num_roots": 60,
+          "success_count": 51,
+          "success_rate": 0.85,
+          "timeout_count": 9,
+          "timeout_rate": 0.15
+        },
+        "h6": {
+          "average_horizon": 6.0,
+          "average_remaining_calls": 27.15,
+          "average_remaining_steps": 248.91666666666666,
+          "h_distribution": {
+            "6": 60
+          },
+          "num_roots": 60,
+          "success_count": 56,
+          "success_rate": 0.9333333333333333,
+          "timeout_count": 4,
+          "timeout_rate": 0.06666666666666667
+        },
+        "h7": {
+          "average_horizon": 7.0,
+          "average_remaining_calls": 28.666666666666668,
+          "average_remaining_steps": 262.6,
+          "h_distribution": {
+            "7": 60
+          },
+          "num_roots": 60,
+          "success_count": 53,
+          "success_rate": 0.8833333333333333,
+          "timeout_count": 7,
+          "timeout_rate": 0.11666666666666667
+        },
+        "h8": {
+          "average_horizon": 8.0,
+          "average_remaining_calls": 27.666666666666668,
+          "average_remaining_steps": 255.53333333333333,
+          "h_distribution": {
+            "8": 60
+          },
+          "num_roots": 60,
+          "success_count": 55,
+          "success_rate": 0.9166666666666666,
+          "timeout_count": 5,
+          "timeout_rate": 0.08333333333333333
+        },
+        "h9": {
+          "average_horizon": 9.0,
+          "average_remaining_calls": 31.383333333333333,
+          "average_remaining_steps": 289.6333333333333,
+          "h_distribution": {
+            "9": 60
+          },
+          "num_roots": 60,
+          "success_count": 51,
+          "success_rate": 0.85,
+          "timeout_count": 9,
+          "timeout_rate": 0.15
+        }
+      },
+      "num_roots": 60,
+      "references": {
+        "h10": {
+          "average_remaining_calls_delta_vs_reference": -13.133333333333333,
+          "average_rescue_calls_delta_vs_reference": -76.14285714285714,
+          "fixable_failure_count": 7,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 7,
+            "10": 22,
+            "2": 3,
+            "3": 2,
+            "5": 4,
+            "6": 2,
+            "7": 3,
+            "8": 7,
+            "9": 10
+          },
+          "reference": {
+            "average_horizon": 10.0,
+            "average_remaining_calls": 30.833333333333332,
+            "average_remaining_steps": 288.06666666666666,
+            "h_distribution": {
+              "10": 60
+            },
+            "num_roots": 60,
+            "success_count": 53,
+            "success_rate": 0.8833333333333333,
+            "timeout_count": 7,
+            "timeout_rate": 0.11666666666666667
+          },
+          "reference_failure_count": 7,
+          "success_first_oracle": {
+            "average_horizon": 7.3,
+            "average_remaining_calls": 17.7,
+            "average_remaining_steps": 163.51666666666668,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "2": 3,
+              "3": 2,
+              "5": 4,
+              "6": 2,
+              "7": 3,
+              "8": 7,
+              "9": 10
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "h9": {
+          "average_remaining_calls_delta_vs_reference": -13.683333333333334,
+          "average_rescue_calls_delta_vs_reference": -77.66666666666667,
+          "fixable_failure_count": 9,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 7,
+            "10": 22,
+            "2": 3,
+            "3": 2,
+            "5": 4,
+            "6": 2,
+            "7": 3,
+            "8": 7,
+            "9": 10
+          },
+          "reference": {
+            "average_horizon": 9.0,
+            "average_remaining_calls": 31.383333333333333,
+            "average_remaining_steps": 289.6333333333333,
+            "h_distribution": {
+              "9": 60
+            },
+            "num_roots": 60,
+            "success_count": 51,
+            "success_rate": 0.85,
+            "timeout_count": 9,
+            "timeout_rate": 0.15
+          },
+          "reference_failure_count": 9,
+          "success_first_oracle": {
+            "average_horizon": 7.3,
+            "average_remaining_calls": 17.7,
+            "average_remaining_steps": 163.51666666666668,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "2": 3,
+              "3": 2,
+              "5": 4,
+              "6": 2,
+              "7": 3,
+              "8": 7,
+              "9": 10
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 7,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 7,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 8,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        },
+        "raw_h": {
+          "average_remaining_calls_delta_vs_reference": -13.183333333333334,
+          "average_rescue_calls_delta_vs_reference": -76.42857142857143,
+          "fixable_failure_count": 7,
+          "fixable_fraction_of_reference_failures": 1.0,
+          "oracle_h_distribution": {
+            "1": 7,
+            "10": 22,
+            "2": 3,
+            "3": 2,
+            "5": 4,
+            "6": 2,
+            "7": 3,
+            "8": 7,
+            "9": 10
+          },
+          "reference": {
+            "average_horizon": 7.683333333333334,
+            "average_remaining_calls": 30.883333333333333,
+            "average_remaining_steps": 285.65,
+            "h_distribution": {
+              "10": 23,
+              "3": 15,
+              "6": 1,
+              "8": 9,
+              "9": 12
+            },
+            "num_roots": 60,
+            "success_count": 53,
+            "success_rate": 0.8833333333333333,
+            "timeout_count": 7,
+            "timeout_rate": 0.11666666666666667
+          },
+          "reference_failure_count": 7,
+          "success_first_oracle": {
+            "average_horizon": 7.3,
+            "average_remaining_calls": 17.7,
+            "average_remaining_steps": 163.51666666666668,
+            "h_distribution": {
+              "1": 7,
+              "10": 22,
+              "2": 3,
+              "3": 2,
+              "5": 4,
+              "6": 2,
+              "7": 3,
+              "8": 7,
+              "9": 10
+            },
+            "num_roots": 60,
+            "success_count": 60,
+            "success_rate": 1.0,
+            "timeout_count": 0,
+            "timeout_rate": 0.0
+          },
+          "success_upper_bound": 1.0,
+          "targets": [
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 58,
+              "target_success_rate": 0.96
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 5,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 58,
+              "target_success_rate": 0.966
+            },
+            {
+              "achievable_in_root_labels": true,
+              "additional_successes_needed_vs_reference": 6,
+              "minimum_average_remaining_calls": 17.7,
+              "target_success_count": 59,
+              "target_success_rate": 0.97
+            }
+          ],
+          "unfixable_failure_count": 0
+        }
+      }
+    }
+  },
+  "target_success_rates": [
+    0.96,
+    0.966,
+    0.97
+  ]
+}

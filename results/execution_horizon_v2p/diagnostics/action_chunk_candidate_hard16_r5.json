@@ -1,0 +1,281 @@
+{
+  "inputs": [
+    "/root/autodl-tmp/acotvla/action_chunk_candidate_oracle/20260721_hard16_r5_99ac898/t8_a/candidate_oracle_records.jsonl",
+    "/root/autodl-tmp/acotvla/action_chunk_candidate_oracle/20260721_hard16_r5_99ac898/t8_b/candidate_oracle_records.jsonl",
+    "/root/autodl-tmp/acotvla/action_chunk_candidate_oracle/20260721_hard16_r5_99ac898/t8_c/candidate_oracle_records.jsonl",
+    "/root/autodl-tmp/acotvla/action_chunk_candidate_oracle/20260721_hard16_r5_99ac898/t9_a/candidate_oracle_records.jsonl"
+  ],
+  "num_expected_roots": 16,
+  "status": "complete",
+  "summary": {
+    "candidate0_short_h_vs_reference_h": {
+      "both_failure": 10,
+      "both_success": 41,
+      "left_only_success": 16,
+      "right_only_success": 13
+    },
+    "hindsight_any_alternative_chunk_vs_candidate0_same_h": {
+      "both_failure": 10,
+      "both_success": 56,
+      "left_only_success": 13,
+      "right_only_success": 1
+    },
+    "hindsight_any_candidate_short_h_success_rate": 0.875,
+    "hindsight_any_candidate_short_h_vs_reference_h": {
+      "both_failure": 6,
+      "both_success": 50,
+      "left_only_success": 20,
+      "right_only_success": 4
+    },
+    "in_sample_root_empirical_best_candidate_success_rate": 0.8125,
+    "num_branch_rollouts": 400,
+    "num_roots": 16,
+    "per_arm": {
+      "candidate_rank0": {
+        "average_remaining_calls": 57.5875,
+        "average_remaining_steps": 508.4375,
+        "num_trials": 80,
+        "success_count": 57,
+        "success_rate": 0.7125
+      },
+      "candidate_rank1": {
+        "average_remaining_calls": 57.45,
+        "average_remaining_steps": 507.425,
+        "num_trials": 80,
+        "success_count": 55,
+        "success_rate": 0.6875
+      },
+      "candidate_rank2": {
+        "average_remaining_calls": 57.95,
+        "average_remaining_steps": 511.7625,
+        "num_trials": 80,
+        "success_count": 54,
+        "success_rate": 0.675
+      },
+      "candidate_rank3": {
+        "average_remaining_calls": 56.1375,
+        "average_remaining_steps": 495.875,
+        "num_trials": 80,
+        "success_count": 56,
+        "success_rate": 0.7
+      },
+      "reference_candidate0": {
+        "average_remaining_calls": 57.175,
+        "average_remaining_steps": 512.4375,
+        "num_trials": 80,
+        "success_count": 54,
+        "success_rate": 0.675
+      }
+    },
+    "per_task": {
+      "8": {
+        "candidate_rank0": {
+          "num_trials": 55,
+          "success_count": 38
+        },
+        "candidate_rank1": {
+          "num_trials": 55,
+          "success_count": 39
+        },
+        "candidate_rank2": {
+          "num_trials": 55,
+          "success_count": 37
+        },
+        "candidate_rank3": {
+          "num_trials": 55,
+          "success_count": 39
+        },
+        "reference_candidate0": {
+          "num_trials": 55,
+          "success_count": 36
+        }
+      },
+      "9": {
+        "candidate_rank0": {
+          "num_trials": 25,
+          "success_count": 19
+        },
+        "candidate_rank1": {
+          "num_trials": 25,
+          "success_count": 16
+        },
+        "candidate_rank2": {
+          "num_trials": 25,
+          "success_count": 17
+        },
+        "candidate_rank3": {
+          "num_trials": 25,
+          "success_count": 17
+        },
+        "reference_candidate0": {
+          "num_trials": 25,
+          "success_count": 18
+        }
+      }
+    },
+    "root_comparisons": [
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 1.0,
+        "decision_step": 100,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 30,
+        "reference_h10_success_rate": 0.8,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 0.2,
+        "candidate0_short_h_success_rate": 0.2,
+        "decision_step": 154,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 0.2,
+        "episode_id": 36,
+        "reference_h10_success_rate": 0.4,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 0.6,
+        "candidate0_short_h_success_rate": 0.4,
+        "decision_step": 100,
+        "empirical_best_candidate_rank": 2,
+        "empirical_best_candidate_success_rate": 0.6,
+        "episode_id": 50,
+        "reference_h10_success_rate": 0.4,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 1.0,
+        "decision_step": 46,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 4,
+        "reference_h10_success_rate": 0.8,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 0.8,
+        "candidate0_short_h_success_rate": 0.8,
+        "decision_step": 73,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 0.8,
+        "episode_id": 47,
+        "reference_h10_success_rate": 0.4,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 0.8,
+        "decision_step": 82,
+        "empirical_best_candidate_rank": 2,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 68,
+        "reference_h10_success_rate": 0.8,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 0.6,
+        "decision_step": 100,
+        "empirical_best_candidate_rank": 3,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 70,
+        "reference_h10_success_rate": 0.8,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 0.6,
+        "candidate0_short_h_success_rate": 0.8,
+        "decision_step": 118,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 0.8,
+        "episode_id": 72,
+        "reference_h10_success_rate": 0.8,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 0.8,
+        "decision_step": 136,
+        "empirical_best_candidate_rank": 1,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 74,
+        "reference_h10_success_rate": 1.0,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 0.8,
+        "decision_step": 10,
+        "empirical_best_candidate_rank": 1,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 80,
+        "reference_h10_success_rate": 0.6,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 0.8,
+        "candidate0_short_h_success_rate": 0.4,
+        "decision_step": 163,
+        "empirical_best_candidate_rank": 1,
+        "empirical_best_candidate_success_rate": 0.8,
+        "episode_id": 97,
+        "reference_h10_success_rate": 0.4,
+        "task_id": 8
+      },
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 1.0,
+        "decision_step": 37,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 43,
+        "reference_h10_success_rate": 1.0,
+        "task_id": 9
+      },
+      {
+        "best_alternative_candidate_success_rate": 0.4,
+        "candidate0_short_h_success_rate": 0.4,
+        "decision_step": 19,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 0.4,
+        "episode_id": 61,
+        "reference_h10_success_rate": 0.8,
+        "task_id": 9
+      },
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 1.0,
+        "decision_step": 127,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 73,
+        "reference_h10_success_rate": 0.4,
+        "task_id": 9
+      },
+      {
+        "best_alternative_candidate_success_rate": 1.0,
+        "candidate0_short_h_success_rate": 1.0,
+        "decision_step": 46,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 1.0,
+        "episode_id": 84,
+        "reference_h10_success_rate": 0.8,
+        "task_id": 9
+      },
+      {
+        "best_alternative_candidate_success_rate": 0.4,
+        "candidate0_short_h_success_rate": 0.4,
+        "decision_step": 145,
+        "empirical_best_candidate_rank": 0,
+        "empirical_best_candidate_success_rate": 0.4,
+        "episode_id": 95,
+        "reference_h10_success_rate": 0.6,
+        "task_id": 9
+      }
+    ],
+    "roots_with_best_alternative_rate_at_least_two_thirds_and_candidate0_at_most_one_third": 0,
+    "roots_with_best_candidate_rate_at_least_two_thirds_and_reference_at_most_one_third": 0
+  }
+}

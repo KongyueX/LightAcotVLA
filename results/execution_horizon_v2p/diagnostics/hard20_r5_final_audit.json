@@ -1,0 +1,1017 @@
+{
+  "aggregate": {
+    "empirical_root_level_best_h": {
+      "average_remaining_calls": 47.51,
+      "success_count": 84,
+      "success_rate": 0.84
+    },
+    "fixed_horizons": {
+      "1": {
+        "average_remaining_calls": 59.29,
+        "success_count": 68,
+        "success_rate": 0.68
+      },
+      "10": {
+        "average_remaining_calls": 56.51,
+        "success_count": 71,
+        "success_rate": 0.71
+      },
+      "3": {
+        "average_remaining_calls": 58.74,
+        "success_count": 66,
+        "success_rate": 0.66
+      },
+      "6": {
+        "average_remaining_calls": 56.59,
+        "success_count": 71,
+        "success_rate": 0.71
+      }
+    },
+    "num_paired_trials": 100,
+    "num_roots": 20,
+    "paired_vs_reference": {
+      "1": {
+        "net_rescue": -3,
+        "regression_count": 17,
+        "rescue_count": 14
+      },
+      "10": {
+        "net_rescue": 0,
+        "regression_count": 0,
+        "rescue_count": 0
+      },
+      "3": {
+        "net_rescue": -5,
+        "regression_count": 15,
+        "rescue_count": 10
+      },
+      "6": {
+        "net_rescue": 0,
+        "regression_count": 15,
+        "rescue_count": 15
+      }
+    },
+    "per_repeat_hindsight_any_h": {
+      "success_count": 91,
+      "success_rate": 0.91
+    },
+    "reference_horizon": 10,
+    "roots_with_empirical_success_margin": 9
+  },
+  "candidate_horizons": [
+    1,
+    3,
+    6,
+    10
+  ],
+  "inputs": [
+    "/root/autodl-tmp/acotvla/v2p_validation/20260720_hard20_r5/t8_a/repeated_branch_outcomes.jsonl",
+    "/root/autodl-tmp/acotvla/v2p_validation/20260720_hard20_r5/t8_b/repeated_branch_outcomes.jsonl",
+    "/root/autodl-tmp/acotvla/v2p_validation/20260720_hard20_r5/t8_c/repeated_branch_outcomes.jsonl",
+    "/root/autodl-tmp/acotvla/v2p_validation/20260720_hard20_r5/t9_a/repeated_branch_outcomes.jsonl"
+  ],
+  "roots": [
+    {
+      "decision_step": 10,
+      "empirical_best_average_remaining_calls": 63.4,
+      "empirical_best_success_count": 5,
+      "episode_id": 0,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 63.4,
+          "paired_net_rescue": 3,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 3,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "10": {
+          "average_remaining_calls": 90.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "3": {
+          "average_remaining_calls": 59.2,
+          "paired_net_rescue": 2,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 3,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "6": {
+          "average_remaining_calls": 66.0,
+          "paired_net_rescue": 2,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 3,
+          "success_count": 4,
+          "success_rate": 0.8
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8000017,
+      "selected_empirical_best_horizon": 1,
+      "selected_has_success_margin": true,
+      "task_id": 8
+    },
+    {
+      "decision_step": 100,
+      "empirical_best_average_remaining_calls": 48.2,
+      "empirical_best_success_count": 5,
+      "episode_id": 30,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 68.8,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "10": {
+          "average_remaining_calls": 48.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "3": {
+          "average_remaining_calls": 63.6,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "6": {
+          "average_remaining_calls": 48.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8300107,
+      "selected_empirical_best_horizon": 6,
+      "selected_has_success_margin": false,
+      "task_id": 8
+    },
+    {
+      "decision_step": 154,
+      "empirical_best_average_remaining_calls": 87.6,
+      "empirical_best_success_count": 1,
+      "episode_id": 36,
+      "hindsight_any_h_success_count": 3,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 94.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 1,
+          "success_count": 1,
+          "success_rate": 0.2
+        },
+        "10": {
+          "average_remaining_calls": 91.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 1,
+          "success_rate": 0.2
+        },
+        "3": {
+          "average_remaining_calls": 95.0,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 0,
+          "success_rate": 0.0
+        },
+        "6": {
+          "average_remaining_calls": 87.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 1,
+          "success_count": 1,
+          "success_rate": 0.2
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8360161,
+      "selected_empirical_best_horizon": 6,
+      "selected_has_success_margin": false,
+      "task_id": 8
+    },
+    {
+      "decision_step": 100,
+      "empirical_best_average_remaining_calls": 40.2,
+      "empirical_best_success_count": 5,
+      "episode_id": 50,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 77.8,
+          "paired_net_rescue": -3,
+          "paired_regression_count": 3,
+          "paired_rescue_count": 0,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "10": {
+          "average_remaining_calls": 46.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "3": {
+          "average_remaining_calls": 40.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "6": {
+          "average_remaining_calls": 41.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8500107,
+      "selected_empirical_best_horizon": 3,
+      "selected_has_success_margin": false,
+      "task_id": 8
+    },
+    {
+      "decision_step": 46,
+      "empirical_best_average_remaining_calls": 49.2,
+      "empirical_best_success_count": 5,
+      "episode_id": 4,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 49.8,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "10": {
+          "average_remaining_calls": 59.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 49.2,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "6": {
+          "average_remaining_calls": 57.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 1,
+          "success_count": 4,
+          "success_rate": 0.8
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8040053,
+      "selected_empirical_best_horizon": 3,
+      "selected_has_success_margin": true,
+      "task_id": 8
+    },
+    {
+      "decision_step": 145,
+      "empirical_best_average_remaining_calls": 59.2,
+      "empirical_best_success_count": 3,
+      "episode_id": 35,
+      "hindsight_any_h_success_count": 4,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 71.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 2,
+          "paired_rescue_count": 2,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "10": {
+          "average_remaining_calls": 69.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "3": {
+          "average_remaining_calls": 59.2,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "6": {
+          "average_remaining_calls": 96.0,
+          "paired_net_rescue": -2,
+          "paired_regression_count": 2,
+          "paired_rescue_count": 0,
+          "success_count": 0,
+          "success_rate": 0.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8350152,
+      "selected_empirical_best_horizon": 3,
+      "selected_has_success_margin": true,
+      "task_id": 8
+    },
+    {
+      "decision_step": 73,
+      "empirical_best_average_remaining_calls": 55.6,
+      "empirical_best_success_count": 4,
+      "episode_id": 47,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 78.2,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 2,
+          "paired_rescue_count": 1,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "10": {
+          "average_remaining_calls": 55.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 74.0,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "6": {
+          "average_remaining_calls": 94.2,
+          "paired_net_rescue": -3,
+          "paired_regression_count": 4,
+          "paired_rescue_count": 1,
+          "success_count": 1,
+          "success_rate": 0.2
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8470080,
+      "selected_empirical_best_horizon": 10,
+      "selected_has_success_margin": false,
+      "task_id": 8
+    },
+    {
+      "decision_step": 82,
+      "empirical_best_average_remaining_calls": 40.0,
+      "empirical_best_success_count": 5,
+      "episode_id": 68,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 52.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 1,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "10": {
+          "average_remaining_calls": 63.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 40.0,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "6": {
+          "average_remaining_calls": 47.6,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8680089,
+      "selected_empirical_best_horizon": 3,
+      "selected_has_success_margin": true,
+      "task_id": 8
+    },
+    {
+      "decision_step": 100,
+      "empirical_best_average_remaining_calls": 55.2,
+      "empirical_best_success_count": 4,
+      "episode_id": 70,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 64.6,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "10": {
+          "average_remaining_calls": 65.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 55.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 1,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "6": {
+          "average_remaining_calls": 59.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 1,
+          "success_count": 4,
+          "success_rate": 0.8
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8700107,
+      "selected_empirical_best_horizon": 3,
+      "selected_has_success_margin": false,
+      "task_id": 8
+    },
+    {
+      "decision_step": 118,
+      "empirical_best_average_remaining_calls": 34.6,
+      "empirical_best_success_count": 5,
+      "episode_id": 72,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 46.4,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "10": {
+          "average_remaining_calls": 47.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 34.6,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "6": {
+          "average_remaining_calls": 60.2,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 2,
+          "paired_rescue_count": 1,
+          "success_count": 3,
+          "success_rate": 0.6
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8720125,
+      "selected_empirical_best_horizon": 3,
+      "selected_has_success_margin": true,
+      "task_id": 8
+    },
+    {
+      "decision_step": 136,
+      "empirical_best_average_remaining_calls": 28.6,
+      "empirical_best_success_count": 5,
+      "episode_id": 74,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 30.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "10": {
+          "average_remaining_calls": 28.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "3": {
+          "average_remaining_calls": 31.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "6": {
+          "average_remaining_calls": 29.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8740143,
+      "selected_empirical_best_horizon": 10,
+      "selected_has_success_margin": false,
+      "task_id": 8
+    },
+    {
+      "decision_step": 10,
+      "empirical_best_average_remaining_calls": 54.4,
+      "empirical_best_success_count": 5,
+      "episode_id": 80,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 79.4,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 2,
+          "paired_rescue_count": 1,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "10": {
+          "average_remaining_calls": 64.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 73.4,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "6": {
+          "average_remaining_calls": 54.4,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8800017,
+      "selected_empirical_best_horizon": 6,
+      "selected_has_success_margin": true,
+      "task_id": 8
+    },
+    {
+      "decision_step": 163,
+      "empirical_best_average_remaining_calls": 30.8,
+      "empirical_best_success_count": 5,
+      "episode_id": 97,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 67.0,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "10": {
+          "average_remaining_calls": 53.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "3": {
+          "average_remaining_calls": 94.0,
+          "paired_net_rescue": -3,
+          "paired_regression_count": 3,
+          "paired_rescue_count": 0,
+          "success_count": 0,
+          "success_rate": 0.0
+        },
+        "6": {
+          "average_remaining_calls": 30.8,
+          "paired_net_rescue": 2,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 2,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 8970170,
+      "selected_empirical_best_horizon": 6,
+      "selected_has_success_margin": true,
+      "task_id": 8
+    },
+    {
+      "decision_step": 163,
+      "empirical_best_average_remaining_calls": 50.0,
+      "empirical_best_success_count": 4,
+      "episode_id": 37,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 55.2,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 2,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "10": {
+          "average_remaining_calls": 74.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "3": {
+          "average_remaining_calls": 67.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 1,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "6": {
+          "average_remaining_calls": 50.0,
+          "paired_net_rescue": 2,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 2,
+          "success_count": 4,
+          "success_rate": 0.8
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 9370170,
+      "selected_empirical_best_horizon": 6,
+      "selected_has_success_margin": true,
+      "task_id": 9
+    },
+    {
+      "decision_step": 37,
+      "empirical_best_average_remaining_calls": 24.0,
+      "empirical_best_success_count": 5,
+      "episode_id": 43,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 25.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "10": {
+          "average_remaining_calls": 24.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "3": {
+          "average_remaining_calls": 24.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "6": {
+          "average_remaining_calls": 27.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 9430044,
+      "selected_empirical_best_horizon": 10,
+      "selected_has_success_margin": false,
+      "task_id": 9
+    },
+    {
+      "decision_step": 19,
+      "empirical_best_average_remaining_calls": 45.4,
+      "empirical_best_success_count": 4,
+      "episode_id": 61,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 45.6,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 1,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "10": {
+          "average_remaining_calls": 45.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 78.2,
+          "paired_net_rescue": -2,
+          "paired_regression_count": 2,
+          "paired_rescue_count": 0,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "6": {
+          "average_remaining_calls": 78.2,
+          "paired_net_rescue": -2,
+          "paired_regression_count": 2,
+          "paired_rescue_count": 0,
+          "success_count": 2,
+          "success_rate": 0.4
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 9610026,
+      "selected_empirical_best_horizon": 10,
+      "selected_has_success_margin": false,
+      "task_id": 9
+    },
+    {
+      "decision_step": 127,
+      "empirical_best_average_remaining_calls": 40.4,
+      "empirical_best_success_count": 4,
+      "episode_id": 73,
+      "hindsight_any_h_success_count": 4,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 57.6,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 3,
+          "success_rate": 0.6
+        },
+        "10": {
+          "average_remaining_calls": 40.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 76.2,
+          "paired_net_rescue": -2,
+          "paired_regression_count": 2,
+          "paired_rescue_count": 0,
+          "success_count": 2,
+          "success_rate": 0.4
+        },
+        "6": {
+          "average_remaining_calls": 55.8,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 3,
+          "success_rate": 0.6
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 9730134,
+      "selected_empirical_best_horizon": 10,
+      "selected_has_success_margin": false,
+      "task_id": 9
+    },
+    {
+      "decision_step": 145,
+      "empirical_best_average_remaining_calls": 95.0,
+      "empirical_best_success_count": 0,
+      "episode_id": 75,
+      "hindsight_any_h_success_count": 0,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 96.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 0,
+          "success_rate": 0.0
+        },
+        "10": {
+          "average_remaining_calls": 95.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 0,
+          "success_rate": 0.0
+        },
+        "3": {
+          "average_remaining_calls": 96.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 0,
+          "success_rate": 0.0
+        },
+        "6": {
+          "average_remaining_calls": 96.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 0,
+          "success_rate": 0.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 9750152,
+      "selected_empirical_best_horizon": 10,
+      "selected_has_success_margin": false,
+      "task_id": 9
+    },
+    {
+      "decision_step": 46,
+      "empirical_best_average_remaining_calls": 26.0,
+      "empirical_best_success_count": 5,
+      "episode_id": 84,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 26.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "10": {
+          "average_remaining_calls": 26.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "3": {
+          "average_remaining_calls": 41.6,
+          "paired_net_rescue": -1,
+          "paired_regression_count": 1,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "6": {
+          "average_remaining_calls": 26.0,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 9840053,
+      "selected_empirical_best_horizon": 10,
+      "selected_has_success_margin": false,
+      "task_id": 9
+    },
+    {
+      "decision_step": 145,
+      "empirical_best_average_remaining_calls": 22.4,
+      "empirical_best_success_count": 5,
+      "episode_id": 95,
+      "hindsight_any_h_success_count": 5,
+      "horizons": {
+        "1": {
+          "average_remaining_calls": 37.2,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "10": {
+          "average_remaining_calls": 42.4,
+          "paired_net_rescue": 0,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 0,
+          "success_count": 4,
+          "success_rate": 0.8
+        },
+        "3": {
+          "average_remaining_calls": 22.4,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        },
+        "6": {
+          "average_remaining_calls": 26.4,
+          "paired_net_rescue": 1,
+          "paired_regression_count": 0,
+          "paired_rescue_count": 1,
+          "success_count": 5,
+          "success_rate": 1.0
+        }
+      },
+      "num_repeats": 5,
+      "reference_horizon": 10,
+      "root_seed": 9950152,
+      "selected_empirical_best_horizon": 3,
+      "selected_has_success_margin": true,
+      "task_id": 9
+    }
+  ],
+  "semantics": "Repeated live branches share one root snapshot and primary action, and pair horizons by continuation policy seed. The empirical root-level best-H result is an in-sample diagnostic, not a deployable selector or closed-loop success estimate. Per-repeat any-H is a stronger hindsight upper bound.",
+  "status": "complete"
+}

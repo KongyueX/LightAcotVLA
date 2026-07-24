@@ -179,8 +179,10 @@ logs/
 /tmp/
 /work/
 
-# Local report context and generated report outputs
-reports/context/
+# Keep the factual experiment ledger, but leave planning and presentation
+# deliverables local.
+reports/context/*
+!reports/context/experiment_log.md
 reports/outputs/
 MUJOCO_LOG.TXT
 *.bak

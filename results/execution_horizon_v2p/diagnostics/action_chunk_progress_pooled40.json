@@ -1,0 +1,1542 @@
+{
+  "config": {
+    "commit": "fc6d8b0",
+    "progress_minimum_margin": 0.0005,
+    "repeats": 5,
+    "roots": 40
+  },
+  "confirm16_summary": {
+    "candidate0_short_h_vs_reference_h": {
+      "both_failure": 15,
+      "both_success": 56,
+      "left_only_success": 5,
+      "right_only_success": 4
+    },
+    "mean_selected_score_advantage_over_candidate0": 0.0011834583737916505,
+    "num_actual_branch_rollouts": 200,
+    "num_logical_branch_rollouts": 240,
+    "num_roots": 16,
+    "per_arm": {
+      "candidate0_short": {
+        "average_remaining_calls": 47.0375,
+        "average_remaining_steps": 413.6875,
+        "num_trials": 80,
+        "success_count": 61,
+        "success_rate": 0.7625
+      },
+      "progress_selected_short": {
+        "average_remaining_calls": 49.8,
+        "average_remaining_steps": 438.8,
+        "num_trials": 80,
+        "success_count": 60,
+        "success_rate": 0.75
+      },
+      "reference_candidate0": {
+        "average_remaining_calls": 47.075,
+        "average_remaining_steps": 421.275,
+        "num_trials": 80,
+        "success_count": 60,
+        "success_rate": 0.75
+      }
+    },
+    "per_task": {
+      "8": {
+        "num_roots": 8,
+        "num_trials": 40,
+        "per_arm_success_count": {
+          "candidate0_short": 26,
+          "progress_selected_short": 26,
+          "reference_candidate0": 26
+        },
+        "progress_selected_vs_candidate0": {
+          "both_failure": 13,
+          "both_success": 25,
+          "left_only_success": 1,
+          "right_only_success": 1
+        },
+        "selected_alternative_roots": 3
+      },
+      "9": {
+        "num_roots": 8,
+        "num_trials": 40,
+        "per_arm_success_count": {
+          "candidate0_short": 35,
+          "progress_selected_short": 34,
+          "reference_candidate0": 34
+        },
+        "progress_selected_vs_candidate0": {
+          "both_failure": 4,
+          "both_success": 33,
+          "left_only_success": 1,
+          "right_only_success": 2
+        },
+        "selected_alternative_roots": 5
+      }
+    },
+    "progress_selected_short_h_vs_reference_h": {
+      "both_failure": 14,
+      "both_success": 54,
+      "left_only_success": 6,
+      "right_only_success": 6
+    },
+    "progress_selected_vs_candidate0_same_h": {
+      "both_failure": 17,
+      "both_success": 58,
+      "exact_mcnemar_two_sided_p": 1.0,
+      "left_only_success": 2,
+      "right_only_success": 3
+    },
+    "root_comparisons": [
+      {
+        "candidate0_after_score": 1.2054655345332679,
+        "candidate0_success_count": 5,
+        "decision_step": 28,
+        "episode_id": 2,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.2054655345332679,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.1942657924440518,
+        "candidate0_success_count": 5,
+        "decision_step": 64,
+        "episode_id": 6,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.1942657924440518,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.1809092095565354,
+        "candidate0_success_count": 3,
+        "decision_step": 82,
+        "episode_id": 8,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 1.1809092095565354,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7528193975840503,
+        "candidate0_success_count": 0,
+        "decision_step": 145,
+        "episode_id": 15,
+        "progress_selected_success_count": 0,
+        "selected_after_score": 1.7550327226226166,
+        "selected_progress_candidate_index": 1,
+        "selected_progress_rank": 2,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7490663718943762,
+        "candidate0_success_count": 0,
+        "decision_step": 163,
+        "episode_id": 17,
+        "progress_selected_success_count": 1,
+        "selected_after_score": 1.750687085786137,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 1,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7067040838119367,
+        "candidate0_success_count": 5,
+        "decision_step": 172,
+        "episode_id": 18,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.708078869307767,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 3,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.3129206467444239,
+        "candidate0_success_count": 4,
+        "decision_step": 181,
+        "episode_id": 19,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.3129206467444239,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.1840275427446123,
+        "candidate0_success_count": 4,
+        "decision_step": 10,
+        "episode_id": 20,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.1840275427446123,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 0.711585233522066,
+        "candidate0_success_count": 2,
+        "decision_step": 172,
+        "episode_id": 98,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 0.7122797945123951,
+        "selected_progress_candidate_index": 9,
+        "selected_progress_rank": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.2795250686958093,
+        "candidate0_success_count": 5,
+        "decision_step": 100,
+        "episode_id": 70,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.2830911634121101,
+        "selected_progress_candidate_index": 1,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.6504375348711771,
+        "candidate0_success_count": 5,
+        "decision_step": 91,
+        "episode_id": 29,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 0.6511270248987453,
+        "selected_progress_candidate_index": 8,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.14802175555072064,
+        "candidate0_success_count": 4,
+        "decision_step": 82,
+        "episode_id": 48,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.14802175555072064,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.15792960488980173,
+        "candidate0_success_count": 4,
+        "decision_step": 37,
+        "episode_id": 63,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.15792960488980173,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 1.096143853862203,
+        "candidate0_success_count": 5,
+        "decision_step": 145,
+        "episode_id": 15,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.096143853862203,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 1.0725095672883636,
+        "candidate0_success_count": 5,
+        "decision_step": 181,
+        "episode_id": 59,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.0736033652097738,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.16284797727584654,
+        "candidate0_success_count": 5,
+        "decision_step": 73,
+        "episode_id": 67,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.1705305431747471,
+        "selected_progress_candidate_index": 6,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      }
+    ],
+    "selected_alternative_fraction": 0.5,
+    "selected_alternative_roots": 8,
+    "triggered_root_details": [
+      {
+        "candidate0_successes": 0,
+        "decision_step": 145,
+        "episode_id": 15,
+        "rank": 2,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.002213325038566305,
+        "selected_successes": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 0,
+        "decision_step": 163,
+        "episode_id": 17,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 1,
+        "score_advantage": 0.0016207138917607722,
+        "selected_successes": 1,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 172,
+        "episode_id": 18,
+        "rank": 3,
+        "regressions": 1,
+        "rescues": 0,
+        "score_advantage": 0.0013747854958303662,
+        "selected_successes": 4,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 2,
+        "decision_step": 172,
+        "episode_id": 98,
+        "rank": 3,
+        "regressions": 0,
+        "rescues": 1,
+        "score_advantage": 0.0006945609903290517,
+        "selected_successes": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 100,
+        "episode_id": 70,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.003566094716300816,
+        "selected_successes": 5,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 91,
+        "episode_id": 29,
+        "rank": 1,
+        "regressions": 2,
+        "rescues": 0,
+        "score_advantage": 0.0006894900275682403,
+        "selected_successes": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 181,
+        "episode_id": 59,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.0010937979214102889,
+        "selected_successes": 5,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 73,
+        "episode_id": 67,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.007682565898900567,
+        "selected_successes": 5,
+        "task_id": 9
+      }
+    ],
+    "validations": {
+      "label": "confirm16",
+      "max_candidate0_action_abs_difference_vs_primary": 0.0,
+      "max_candidate_start_score_spread": 0.0,
+      "selected_rank_histogram": {
+        "0": 8,
+        "1": 5,
+        "2": 1,
+        "3": 2
+      },
+      "unique_roots": 16
+    }
+  },
+  "first24_summary": {
+    "candidate0_short_h_vs_reference_h": {
+      "both_failure": 12,
+      "both_success": 75,
+      "left_only_success": 20,
+      "right_only_success": 13
+    },
+    "mean_selected_score_advantage_over_candidate0": 0.015309051293760258,
+    "num_actual_branch_rollouts": 280,
+    "num_logical_branch_rollouts": 360,
+    "num_roots": 24,
+    "per_arm": {
+      "candidate0_short": {
+        "average_remaining_calls": 47.88333333333333,
+        "average_remaining_steps": 421.53333333333336,
+        "num_trials": 120,
+        "success_count": 95,
+        "success_rate": 0.7916666666666666
+      },
+      "progress_selected_short": {
+        "average_remaining_calls": 44.24166666666667,
+        "average_remaining_steps": 388.575,
+        "num_trials": 120,
+        "success_count": 100,
+        "success_rate": 0.8333333333333334
+      },
+      "reference_candidate0": {
+        "average_remaining_calls": 50.50833333333333,
+        "average_remaining_steps": 452.2083333333333,
+        "num_trials": 120,
+        "success_count": 88,
+        "success_rate": 0.7333333333333333
+      }
+    },
+    "per_task": {
+      "8": {
+        "num_roots": 12,
+        "num_trials": 60,
+        "per_arm_success_count": {
+          "candidate0_short": 46,
+          "progress_selected_short": 49,
+          "reference_candidate0": 46
+        },
+        "progress_selected_vs_candidate0": {
+          "both_failure": 10,
+          "both_success": 45,
+          "left_only_success": 4,
+          "right_only_success": 1
+        },
+        "selected_alternative_roots": 3
+      },
+      "9": {
+        "num_roots": 12,
+        "num_trials": 60,
+        "per_arm_success_count": {
+          "candidate0_short": 49,
+          "progress_selected_short": 51,
+          "reference_candidate0": 42
+        },
+        "progress_selected_vs_candidate0": {
+          "both_failure": 7,
+          "both_success": 47,
+          "left_only_success": 4,
+          "right_only_success": 2
+        },
+        "selected_alternative_roots": 5
+      }
+    },
+    "progress_selected_short_h_vs_reference_h": {
+      "both_failure": 10,
+      "both_success": 78,
+      "left_only_success": 22,
+      "right_only_success": 10
+    },
+    "progress_selected_vs_candidate0_same_h": {
+      "both_failure": 17,
+      "both_success": 92,
+      "exact_mcnemar_two_sided_p": 0.2265625,
+      "left_only_success": 8,
+      "right_only_success": 3
+    },
+    "root_comparisons": [
+      {
+        "candidate0_after_score": 1.2653453688665737,
+        "candidate0_success_count": 4,
+        "decision_step": 100,
+        "episode_id": 10,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.2666574090829499,
+        "selected_progress_candidate_index": 9,
+        "selected_progress_rank": 1,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7131947486787364,
+        "candidate0_success_count": 5,
+        "decision_step": 136,
+        "episode_id": 14,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.7138986863738181,
+        "selected_progress_candidate_index": 1,
+        "selected_progress_rank": 3,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.183115957574674,
+        "candidate0_success_count": 4,
+        "decision_step": 64,
+        "episode_id": 26,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.183115957574674,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.2546203522923136,
+        "candidate0_success_count": 3,
+        "decision_step": 91,
+        "episode_id": 29,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 1.2546203522923136,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.693527556548267,
+        "candidate0_success_count": 5,
+        "decision_step": 163,
+        "episode_id": 37,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.693527556548267,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7647110873049159,
+        "candidate0_success_count": 1,
+        "decision_step": 181,
+        "episode_id": 39,
+        "progress_selected_success_count": 1,
+        "selected_after_score": 1.7647110873049159,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.6835527046261864,
+        "candidate0_success_count": 5,
+        "decision_step": 127,
+        "episode_id": 53,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.6835527046261864,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7645860973009218,
+        "candidate0_success_count": 5,
+        "decision_step": 163,
+        "episode_id": 57,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.7645860973009218,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.6890447644017568,
+        "candidate0_success_count": 5,
+        "decision_step": 154,
+        "episode_id": 76,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.6890447644017568,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.1899926537285075,
+        "candidate0_success_count": 3,
+        "decision_step": 64,
+        "episode_id": 86,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 1.1899926537285075,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.2380946007079952,
+        "candidate0_success_count": 2,
+        "decision_step": 91,
+        "episode_id": 89,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.2390699755175811,
+        "selected_progress_candidate_index": 1,
+        "selected_progress_rank": 1,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.3103604781653098,
+        "candidate0_success_count": 4,
+        "decision_step": 118,
+        "episode_id": 92,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.3103604781653098,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 0.2913877627922368,
+        "candidate0_success_count": 3,
+        "decision_step": 118,
+        "episode_id": 12,
+        "progress_selected_success_count": 2,
+        "selected_after_score": 0.647937587760675,
+        "selected_progress_candidate_index": 4,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.1511228995875894,
+        "candidate0_success_count": 5,
+        "decision_step": 19,
+        "episode_id": 41,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.1511228995875894,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.27146844027117406,
+        "candidate0_success_count": 4,
+        "decision_step": 91,
+        "episode_id": 49,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.2746523806650628,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 2,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.6381553408609686,
+        "candidate0_success_count": 4,
+        "decision_step": 136,
+        "episode_id": 54,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.6400919181020202,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 2,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.1530672016753084,
+        "candidate0_success_count": 5,
+        "decision_step": 19,
+        "episode_id": 81,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.1530672016753084,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.29011420678182365,
+        "candidate0_success_count": 5,
+        "decision_step": 109,
+        "episode_id": 11,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.29143288095763237,
+        "selected_progress_candidate_index": 9,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.15647124854527547,
+        "candidate0_success_count": 5,
+        "decision_step": 82,
+        "episode_id": 68,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.15647124854527547,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.1421707543015124,
+        "candidate0_success_count": 5,
+        "decision_step": 55,
+        "episode_id": 85,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.1421707543015124,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.7652506594318493,
+        "candidate0_success_count": 4,
+        "decision_step": 127,
+        "episode_id": 93,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.7652506594318493,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.7600178838277243,
+        "candidate0_success_count": 0,
+        "decision_step": 145,
+        "episode_id": 35,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 0.7614547453777394,
+        "selected_progress_candidate_index": 4,
+        "selected_progress_rank": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.15649129505929896,
+        "candidate0_success_count": 5,
+        "decision_step": 19,
+        "episode_id": 1,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.15649129505929896,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.7251010212109383,
+        "candidate0_success_count": 4,
+        "decision_step": 136,
+        "episode_id": 34,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.7251010212109383,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      }
+    ],
+    "selected_alternative_fraction": 0.3333333333333333,
+    "selected_alternative_roots": 8,
+    "triggered_root_details": [
+      {
+        "candidate0_successes": 4,
+        "decision_step": 100,
+        "episode_id": 10,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 1,
+        "score_advantage": 0.001312040216376209,
+        "selected_successes": 5,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 136,
+        "episode_id": 14,
+        "rank": 3,
+        "regressions": 1,
+        "rescues": 0,
+        "score_advantage": 0.0007039376950817022,
+        "selected_successes": 4,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 2,
+        "decision_step": 91,
+        "episode_id": 89,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 3,
+        "score_advantage": 0.0009753748095859827,
+        "selected_successes": 5,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 3,
+        "decision_step": 118,
+        "episode_id": 12,
+        "rank": 1,
+        "regressions": 1,
+        "rescues": 0,
+        "score_advantage": 0.3565498249684382,
+        "selected_successes": 2,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 4,
+        "decision_step": 91,
+        "episode_id": 49,
+        "rank": 2,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.003183940393888751,
+        "selected_successes": 4,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 4,
+        "decision_step": 136,
+        "episode_id": 54,
+        "rank": 2,
+        "regressions": 1,
+        "rescues": 1,
+        "score_advantage": 0.0019365772410515625,
+        "selected_successes": 4,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 109,
+        "episode_id": 11,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.0013186741758087206,
+        "selected_successes": 5,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 0,
+        "decision_step": 145,
+        "episode_id": 35,
+        "rank": 3,
+        "regressions": 0,
+        "rescues": 3,
+        "score_advantage": 0.0014368615500151005,
+        "selected_successes": 3,
+        "task_id": 9
+      }
+    ],
+    "validations": {
+      "label": "first24",
+      "max_candidate0_action_abs_difference_vs_primary": 0.0,
+      "max_candidate_start_score_spread": 0.0,
+      "selected_rank_histogram": {
+        "0": 16,
+        "1": 4,
+        "2": 2,
+        "3": 2
+      },
+      "unique_roots": 24
+    }
+  },
+  "pooled40_summary": {
+    "candidate0_short_h_vs_reference_h": {
+      "both_failure": 27,
+      "both_success": 131,
+      "left_only_success": 25,
+      "right_only_success": 17
+    },
+    "mean_selected_score_advantage_over_candidate0": 0.009658814125772816,
+    "num_actual_branch_rollouts": 480,
+    "num_logical_branch_rollouts": 600,
+    "num_roots": 40,
+    "per_arm": {
+      "candidate0_short": {
+        "average_remaining_calls": 47.545,
+        "average_remaining_steps": 418.395,
+        "num_trials": 200,
+        "success_count": 156,
+        "success_rate": 0.78
+      },
+      "progress_selected_short": {
+        "average_remaining_calls": 46.465,
+        "average_remaining_steps": 408.665,
+        "num_trials": 200,
+        "success_count": 160,
+        "success_rate": 0.8
+      },
+      "reference_candidate0": {
+        "average_remaining_calls": 49.135,
+        "average_remaining_steps": 439.835,
+        "num_trials": 200,
+        "success_count": 148,
+        "success_rate": 0.74
+      }
+    },
+    "per_task": {
+      "8": {
+        "num_roots": 20,
+        "num_trials": 100,
+        "per_arm_success_count": {
+          "candidate0_short": 72,
+          "progress_selected_short": 75,
+          "reference_candidate0": 72
+        },
+        "progress_selected_vs_candidate0": {
+          "both_failure": 23,
+          "both_success": 70,
+          "left_only_success": 5,
+          "right_only_success": 2
+        },
+        "selected_alternative_roots": 6
+      },
+      "9": {
+        "num_roots": 20,
+        "num_trials": 100,
+        "per_arm_success_count": {
+          "candidate0_short": 84,
+          "progress_selected_short": 85,
+          "reference_candidate0": 76
+        },
+        "progress_selected_vs_candidate0": {
+          "both_failure": 11,
+          "both_success": 80,
+          "left_only_success": 5,
+          "right_only_success": 4
+        },
+        "selected_alternative_roots": 10
+      }
+    },
+    "progress_selected_short_h_vs_reference_h": {
+      "both_failure": 24,
+      "both_success": 132,
+      "left_only_success": 28,
+      "right_only_success": 16
+    },
+    "progress_selected_vs_candidate0_same_h": {
+      "both_failure": 34,
+      "both_success": 150,
+      "exact_mcnemar_two_sided_p": 0.454498291015625,
+      "left_only_success": 10,
+      "right_only_success": 6
+    },
+    "root_comparisons": [
+      {
+        "candidate0_after_score": 1.2653453688665737,
+        "candidate0_success_count": 4,
+        "decision_step": 100,
+        "episode_id": 10,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.2666574090829499,
+        "selected_progress_candidate_index": 9,
+        "selected_progress_rank": 1,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7131947486787364,
+        "candidate0_success_count": 5,
+        "decision_step": 136,
+        "episode_id": 14,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.7138986863738181,
+        "selected_progress_candidate_index": 1,
+        "selected_progress_rank": 3,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.183115957574674,
+        "candidate0_success_count": 4,
+        "decision_step": 64,
+        "episode_id": 26,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.183115957574674,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.2546203522923136,
+        "candidate0_success_count": 3,
+        "decision_step": 91,
+        "episode_id": 29,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 1.2546203522923136,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.693527556548267,
+        "candidate0_success_count": 5,
+        "decision_step": 163,
+        "episode_id": 37,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.693527556548267,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7647110873049159,
+        "candidate0_success_count": 1,
+        "decision_step": 181,
+        "episode_id": 39,
+        "progress_selected_success_count": 1,
+        "selected_after_score": 1.7647110873049159,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.6835527046261864,
+        "candidate0_success_count": 5,
+        "decision_step": 127,
+        "episode_id": 53,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.6835527046261864,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7645860973009218,
+        "candidate0_success_count": 5,
+        "decision_step": 163,
+        "episode_id": 57,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.7645860973009218,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.6890447644017568,
+        "candidate0_success_count": 5,
+        "decision_step": 154,
+        "episode_id": 76,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.6890447644017568,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.1899926537285075,
+        "candidate0_success_count": 3,
+        "decision_step": 64,
+        "episode_id": 86,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 1.1899926537285075,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.2380946007079952,
+        "candidate0_success_count": 2,
+        "decision_step": 91,
+        "episode_id": 89,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.2390699755175811,
+        "selected_progress_candidate_index": 1,
+        "selected_progress_rank": 1,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.3103604781653098,
+        "candidate0_success_count": 4,
+        "decision_step": 118,
+        "episode_id": 92,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.3103604781653098,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 0.2913877627922368,
+        "candidate0_success_count": 3,
+        "decision_step": 118,
+        "episode_id": 12,
+        "progress_selected_success_count": 2,
+        "selected_after_score": 0.647937587760675,
+        "selected_progress_candidate_index": 4,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.1511228995875894,
+        "candidate0_success_count": 5,
+        "decision_step": 19,
+        "episode_id": 41,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.1511228995875894,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.27146844027117406,
+        "candidate0_success_count": 4,
+        "decision_step": 91,
+        "episode_id": 49,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.2746523806650628,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 2,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.6381553408609686,
+        "candidate0_success_count": 4,
+        "decision_step": 136,
+        "episode_id": 54,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.6400919181020202,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 2,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.1530672016753084,
+        "candidate0_success_count": 5,
+        "decision_step": 19,
+        "episode_id": 81,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.1530672016753084,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.29011420678182365,
+        "candidate0_success_count": 5,
+        "decision_step": 109,
+        "episode_id": 11,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.29143288095763237,
+        "selected_progress_candidate_index": 9,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.15647124854527547,
+        "candidate0_success_count": 5,
+        "decision_step": 82,
+        "episode_id": 68,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.15647124854527547,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.1421707543015124,
+        "candidate0_success_count": 5,
+        "decision_step": 55,
+        "episode_id": 85,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.1421707543015124,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.7652506594318493,
+        "candidate0_success_count": 4,
+        "decision_step": 127,
+        "episode_id": 93,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.7652506594318493,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.7600178838277243,
+        "candidate0_success_count": 0,
+        "decision_step": 145,
+        "episode_id": 35,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 0.7614547453777394,
+        "selected_progress_candidate_index": 4,
+        "selected_progress_rank": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.15649129505929896,
+        "candidate0_success_count": 5,
+        "decision_step": 19,
+        "episode_id": 1,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.15649129505929896,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.7251010212109383,
+        "candidate0_success_count": 4,
+        "decision_step": 136,
+        "episode_id": 34,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.7251010212109383,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 1.2054655345332679,
+        "candidate0_success_count": 5,
+        "decision_step": 28,
+        "episode_id": 2,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.2054655345332679,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.1942657924440518,
+        "candidate0_success_count": 5,
+        "decision_step": 64,
+        "episode_id": 6,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.1942657924440518,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.1809092095565354,
+        "candidate0_success_count": 3,
+        "decision_step": 82,
+        "episode_id": 8,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 1.1809092095565354,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7528193975840503,
+        "candidate0_success_count": 0,
+        "decision_step": 145,
+        "episode_id": 15,
+        "progress_selected_success_count": 0,
+        "selected_after_score": 1.7550327226226166,
+        "selected_progress_candidate_index": 1,
+        "selected_progress_rank": 2,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7490663718943762,
+        "candidate0_success_count": 0,
+        "decision_step": 163,
+        "episode_id": 17,
+        "progress_selected_success_count": 1,
+        "selected_after_score": 1.750687085786137,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 1,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.7067040838119367,
+        "candidate0_success_count": 5,
+        "decision_step": 172,
+        "episode_id": 18,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.708078869307767,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 3,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.3129206467444239,
+        "candidate0_success_count": 4,
+        "decision_step": 181,
+        "episode_id": 19,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.3129206467444239,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 1.1840275427446123,
+        "candidate0_success_count": 4,
+        "decision_step": 10,
+        "episode_id": 20,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 1.1840275427446123,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_after_score": 0.711585233522066,
+        "candidate0_success_count": 2,
+        "decision_step": 172,
+        "episode_id": 98,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 0.7122797945123951,
+        "selected_progress_candidate_index": 9,
+        "selected_progress_rank": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.2795250686958093,
+        "candidate0_success_count": 5,
+        "decision_step": 100,
+        "episode_id": 70,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.2830911634121101,
+        "selected_progress_candidate_index": 1,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.6504375348711771,
+        "candidate0_success_count": 5,
+        "decision_step": 91,
+        "episode_id": 29,
+        "progress_selected_success_count": 3,
+        "selected_after_score": 0.6511270248987453,
+        "selected_progress_candidate_index": 8,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.14802175555072064,
+        "candidate0_success_count": 4,
+        "decision_step": 82,
+        "episode_id": 48,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.14802175555072064,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.15792960488980173,
+        "candidate0_success_count": 4,
+        "decision_step": 37,
+        "episode_id": 63,
+        "progress_selected_success_count": 4,
+        "selected_after_score": 0.15792960488980173,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 1.096143853862203,
+        "candidate0_success_count": 5,
+        "decision_step": 145,
+        "episode_id": 15,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.096143853862203,
+        "selected_progress_candidate_index": 0,
+        "selected_progress_rank": 0,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 1.0725095672883636,
+        "candidate0_success_count": 5,
+        "decision_step": 181,
+        "episode_id": 59,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 1.0736033652097738,
+        "selected_progress_candidate_index": 5,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      },
+      {
+        "candidate0_after_score": 0.16284797727584654,
+        "candidate0_success_count": 5,
+        "decision_step": 73,
+        "episode_id": 67,
+        "progress_selected_success_count": 5,
+        "selected_after_score": 0.1705305431747471,
+        "selected_progress_candidate_index": 6,
+        "selected_progress_rank": 1,
+        "task_id": 9
+      }
+    ],
+    "selected_alternative_fraction": 0.4,
+    "selected_alternative_roots": 16,
+    "triggered_root_details": [
+      {
+        "candidate0_successes": 4,
+        "decision_step": 100,
+        "episode_id": 10,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 1,
+        "score_advantage": 0.001312040216376209,
+        "selected_successes": 5,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 136,
+        "episode_id": 14,
+        "rank": 3,
+        "regressions": 1,
+        "rescues": 0,
+        "score_advantage": 0.0007039376950817022,
+        "selected_successes": 4,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 2,
+        "decision_step": 91,
+        "episode_id": 89,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 3,
+        "score_advantage": 0.0009753748095859827,
+        "selected_successes": 5,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 3,
+        "decision_step": 118,
+        "episode_id": 12,
+        "rank": 1,
+        "regressions": 1,
+        "rescues": 0,
+        "score_advantage": 0.3565498249684382,
+        "selected_successes": 2,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 4,
+        "decision_step": 91,
+        "episode_id": 49,
+        "rank": 2,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.003183940393888751,
+        "selected_successes": 4,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 4,
+        "decision_step": 136,
+        "episode_id": 54,
+        "rank": 2,
+        "regressions": 1,
+        "rescues": 1,
+        "score_advantage": 0.0019365772410515625,
+        "selected_successes": 4,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 109,
+        "episode_id": 11,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.0013186741758087206,
+        "selected_successes": 5,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 0,
+        "decision_step": 145,
+        "episode_id": 35,
+        "rank": 3,
+        "regressions": 0,
+        "rescues": 3,
+        "score_advantage": 0.0014368615500151005,
+        "selected_successes": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 0,
+        "decision_step": 145,
+        "episode_id": 15,
+        "rank": 2,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.002213325038566305,
+        "selected_successes": 0,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 0,
+        "decision_step": 163,
+        "episode_id": 17,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 1,
+        "score_advantage": 0.0016207138917607722,
+        "selected_successes": 1,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 172,
+        "episode_id": 18,
+        "rank": 3,
+        "regressions": 1,
+        "rescues": 0,
+        "score_advantage": 0.0013747854958303662,
+        "selected_successes": 4,
+        "task_id": 8
+      },
+      {
+        "candidate0_successes": 2,
+        "decision_step": 172,
+        "episode_id": 98,
+        "rank": 3,
+        "regressions": 0,
+        "rescues": 1,
+        "score_advantage": 0.0006945609903290517,
+        "selected_successes": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 100,
+        "episode_id": 70,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.003566094716300816,
+        "selected_successes": 5,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 91,
+        "episode_id": 29,
+        "rank": 1,
+        "regressions": 2,
+        "rescues": 0,
+        "score_advantage": 0.0006894900275682403,
+        "selected_successes": 3,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 181,
+        "episode_id": 59,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.0010937979214102889,
+        "selected_successes": 5,
+        "task_id": 9
+      },
+      {
+        "candidate0_successes": 5,
+        "decision_step": 73,
+        "episode_id": 67,
+        "rank": 1,
+        "regressions": 0,
+        "rescues": 0,
+        "score_advantage": 0.007682565898900567,
+        "selected_successes": 5,
+        "task_id": 9
+      }
+    ],
+    "validations": {
+      "label": "pooled40",
+      "max_candidate0_action_abs_difference_vs_primary": 0.0,
+      "max_candidate_start_score_spread": 0.0,
+      "selected_rank_histogram": {
+        "0": 24,
+        "1": 9,
+        "2": 3,
+        "3": 4
+      },
+      "unique_roots": 40
+    }
+  },
+  "semantics": "Secondary pooled summary of the pre-specified 20-40 root range; first24 and confirm16 remain separately reported.",
+  "status": "complete"
+}

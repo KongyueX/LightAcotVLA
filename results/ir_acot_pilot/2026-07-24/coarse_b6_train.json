@@ -1,0 +1,29 @@
+{
+  "causal_audit_summary": null,
+  "checkpoint_dir": "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999",
+  "completed_steps": 300,
+  "config_name": "acot_libero_action_cot_explicit_implicit_co_fusion",
+  "dataset": [
+    "/root/autodl-tmp/acotvla/ir_acot_pilot/coarse_teacher_2k"
+  ],
+  "elapsed_seconds": 186.5390946548432,
+  "final_params_path": "/root/autodl-tmp/acotvla/ir_acot_pilot/coarse_b6/final/params",
+  "frozen_contract": "VLM, IAR, and reasoning fusion frozen; only selected EAR/final local branches train.",
+  "last_train_metrics": {
+    "train/coarse_mse": 0.0028316688258200884,
+    "train/coarse_rmse": 0.05321342870593071,
+    "train/gradient_norm": 0.04538615420460701,
+    "train/loss": 0.0028316688258200884
+  },
+  "last_validation_metrics": {
+    "validation/coarse_mse": 0.005397985689342022,
+    "validation/coarse_rmse": 0.07347097992897034,
+    "validation/loss": 0.005397985689342022
+  },
+  "resume_sidecar_params": null,
+  "saved_parameter_count": 430098464,
+  "stage": "coarse",
+  "train_records": 1794,
+  "validation_records": 206,
+  "variant": "b6"
+}

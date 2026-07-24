@@ -1,0 +1,34 @@
+{
+  "causal_audit_summary": null,
+  "checkpoint_dir": "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999",
+  "completed_steps": 300,
+  "config_name": "acot_libero_action_cot_explicit_implicit_co_fusion",
+  "dataset": [
+    "/root/autodl-tmp/acotvla/ir_acot_pilot/final_teacher_2k"
+  ],
+  "elapsed_seconds": 230.39597340114415,
+  "final_params_path": "/root/autodl-tmp/acotvla/ir_acot_pilot/final_b6/final/params",
+  "frozen_contract": "VLM, IAR, and reasoning fusion frozen; only selected EAR/final local branches train.",
+  "last_train_metrics": {
+    "train/final_mse": 0.003749821800738573,
+    "train/final_rmse": 0.06123578920960426,
+    "train/gradient_norm": 0.05334293842315674,
+    "train/loss": 0.003749821800738573
+  },
+  "last_validation_metrics": {
+    "validation/final_mse": 0.0036425404250621796,
+    "validation/final_rmse": 0.060353461652994156,
+    "validation/ir_delta_cosine": 0.502457320690155,
+    "validation/ir_delta_mse": 0.0003086536598857492,
+    "validation/ir_delta_rmse": 0.017568541690707207,
+    "validation/loss": 0.0036425404250621796,
+    "validation/student_response_l2": 0.26442694664001465,
+    "validation/teacher_response_l2": 0.36244887113571167
+  },
+  "resume_sidecar_params": "/root/autodl-tmp/acotvla/ir_acot_pilot/coarse_b6/final/params",
+  "saved_parameter_count": 860196928,
+  "stage": "final",
+  "train_records": 1794,
+  "validation_records": 206,
+  "variant": "b6"
+}

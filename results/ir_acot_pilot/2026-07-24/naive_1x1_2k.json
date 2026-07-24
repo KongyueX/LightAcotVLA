@@ -1,0 +1,70 @@
+{
+  "audit_thresholds": {
+    "min_semantic_null_ratio": 3.0,
+    "min_semantic_response_l2": 0.05
+  },
+  "dataset_indices_already_present": 0,
+  "dataset_indices_requested": 2000,
+  "ear_causal_audit_pass": false,
+  "failed_records": 0,
+  "interventions": {
+    "gripper_shift": {
+      "count": 0,
+      "mean_response_l2": null,
+      "median_response_l2": null,
+      "p90_response_l2": null
+    },
+    "null": {
+      "count": 0,
+      "mean_response_l2": null,
+      "median_response_l2": null,
+      "p90_response_l2": null
+    },
+    "rotate": {
+      "count": 0,
+      "mean_response_l2": null,
+      "median_response_l2": null,
+      "p90_response_l2": null
+    },
+    "swap": {
+      "count": 0,
+      "mean_response_l2": null,
+      "median_response_l2": null,
+      "p90_response_l2": null
+    },
+    "translate": {
+      "count": 0,
+      "mean_response_l2": null,
+      "median_response_l2": null,
+      "p90_response_l2": null
+    }
+  },
+  "max_semantic_median_response_l2": 0.0,
+  "mean_clean_policy_infer_ms": 53.217727018520236,
+  "metadata": {
+    "action_cot_denoising_steps": 1,
+    "checkpoint_dir": "/root/autodl-tmp/acotvla/checkpoints/acot_libero_action_cot_explicit_implicit_co_fusion/acot_libero_long_run1/50999",
+    "clean_only": true,
+    "coarse_overrides_from": null,
+    "config_name": "acot_libero_action_cot_explicit_implicit_co_fusion",
+    "endpoint_student_params": null,
+    "gripper_shift": 1,
+    "interventions": [
+      "null",
+      "translate",
+      "rotate",
+      "gripper_shift",
+      "swap"
+    ],
+    "num_steps": 1,
+    "one_intervention_per_record": false,
+    "rotation_magnitude": 0.1,
+    "selection": "random",
+    "selection_seed": 7,
+    "translation_magnitude": 0.02
+  },
+  "new_records": 2000,
+  "note": "This is an open-loop causal sensitivity gate, not a success-rate result. Closed-loop LIBERO evaluation is still required.",
+  "processed_records": 2000,
+  "semantic_to_null_median_ratio": null
+}
