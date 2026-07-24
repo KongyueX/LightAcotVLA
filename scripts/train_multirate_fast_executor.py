@@ -22,12 +22,11 @@ import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from openpi.action_cot import multirate_dataset
+from openpi.models import multirate_fast_executor
 import optax
 import orbax.checkpoint as ocp
 import tyro
-
-from openpi.action_cot import multirate_dataset
-from openpi.models import multirate_fast_executor
 
 
 @dataclasses.dataclass(frozen=True)
@@ -50,6 +49,8 @@ class Args:
     event_weight: float = 2.0
     age_zero_weight: float = 0.5
     residual_scale: float = 2.0
+    direct_output_margin: float = 1.10
+    minimum_gripper_transition_count: int = 20
     overwrite: bool = False
 
 
@@ -60,8 +61,17 @@ def _validate_args(args: Args) -> None:
         raise ValueError("log_interval must be positive.")
     if args.early_stopping_patience_logs < 0 or args.early_stopping_min_delta < 0:
         raise ValueError("Early-stopping settings must be non-negative.")
-    if args.event_weight < 0 or args.age_zero_weight <= 0 or args.residual_scale <= 0:
-        raise ValueError("Loss weights and residual_scale must be positive/non-negative.")
+    if args.minimum_gripper_transition_count <= 0:
+        raise ValueError("minimum_gripper_transition_count must be positive.")
+    if (
+        args.event_weight < 0
+        or args.age_zero_weight <= 0
+        or args.residual_scale <= 0
+        or args.direct_output_margin <= 1.0
+    ):
+        raise ValueError(
+            "Loss weights and residual_scale must be positive/non-negative, and direct_output_margin must exceed one."
+        )
     if not 0 < args.validation_fraction < 0.5 or not 0 < args.test_fraction < 0.5:
         raise ValueError("validation_fraction and test_fraction must be in (0, 0.5).")
     if args.validation_fraction + args.test_fraction >= 0.5:
@@ -117,6 +127,21 @@ def _split_windows(
 def _flat_indices(window_indices: np.ndarray, window_size: int) -> np.ndarray:
     ages = np.arange(window_size, dtype=np.int64)
     return (window_indices[:, None] * window_size + ages[None, :]).reshape(-1)
+
+
+def _phase_aligned_bases(
+    arrays: dict[str, np.ndarray],
+    window_indices: np.ndarray,
+    *,
+    coarse_time_stride: int,
+) -> np.ndarray:
+    cached_ear = arrays["fresh_ear"][window_indices, 0].astype(np.float32)
+    ages = np.arange(arrays["images"].shape[1], dtype=np.float32)
+    phases = ages / coarse_time_stride
+    lower = np.minimum(np.floor(phases).astype(np.int64), cached_ear.shape[1] - 1)
+    upper = np.minimum(lower + 1, cached_ear.shape[1] - 1)
+    interpolation = phases - lower
+    return cached_ear[:, lower] + interpolation[None, :, None] * (cached_ear[:, upper] - cached_ear[:, lower])
 
 
 def _batch(
@@ -261,7 +286,23 @@ def _train_variant(
 
     train_flat = _flat_indices(train_windows, arrays["images"].shape[1])
     validation_flat = _flat_indices(validation_windows, arrays["images"].shape[1])
-    rng = np.random.default_rng(args.seed + (0 if variant == "plan" else 10_000))
+    # Both variants see exactly the same training index sequence.  Keeping the
+    # data order matched makes the direct-policy comparison attributable to the
+    # cached plan rather than batch-sampling noise.
+    rng = np.random.default_rng(args.seed)
+    validation_rng = np.random.default_rng(args.seed + 1)
+    fixed_validation_sample = validation_rng.choice(
+        validation_flat,
+        size=min(args.eval_batch_size, validation_flat.size),
+        replace=False,
+    )
+    fixed_validation_batch = _batch(
+        arrays,
+        fixed_validation_sample,
+        variant=variant,
+        event_weight=args.event_weight,
+        age_zero_weight=args.age_zero_weight,
+    )
     metrics_path = output_dir / variant / "metrics.jsonl"
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     if metrics_path.exists() and not args.overwrite:
@@ -294,20 +335,9 @@ def _train_variant(
             )
             completed_steps = step
             if step == 1 or step % args.log_interval == 0 or step == args.train_steps:
-                validation_sample = rng.choice(
-                    validation_flat,
-                    size=min(args.eval_batch_size, validation_flat.size),
-                    replace=False,
-                )
                 validation_metrics = validation_step(
                     params,
-                    _batch(
-                        arrays,
-                        validation_sample,
-                        variant=variant,
-                        event_weight=args.event_weight,
-                        age_zero_weight=args.age_zero_weight,
-                    ),
+                    fixed_validation_batch,
                 )
                 record = {
                     "step": step,
@@ -317,9 +347,17 @@ def _train_variant(
                         f"validation/{name}": float(value) for name, value in jax.device_get(validation_metrics).items()
                     },
                 }
-                metrics_file.write(json.dumps(record, sort_keys=True) + "\n")
+                non_finite = {
+                    name: value for name, value in record.items() if isinstance(value, float) and not np.isfinite(value)
+                }
+                if non_finite:
+                    raise FloatingPointError(f"Non-finite training metrics for {variant}: {non_finite}")
+                metrics_file.write(json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
                 metrics_file.flush()
-                print(json.dumps({"variant": variant, **record}, sort_keys=True), flush=True)
+                print(
+                    json.dumps({"variant": variant, **record}, sort_keys=True),
+                    flush=True,
+                )
                 validation_loss = record["validation/loss"]
                 if validation_loss < best_loss - args.early_stopping_min_delta:
                     best_loss = validation_loss
@@ -386,7 +424,10 @@ def _predict(
             fresh_plan=fresh_plan,
         )
         pieces.append(np.asarray(predict_batch(params, batch)))
-    return np.concatenate(pieces, axis=0)
+    predicted = np.concatenate(pieces, axis=0)
+    if not np.all(np.isfinite(predicted)):
+        raise FloatingPointError(f"{variant} produced non-finite held-out predictions.")
+    return predicted
 
 
 def _cosine(predicted: np.ndarray, target: np.ndarray, dims: slice) -> float:
@@ -403,6 +444,7 @@ def _action_metrics(
     target: np.ndarray,
     ages: np.ndarray,
     event_mask: np.ndarray,
+    gripper_transition_mask: np.ndarray,
 ) -> dict[str, Any]:
     error = predicted[:, :7] - target[:, :7]
 
@@ -413,6 +455,7 @@ def _action_metrics(
     teacher_gripper = target[:, 6] >= 0
     predicted_gripper = predicted[:, 6] >= 0
     event = event_mask.astype(np.bool_)
+    gripper_transition = gripper_transition_mask.astype(np.bool_)
     return {
         "mse_7d": mse(np.ones_like(ages, dtype=np.bool_)),
         "mse_age0": mse(ages == 0),
@@ -424,26 +467,42 @@ def _action_metrics(
         "event_gripper_sign_accuracy": (
             float(np.mean(predicted_gripper[event] == teacher_gripper[event])) if np.any(event) else None
         ),
+        "gripper_transition_sign_accuracy": (
+            float(np.mean(predicted_gripper[gripper_transition] == teacher_gripper[gripper_transition]))
+            if np.any(gripper_transition)
+            else None
+        ),
         "count": int(ages.size),
         "stale_count": int(np.sum(stale)),
         "event_count": int(np.sum(event)),
+        "gripper_transition_count": int(np.sum(gripper_transition)),
     }
 
 
 def _shuffled_plan_map(
     arrays: dict[str, np.ndarray],
-    test_windows: np.ndarray,
+    target_windows: np.ndarray,
+    donor_windows: np.ndarray,
     *,
     seed: int,
 ) -> np.ndarray:
+    if not donor_windows.size:
+        raise ValueError("Shuffled-plan evaluation requires at least one donor window.")
     mapping = np.arange(arrays["task_id"].shape[0], dtype=np.int64)
     tasks = np.asarray(arrays["task_id"])
     episodes = np.asarray(arrays["episode_id"])
     rng = np.random.default_rng(seed)
-    for window in test_windows:
-        candidates = test_windows[(tasks[test_windows] == tasks[window]) & (episodes[test_windows] != episodes[window])]
+    for window in target_windows:
+        candidates = donor_windows[
+            (tasks[donor_windows] == tasks[window])
+            & (episodes[donor_windows] != episodes[window])
+            & (donor_windows != window)
+        ]
         if not candidates.size:
-            candidates = test_windows[tasks[test_windows] == tasks[window]]
+            raise ValueError(
+                "No different-episode shuffled-plan donor for "
+                f"window={window}, task={tasks[window]}, episode={episodes[window]}."
+            )
         mapping[window] = int(rng.choice(candidates))
     return mapping
 
@@ -451,6 +510,7 @@ def _shuffled_plan_map(
 def _evaluate(
     arrays: dict[str, np.ndarray],
     test_windows: np.ndarray,
+    plan_donor_windows: np.ndarray,
     trained: dict[str, tuple[Any, nnx.State]],
     *,
     args: Args,
@@ -461,18 +521,24 @@ def _evaluate(
     ages = flat % window_size
     target = arrays["teacher_actions"][windows, ages].astype(np.float32)
     event = arrays["event_mask"][windows, ages]
+    test_gripper = arrays["teacher_actions"][test_windows, :, 6].astype(np.float32)
+    gripper_transition_by_window = np.zeros_like(test_gripper, dtype=np.bool_)
+    gripper_transition_by_window[:, 1:] = np.abs(np.diff(test_gripper, axis=1)) > 0.5
+    gripper_transition = gripper_transition_by_window.reshape(-1)
     metrics: dict[str, Any] = {
         "b6": _action_metrics(
             arrays["b6_actions"][windows, ages].astype(np.float32),
             target,
             ages,
             event,
+            gripper_transition,
         ),
         "hold4": _action_metrics(
             arrays["hold_actions"][windows, ages].astype(np.float32),
             target,
             ages,
             event,
+            gripper_transition,
         ),
     }
     predictions: dict[str, np.ndarray] = {}
@@ -485,7 +551,13 @@ def _evaluate(
             variant=variant,
             args=args,
         )
-        metrics[variant] = _action_metrics(predictions[variant], target, ages, event)
+        metrics[variant] = _action_metrics(
+            predictions[variant],
+            target,
+            ages,
+            event,
+            gripper_transition,
+        )
 
     if "plan" in trained:
         graphdef, params = trained["plan"]
@@ -505,10 +577,27 @@ def _evaluate(
             flat,
             variant="plan",
             args=args,
-            plan_window_override=_shuffled_plan_map(arrays, test_windows, seed=args.seed),
+            plan_window_override=_shuffled_plan_map(
+                arrays,
+                test_windows,
+                plan_donor_windows,
+                seed=args.seed,
+            ),
         )
-        metrics["fresh_plan_oracle"] = _action_metrics(fresh, target, ages, event)
-        metrics["shuffled_plan"] = _action_metrics(shuffled, target, ages, event)
+        metrics["fresh_plan_oracle"] = _action_metrics(
+            fresh,
+            target,
+            ages,
+            event,
+            gripper_transition,
+        )
+        metrics["shuffled_plan"] = _action_metrics(
+            shuffled,
+            target,
+            ages,
+            event,
+            gripper_transition,
+        )
 
     gates: dict[str, Any] = {"evaluated": False}
     if "plan" in metrics and "direct" in metrics:
@@ -539,8 +628,10 @@ def _evaluate(
             "beats_hold4": values["plan_stale_over_hold4"] <= 0.75,
             "beats_direct": values["plan_stale_over_direct"] <= 0.90,
             "plan_necessity": values["shuffled_over_plan"] >= 1.15,
-            "event_gripper": (
-                plan["event_gripper_sign_accuracy"] is not None and plan["event_gripper_sign_accuracy"] >= 0.90
+            "gripper_transition": (
+                plan["gripper_transition_count"] >= args.minimum_gripper_transition_count
+                and plan["gripper_transition_sign_accuracy"] is not None
+                and plan["gripper_transition_sign_accuracy"] >= 0.90
             ),
             "translation_cosine": plan["translation_cosine_age1_to_3"] >= 0.90,
             "rotation_cosine": plan["rotation_cosine_age1_to_3"] >= 0.90,
@@ -555,7 +646,11 @@ def _evaluate(
                 or values["plan_stale_over_b6"] > 1.50
                 or values["plan_stale_over_hold4"] >= 1.0
                 or values["plan_stale_over_direct"] >= 1.0
-                or (plan["event_gripper_sign_accuracy"] is not None and plan["event_gripper_sign_accuracy"] < 0.85)
+                or (
+                    plan["gripper_transition_count"] >= args.minimum_gripper_transition_count
+                    and plan["gripper_transition_sign_accuracy"] is not None
+                    and plan["gripper_transition_sign_accuracy"] < 0.85
+                )
             ),
         }
     return {
@@ -580,13 +675,44 @@ def main(args: Args) -> None:
         test_fraction=args.test_fraction,
         seed=args.seed,
     )
+    coarse_time_stride = 2
+    train_targets = arrays["teacher_actions"][train_windows].astype(np.float32)
+    train_phase_bases = _phase_aligned_bases(
+        arrays,
+        train_windows,
+        coarse_time_stride=coarse_time_stride,
+    )
+    train_target_max_abs_7d = float(np.max(np.abs(train_targets[..., :7])))
+    train_plan_residual_max_abs_7d = float(np.max(np.abs(train_targets[..., :7] - train_phase_bases[..., :7])))
+    effective_residual_scale = max(
+        args.residual_scale,
+        args.direct_output_margin * max(train_target_max_abs_7d, train_plan_residual_max_abs_7d),
+    )
+    all_target_abs_7d = np.abs(arrays["teacher_actions"][..., :7].astype(np.float32))
+    all_phase_bases = _phase_aligned_bases(
+        arrays,
+        np.arange(arrays["anchor_index"].shape[0]),
+        coarse_time_stride=coarse_time_stride,
+    )
+    all_plan_residual_abs_7d = np.abs(arrays["teacher_actions"][..., :7].astype(np.float32) - all_phase_bases[..., :7])
+    direct_out_of_range_fraction = float(np.mean(all_target_abs_7d >= 0.98 * effective_residual_scale))
+    plan_out_of_range_fraction = float(np.mean(all_plan_residual_abs_7d >= 0.98 * effective_residual_scale))
+    if direct_out_of_range_fraction > 0 or plan_out_of_range_fraction > 0:
+        raise ValueError(
+            "The matched models cannot represent every 7D target within the "
+            f"tanh bound {effective_residual_scale:.6f}: "
+            f"direct={direct_out_of_range_fraction:.6%}, "
+            f"plan_residual={plan_out_of_range_fraction:.6%}. "
+            "Increase --residual-scale without tuning it to held-out metrics."
+        )
     config = multirate_fast_executor.MultiRateFastExecutorConfig(
         image_size=int(arrays["images"].shape[3]),
         state_dim=int(arrays["states"].shape[-1]),
         action_dim=int(arrays["teacher_actions"].shape[-1]),
         ear_horizon=int(arrays["fresh_ear"].shape[-2]),
         iar_dim=int(arrays["fresh_iar"].shape[-1]),
-        residual_scale=args.residual_scale,
+        coarse_time_stride=coarse_time_stride,
+        residual_scale=effective_residual_scale,
     )
     trained: dict[str, tuple[Any, nnx.State]] = {}
     train_summaries = {}
@@ -603,7 +729,13 @@ def main(args: Args) -> None:
         trained[variant] = (graphdef, params)
         train_summaries[variant] = summary
 
-    evaluation = _evaluate(arrays, test_windows, trained, args=args)
+    evaluation = _evaluate(
+        arrays,
+        test_windows,
+        validation_windows,
+        trained,
+        args=args,
+    )
     summary = {
         "status": "complete",
         "dataset": list(args.dataset),
@@ -611,12 +743,17 @@ def main(args: Args) -> None:
         "num_train_windows": int(train_windows.size),
         "num_validation_windows": int(validation_windows.size),
         "num_test_windows": int(test_windows.size),
+        "train_target_max_abs_7d": train_target_max_abs_7d,
+        "train_plan_residual_max_abs_7d": train_plan_residual_max_abs_7d,
+        "direct_out_of_range_fraction": direct_out_of_range_fraction,
+        "plan_out_of_range_fraction": plan_out_of_range_fraction,
+        "effective_residual_scale": effective_residual_scale,
         "config": dataclasses.asdict(config),
         "train": train_summaries,
         "evaluation": evaluation,
     }
     (output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        json.dumps(summary, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",
     )
     print(json.dumps(summary, indent=2, sort_keys=True), flush=True)
