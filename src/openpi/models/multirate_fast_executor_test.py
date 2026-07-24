@@ -114,6 +114,23 @@ def test_executor_output_shape_and_zero_initialized_residual() -> None:
     np.testing.assert_allclose(predicted, expected_base, atol=1e-6)
 
 
+def test_executor_supports_split_merge_jit() -> None:
+    config = fast_executor.MultiRateFastExecutorConfig()
+    model = fast_executor.MultiRateFastExecutor(config, rngs=nnx.Rngs(0))
+    graphdef, params = nnx.split(model)
+    inputs = _inputs(config)
+
+    @jax.jit
+    def apply(current_params: nnx.State) -> jax.Array:
+        candidate = nnx.merge(graphdef, current_params)
+        return candidate(**inputs)
+
+    predicted = apply(params)
+
+    assert predicted.shape == (2, config.action_dim)
+    assert bool(jnp.all(jnp.isfinite(predicted)))
+
+
 @pytest.mark.parametrize("iar_tokens", [1, 5, 18])
 def test_executor_accepts_variable_iar_token_length(iar_tokens: int) -> None:
     config = fast_executor.MultiRateFastExecutorConfig()

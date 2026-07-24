@@ -237,7 +237,10 @@ class MultiRateFastExecutor(nnx.Module):
                 )
             )
             in_channels = out_channels
-        self.image_convs = image_convs
+        # Register the convolution stack as an NNX container so split/merge
+        # passes kernels through ``params`` instead of capturing Param objects
+        # as invalid JIT constants.
+        self.image_convs = nnx.List(image_convs)
         self.image_view_proj = nnx.Linear(
             3 * config.cnn_channels[-1],
             hidden,
