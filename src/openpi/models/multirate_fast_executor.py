@@ -31,6 +31,7 @@ class MultiRateFastExecutorConfig:
     state_dim: int = 32
     action_dim: int = 32
     ear_horizon: int = 15
+    iar_tokens: int = 18
     iar_dim: int = 1024
     max_cache_age: int = 3
     coarse_time_stride: int = 2
@@ -49,6 +50,7 @@ class MultiRateFastExecutorConfig:
             "state_dim",
             "action_dim",
             "ear_horizon",
+            "iar_tokens",
             "iar_dim",
             "hidden_dim",
             "attention_heads",
@@ -113,6 +115,13 @@ def _linear_parameter_count(in_features: int, out_features: int) -> int:
     return in_features * out_features + out_features
 
 
+def _downsampled_image_size(config: MultiRateFastExecutorConfig) -> int:
+    size = config.image_size
+    for _ in config.cnn_channels:
+        size = (size + 1) // 2
+    return size
+
+
 def estimate_parameter_count(config: MultiRateFastExecutorConfig) -> int:
     """Return the exact trainable parameter count for this implementation."""
 
@@ -123,15 +132,23 @@ def estimate_parameter_count(config: MultiRateFastExecutorConfig) -> int:
         in_channels = out_channels
 
     hidden = config.hidden_dim
-    count += _linear_parameter_count(3 * config.cnn_channels[-1], hidden)
+    spatial_tokens = _downsampled_image_size(config) ** 2
+    count += _linear_parameter_count(config.cnn_channels[-1], hidden)
+    count += _linear_parameter_count(hidden, hidden)
+    count += config.image_views * spatial_tokens * hidden
     count += _linear_parameter_count(config.action_dim, hidden)
     count += 4 * _linear_parameter_count(hidden, hidden)
     count += _linear_parameter_count(2 * hidden, hidden)
+    count += _linear_parameter_count(3 * hidden, hidden)
     count += _linear_parameter_count(config.iar_dim, hidden)
-    count += _linear_parameter_count(config.state_dim, hidden)
-    count += _linear_parameter_count(5 * hidden, hidden)
     count += _linear_parameter_count(hidden, hidden)
-    count += _linear_parameter_count(hidden, config.action_dim)
+    count += config.iar_tokens * hidden
+    count += _linear_parameter_count(config.state_dim, hidden)
+    count += _linear_parameter_count(2 * hidden, hidden)
+    count += _linear_parameter_count(3 * hidden, hidden)
+    count += _linear_parameter_count(2 * hidden, hidden)
+    count += _linear_parameter_count(hidden, hidden)
+    count += 2 * _linear_parameter_count(hidden, config.action_dim)
     count += config.ear_horizon * hidden
     count += (config.max_cache_age + 1) * hidden
     return count
@@ -238,11 +255,21 @@ class MultiRateFastExecutor(nnx.Module):
             )
             in_channels = out_channels
         self.image_convs = image_convs
-        self.image_view_proj = nnx.Linear(
-            3 * config.cnn_channels[-1],
+        self.image_token_proj = nnx.Linear(
+            config.cnn_channels[-1],
             hidden,
             rngs=rngs,
             param_dtype=param_dtype,
+        )
+        self.image_query_proj = nnx.Linear(hidden, hidden, rngs=rngs, param_dtype=param_dtype)
+        spatial_tokens = _downsampled_image_size(config) ** 2
+        self.image_position_embedding = nnx.Param(
+            0.02
+            * jax.random.normal(
+                rngs.params(),
+                (config.image_views, spatial_tokens, hidden),
+                dtype=param_dtype,
+            )
         )
 
         self.ear_input_proj = nnx.Linear(config.action_dim, hidden, rngs=rngs, param_dtype=param_dtype)
@@ -268,11 +295,31 @@ class MultiRateFastExecutor(nnx.Module):
             )
         )
 
-        self.iar_proj = nnx.Linear(config.iar_dim, hidden, rngs=rngs, param_dtype=param_dtype)
         self.state_proj = nnx.Linear(config.state_dim, hidden, rngs=rngs, param_dtype=param_dtype)
-        self.fusion_in = nnx.Linear(5 * hidden, hidden, rngs=rngs, param_dtype=param_dtype)
+        self.observation_query_proj = nnx.Linear(3 * hidden, hidden, rngs=rngs, param_dtype=param_dtype)
+        self.iar_proj = nnx.Linear(config.iar_dim, hidden, rngs=rngs, param_dtype=param_dtype)
+        self.iar_query_proj = nnx.Linear(hidden, hidden, rngs=rngs, param_dtype=param_dtype)
+        self.iar_position_embedding = nnx.Param(
+            0.02
+            * jax.random.normal(
+                rngs.params(),
+                (config.iar_tokens, hidden),
+                dtype=param_dtype,
+            )
+        )
+        self.observation_fusion = nnx.Linear(2 * hidden, hidden, rngs=rngs, param_dtype=param_dtype)
+        self.plan_gate = nnx.Linear(3 * hidden, hidden, rngs=rngs, param_dtype=param_dtype)
+        self.fusion_in = nnx.Linear(2 * hidden, hidden, rngs=rngs, param_dtype=param_dtype)
         self.fusion_hidden = nnx.Linear(hidden, hidden, rngs=rngs, param_dtype=param_dtype)
         self.residual_out = nnx.Linear(
+            hidden,
+            config.action_dim,
+            rngs=rngs,
+            param_dtype=param_dtype,
+            kernel_init=jax.nn.initializers.zeros,
+            bias_init=jax.nn.initializers.zeros,
+        )
+        self.refresh_out = nnx.Linear(
             hidden,
             config.action_dim,
             rngs=rngs,
@@ -287,7 +334,24 @@ class MultiRateFastExecutor(nnx.Module):
         variance = jnp.mean(jnp.square(images - mean), axis=(1, 2), keepdims=True)
         return (images - mean) * jax.lax.rsqrt(variance + 1e-6)
 
-    def _encode_images(self, current_images: jax.Array) -> jax.Array:
+    def _attention_pool(
+        self,
+        query: jax.Array,
+        tokens: jax.Array,
+        query_projection: nnx.Linear,
+    ) -> jax.Array:
+        config = self.config
+        batch_size = query.shape[0]
+        heads = config.attention_heads
+        head_dim = config.hidden_dim // heads
+        projected_query = query_projection(query).reshape((batch_size, heads, head_dim))
+        token_heads = tokens.reshape((batch_size, tokens.shape[1], heads, head_dim))
+        attention_logits = jnp.einsum("bhd,bthd->bht", projected_query, token_heads)
+        attention_logits = attention_logits / jnp.sqrt(jnp.asarray(head_dim, dtype=attention_logits.dtype))
+        attention = jax.nn.softmax(attention_logits, axis=-1)
+        return jnp.einsum("bht,bthd->bhd", attention, token_heads).reshape((batch_size, config.hidden_dim))
+
+    def _encode_images(self, current_images: jax.Array, observation_query: jax.Array) -> jax.Array:
         config = self.config
         batch_size = current_images.shape[0]
         images = current_images.reshape(
@@ -301,14 +365,32 @@ class MultiRateFastExecutor(nnx.Module):
         images = self._normalize_images(images)
         for convolution in self.image_convs:
             images = jax.nn.silu(convolution(images))
-        view_features = jnp.mean(images, axis=(1, 2)).reshape((batch_size, config.image_views, config.cnn_channels[-1]))
-        first_view = view_features[:, 0]
-        second_view = view_features[:, 1]
-        paired_views = jnp.concatenate(
-            [first_view, second_view, jnp.abs(first_view - second_view)],
-            axis=-1,
-        )
-        return jax.nn.silu(self.image_view_proj(paired_views))
+        spatial_tokens = images.shape[1] * images.shape[2]
+        image_tokens = images.reshape((batch_size, config.image_views, spatial_tokens, config.cnn_channels[-1]))
+        image_tokens = jax.nn.silu(self.image_token_proj(image_tokens))
+        image_tokens = image_tokens + self.image_position_embedding.value[None, :, :spatial_tokens, :]
+        image_tokens = image_tokens.reshape((batch_size, config.image_views * spatial_tokens, config.hidden_dim))
+        return self._attention_pool(observation_query, image_tokens, self.image_query_proj)
+
+    def _encode_iar(
+        self,
+        cached_iar: jax.Array | None,
+        observation_query: jax.Array,
+        *,
+        batch_size: int,
+    ) -> jax.Array:
+        config = self.config
+        if cached_iar is None:
+            return jnp.zeros((batch_size, config.hidden_dim), dtype=jnp.float32)
+        if cached_iar.shape[1] == 0:
+            raise ValueError("cached_iar must contain at least one token.")
+        if cached_iar.shape[1] > config.iar_tokens:
+            raise ValueError(
+                f"cached_iar has {cached_iar.shape[1]} tokens; the configured maximum is {config.iar_tokens}."
+            )
+        iar_tokens = jax.nn.silu(self.iar_proj(cached_iar))
+        iar_tokens = iar_tokens + self.iar_position_embedding.value[None, : cached_iar.shape[1], :]
+        return self._attention_pool(observation_query, iar_tokens, self.iar_query_proj)
 
     def _encode_ear(
         self,
@@ -337,14 +419,14 @@ class MultiRateFastExecutor(nnx.Module):
         ear_feature = jax.nn.silu(self.ear_fusion(jnp.concatenate([phase_feature, context], axis=-1)))
         return ear_feature, age_feature
 
-    def __call__(
+    def forward_with_aux(
         self,
         current_images: jax.Array,
         state: jax.Array,
         cached_ear: jax.Array,
         cached_iar: jax.Array | None,
         cache_age: jax.Array,
-    ) -> jax.Array:
+    ) -> tuple[jax.Array, jax.Array]:
         config = self.config
         current_images = jnp.asarray(current_images, dtype=jnp.float32)
         state = jnp.asarray(state, dtype=jnp.float32)
@@ -371,14 +453,9 @@ class MultiRateFastExecutor(nnx.Module):
         )
         _require_shape(cache_age, (batch_size,), "cache_age")
 
-        if cached_iar is None:
-            pooled_iar = jnp.zeros((batch_size, config.iar_dim), dtype=jnp.float32)
-        else:
+        if cached_iar is not None:
             cached_iar = jnp.asarray(cached_iar, dtype=jnp.float32)
             _require_shape(cached_iar, (batch_size, None, config.iar_dim), "cached_iar")
-            if cached_iar.shape[1] == 0:
-                raise ValueError("cached_iar must contain at least one token.")
-            pooled_iar = jnp.mean(cached_iar, axis=1)
 
         base_action = phase_aligned_ear_token(
             cached_ear,
@@ -386,18 +463,43 @@ class MultiRateFastExecutor(nnx.Module):
             max_cache_age=config.max_cache_age,
             coarse_time_stride=config.coarse_time_stride,
         )
-        image_feature = self._encode_images(current_images)
         ear_feature, age_feature = self._encode_ear(cached_ear, cache_age, base_action)
-        iar_feature = jax.nn.silu(self.iar_proj(pooled_iar))
         state_feature = jax.nn.silu(self.state_proj(state))
-        fused = jnp.concatenate(
-            [image_feature, ear_feature, iar_feature, state_feature, age_feature],
-            axis=-1,
+        observation_query = jax.nn.silu(
+            self.observation_query_proj(jnp.concatenate([ear_feature, state_feature, age_feature], axis=-1))
         )
-        hidden = jax.nn.silu(self.fusion_in(fused))
+        image_feature = self._encode_images(current_images, observation_query)
+        iar_feature = self._encode_iar(cached_iar, observation_query, batch_size=batch_size)
+        observation_feature = jax.nn.silu(
+            self.observation_fusion(jnp.concatenate([image_feature, state_feature], axis=-1))
+        )
+        plan_gate = jnp.tanh(self.plan_gate(jnp.concatenate([ear_feature, iar_feature, age_feature], axis=-1)))
+        interaction = observation_feature * (1.0 + plan_gate)
+        hidden = jax.nn.silu(self.fusion_in(jnp.concatenate([observation_feature, interaction], axis=-1)))
         hidden = hidden + jax.nn.silu(self.fusion_hidden(hidden))
         residual = config.residual_scale * jnp.tanh(self.residual_out(hidden))
-        return base_action + residual
+        # Both heads read an observation-conditioned hidden state.  Cached
+        # reasoning can modulate the correction but cannot bypass the latest
+        # image/state path with a plan-only additive residual.
+        refresh_residual = config.residual_scale * jnp.tanh(self.refresh_out(hidden))
+        return base_action + residual, base_action + refresh_residual
+
+    def __call__(
+        self,
+        current_images: jax.Array,
+        state: jax.Array,
+        cached_ear: jax.Array,
+        cached_iar: jax.Array | None,
+        cache_age: jax.Array,
+    ) -> jax.Array:
+        predicted_action, _ = self.forward_with_aux(
+            current_images,
+            state,
+            cached_ear,
+            cached_iar,
+            cache_age,
+        )
+        return predicted_action
 
 
 def _huber(error: jax.Array, delta: float) -> jax.Array:

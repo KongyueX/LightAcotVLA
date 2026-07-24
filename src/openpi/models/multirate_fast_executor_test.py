@@ -2,9 +2,8 @@ import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
-
 from openpi.models import multirate_fast_executor as fast_executor
+import pytest
 
 
 def _inputs(
@@ -97,12 +96,12 @@ def test_phase_aligned_ear_token_clips_invalid_age() -> None:
     np.testing.assert_array_equal(selected[:, 0], np.asarray([0.0, 6.0]))
 
 
-def test_executor_output_shape_and_zero_initialized_residual() -> None:
+def test_executor_output_shape_and_zero_initialized_action_and_refresh() -> None:
     config = fast_executor.MultiRateFastExecutorConfig()
     model = fast_executor.MultiRateFastExecutor(config, rngs=nnx.Rngs(0))
     inputs = _inputs(config)
 
-    predicted = model(**inputs)
+    predicted, predicted_refresh = model.forward_with_aux(**inputs)
     expected_base = fast_executor.phase_aligned_ear_token(
         inputs["cached_ear"],
         inputs["cache_age"],
@@ -111,7 +110,9 @@ def test_executor_output_shape_and_zero_initialized_residual() -> None:
     )
 
     assert predicted.shape == (2, config.action_dim)
+    assert predicted_refresh.shape == (2, config.action_dim)
     np.testing.assert_allclose(predicted, expected_base, atol=1e-6)
+    np.testing.assert_allclose(predicted_refresh, expected_base, atol=1e-6)
 
 
 def test_executor_supports_split_merge_jit() -> None:
@@ -129,6 +130,24 @@ def test_executor_supports_split_merge_jit() -> None:
 
     assert predicted.shape == (2, config.action_dim)
     assert bool(jnp.all(jnp.isfinite(predicted)))
+
+
+def test_executor_auxiliary_output_supports_split_merge_jit() -> None:
+    config = fast_executor.MultiRateFastExecutorConfig()
+    model = fast_executor.MultiRateFastExecutor(config, rngs=nnx.Rngs(0))
+    graphdef, params = nnx.split(model)
+    inputs = _inputs(config)
+
+    @jax.jit
+    def apply(current_params: nnx.State) -> tuple[jax.Array, jax.Array]:
+        candidate = nnx.merge(graphdef, current_params)
+        return candidate.forward_with_aux(**inputs)
+
+    predicted, predicted_refresh = apply(params)
+
+    assert predicted.shape == (2, config.action_dim)
+    assert predicted_refresh.shape == (2, config.action_dim)
+    assert bool(jnp.all(jnp.isfinite(predicted_refresh)))
 
 
 @pytest.mark.parametrize("iar_tokens", [1, 5, 18])

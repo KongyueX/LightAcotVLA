@@ -48,6 +48,7 @@ class Args:
     early_stopping_min_delta: float = 1e-5
     event_weight: float = 2.0
     age_zero_weight: float = 0.5
+    refresh_loss_weight: float = 1.0
     residual_scale: float = 2.0
     direct_output_margin: float = 1.10
     minimum_gripper_transition_count: int = 20
@@ -66,6 +67,7 @@ def _validate_args(args: Args) -> None:
     if (
         args.event_weight < 0
         or args.age_zero_weight <= 0
+        or args.refresh_loss_weight < 0
         or args.residual_scale <= 0
         or args.direct_output_margin <= 1.0
     ):
@@ -174,6 +176,8 @@ def _batch(
     sample_weight *= np.where(ages == 0, age_zero_weight, 1.0)
     valid_mask = np.zeros((flat_indices.size, arrays["teacher_actions"].shape[-1]), dtype=np.float32)
     valid_mask[:, :7] = sample_weight[:, None]
+    refresh_valid_mask = np.zeros_like(valid_mask)
+    refresh_valid_mask[ages > 0, :7] = 1.0
     return {
         "current_images": jnp.asarray(arrays["images"][windows, ages].astype(np.float32) / 255.0),
         "state": jnp.asarray(arrays["states"][windows, ages], dtype=jnp.float32),
@@ -184,7 +188,12 @@ def _batch(
             arrays["teacher_actions"][windows, ages],
             dtype=jnp.float32,
         ),
+        "target_fresh_phase": jnp.asarray(
+            arrays["fresh_ear"][windows, ages, 0],
+            dtype=jnp.float32,
+        ),
         "valid_mask": jnp.asarray(valid_mask),
+        "refresh_valid_mask": jnp.asarray(refresh_valid_mask),
     }
 
 
@@ -228,19 +237,31 @@ def _train_variant(
         current_model = nnx.merge(graphdef, current_params)
 
         def loss_fn(candidate: multirate_fast_executor.MultiRateFastExecutor):
-            predicted = candidate(
+            predicted, predicted_fresh_phase = candidate.forward_with_aux(
                 batch["current_images"],
                 batch["state"],
                 batch["cached_ear"],
                 batch["cached_iar"],
                 batch["cache_age"],
             )
-            return multirate_fast_executor.multirate_fast_executor_loss(
+            action_loss, action_metrics = multirate_fast_executor.multirate_fast_executor_loss(
                 predicted,
                 batch["target_action"],
                 config=loss_config,
                 valid_mask=batch["valid_mask"],
             )
+            refresh_loss, refresh_metrics = multirate_fast_executor.multirate_fast_executor_loss(
+                predicted_fresh_phase,
+                batch["target_fresh_phase"],
+                config=loss_config,
+                valid_mask=batch["refresh_valid_mask"],
+            )
+            total_loss = action_loss + args.refresh_loss_weight * refresh_loss
+            return total_loss, {
+                **{f"action/{name}": value for name, value in action_metrics.items()},
+                **{f"refresh/{name}": value for name, value in refresh_metrics.items()},
+                "refresh_loss_weight": jnp.asarray(args.refresh_loss_weight, dtype=jnp.float32),
+            }
 
         (loss, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(current_model)
         updates, next_optimizer_state = optimizer.update(
@@ -265,23 +286,34 @@ def _train_variant(
         batch: dict[str, jax.Array],
     ) -> dict[str, jax.Array]:
         current_model = nnx.merge(graphdef, current_params)
-        predicted = current_model(
+        predicted, predicted_fresh_phase = current_model.forward_with_aux(
             batch["current_images"],
             batch["state"],
             batch["cached_ear"],
             batch["cached_iar"],
             batch["cache_age"],
         )
-        _, metrics = multirate_fast_executor.multirate_fast_executor_loss(
+        action_loss, action_metrics = multirate_fast_executor.multirate_fast_executor_loss(
             predicted,
             batch["target_action"],
             config=loss_config,
             valid_mask=batch["valid_mask"],
         )
+        refresh_loss, refresh_metrics = multirate_fast_executor.multirate_fast_executor_loss(
+            predicted_fresh_phase,
+            batch["target_fresh_phase"],
+            config=loss_config,
+            valid_mask=batch["refresh_valid_mask"],
+        )
         first_seven_error = predicted[:, :7] - batch["target_action"][:, :7]
+        refresh_first_seven_error = predicted_fresh_phase[:, :7] - batch["target_fresh_phase"][:, :7]
         return {
-            **metrics,
+            **{f"action/{name}": value for name, value in action_metrics.items()},
+            **{f"refresh/{name}": value for name, value in refresh_metrics.items()},
+            "loss": action_loss + args.refresh_loss_weight * refresh_loss,
             "action_mse_7d": jnp.mean(jnp.square(first_seven_error)),
+            "refresh_mse_7d": jnp.sum(jnp.square(refresh_first_seven_error) * batch["refresh_valid_mask"][:, :7])
+            / jnp.maximum(jnp.sum(batch["refresh_valid_mask"][:, :7]), 1.0),
         }
 
     train_flat = _flat_indices(train_windows, arrays["images"].shape[1])
@@ -399,17 +431,22 @@ def _predict(
     args: Args,
     plan_window_override: np.ndarray | None = None,
     fresh_plan: bool = False,
+    output: str = "action",
 ) -> np.ndarray:
+    if output not in {"action", "refresh"}:
+        raise ValueError(f"Unsupported fast-executor output: {output}.")
+
     @jax.jit
     def predict_batch(current_params: nnx.State, batch: dict[str, jax.Array]) -> jax.Array:
         model = nnx.merge(graphdef, current_params)
-        return model(
+        predicted_action, predicted_refresh = model.forward_with_aux(
             batch["current_images"],
             batch["state"],
             batch["cached_ear"],
             batch["cached_iar"],
             batch["cache_age"],
         )
+        return predicted_action if output == "action" else predicted_refresh
 
     pieces = []
     for start in range(0, flat_indices.size, args.eval_batch_size):
@@ -426,7 +463,7 @@ def _predict(
         pieces.append(np.asarray(predict_batch(params, batch)))
     predicted = np.concatenate(pieces, axis=0)
     if not np.all(np.isfinite(predicted)):
-        raise FloatingPointError(f"{variant} produced non-finite held-out predictions.")
+        raise FloatingPointError(f"{variant}/{output} produced non-finite held-out predictions.")
     return predicted
 
 
@@ -520,6 +557,7 @@ def _evaluate(
     windows = flat // window_size
     ages = flat % window_size
     target = arrays["teacher_actions"][windows, ages].astype(np.float32)
+    refresh_target = arrays["fresh_ear"][windows, ages, 0].astype(np.float32)
     event = arrays["event_mask"][windows, ages]
     test_gripper = arrays["teacher_actions"][test_windows, :, 6].astype(np.float32)
     gripper_transition_by_window = np.zeros_like(test_gripper, dtype=np.bool_)
@@ -540,8 +578,16 @@ def _evaluate(
             event,
             gripper_transition,
         ),
+        "stale_phase_base": _action_metrics(
+            _phase_aligned_bases(arrays, test_windows, coarse_time_stride=2).reshape((-1, target.shape[-1])),
+            refresh_target,
+            ages,
+            event,
+            gripper_transition,
+        ),
     }
     predictions: dict[str, np.ndarray] = {}
+    refresh_predictions: dict[str, np.ndarray] = {}
     for variant, (graphdef, params) in trained.items():
         predictions[variant] = _predict(
             graphdef,
@@ -558,9 +604,31 @@ def _evaluate(
             event,
             gripper_transition,
         )
+        refresh_predictions[variant] = _predict(
+            graphdef,
+            params,
+            arrays,
+            flat,
+            variant=variant,
+            args=args,
+            output="refresh",
+        )
+        metrics[f"{variant}_refresh"] = _action_metrics(
+            refresh_predictions[variant],
+            refresh_target,
+            ages,
+            event,
+            gripper_transition,
+        )
 
     if "plan" in trained:
         graphdef, params = trained["plan"]
+        shuffled_plan_map = _shuffled_plan_map(
+            arrays,
+            test_windows,
+            plan_donor_windows,
+            seed=args.seed,
+        )
         fresh = _predict(
             graphdef,
             params,
@@ -577,16 +645,28 @@ def _evaluate(
             flat,
             variant="plan",
             args=args,
-            plan_window_override=_shuffled_plan_map(
-                arrays,
-                test_windows,
-                plan_donor_windows,
-                seed=args.seed,
-            ),
+            plan_window_override=shuffled_plan_map,
+        )
+        shuffled_refresh = _predict(
+            graphdef,
+            params,
+            arrays,
+            flat,
+            variant="plan",
+            args=args,
+            plan_window_override=shuffled_plan_map,
+            output="refresh",
         )
         metrics["fresh_plan_oracle"] = _action_metrics(
             fresh,
             target,
+            ages,
+            event,
+            gripper_transition,
+        )
+        metrics["shuffled_plan_refresh"] = _action_metrics(
+            shuffled_refresh,
+            refresh_target,
             ages,
             event,
             gripper_transition,
@@ -606,6 +686,10 @@ def _evaluate(
         hold = metrics["hold4"]
         direct = metrics["direct"]
         shuffled = metrics["shuffled_plan"]
+        plan_refresh = metrics["plan_refresh"]
+        direct_refresh = metrics["direct_refresh"]
+        stale_phase_base = metrics["stale_phase_base"]
+        shuffled_refresh = metrics["shuffled_plan_refresh"]
 
         def ratio(numerator: float, denominator: float) -> float:
             return float(numerator / max(denominator, 1e-12))
@@ -620,6 +704,18 @@ def _evaluate(
                 shuffled["mse_age1_to_3"],
                 plan["mse_age1_to_3"],
             ),
+            "refresh_over_stale_base": ratio(
+                plan_refresh["mse_age1_to_3"],
+                stale_phase_base["mse_age1_to_3"],
+            ),
+            "plan_refresh_over_direct": ratio(
+                plan_refresh["mse_age1_to_3"],
+                direct_refresh["mse_age1_to_3"],
+            ),
+            "shuffled_refresh_over_plan": ratio(
+                shuffled_refresh["mse_age1_to_3"],
+                plan_refresh["mse_age1_to_3"],
+            ),
         }
         checks = {
             "fresh_capacity": values["plan_age0_over_b6"] <= 1.10,
@@ -628,6 +724,10 @@ def _evaluate(
             "beats_hold4": values["plan_stale_over_hold4"] <= 0.75,
             "beats_direct": values["plan_stale_over_direct"] <= 0.90,
             "plan_necessity": values["shuffled_over_plan"] >= 1.15,
+            "refresh_improvement": values["refresh_over_stale_base"] <= 0.80,
+            "refresh_uses_cache": (
+                values["plan_refresh_over_direct"] <= 0.90 or values["shuffled_refresh_over_plan"] >= 1.15
+            ),
             "gripper_transition": (
                 plan["gripper_transition_count"] >= args.minimum_gripper_transition_count
                 and plan["gripper_transition_sign_accuracy"] is not None
@@ -684,9 +784,20 @@ def main(args: Args) -> None:
     )
     train_target_max_abs_7d = float(np.max(np.abs(train_targets[..., :7])))
     train_plan_residual_max_abs_7d = float(np.max(np.abs(train_targets[..., :7] - train_phase_bases[..., :7])))
+    train_refresh_targets = arrays["fresh_ear"][train_windows, :, 0].astype(np.float32)
+    train_refresh_target_max_abs_7d = float(np.max(np.abs(train_refresh_targets[..., :7])))
+    train_plan_refresh_residual_max_abs_7d = float(
+        np.max(np.abs(train_refresh_targets[..., :7] - train_phase_bases[..., :7]))
+    )
     effective_residual_scale = max(
         args.residual_scale,
-        args.direct_output_margin * max(train_target_max_abs_7d, train_plan_residual_max_abs_7d),
+        args.direct_output_margin
+        * max(
+            train_target_max_abs_7d,
+            train_plan_residual_max_abs_7d,
+            train_refresh_target_max_abs_7d,
+            train_plan_refresh_residual_max_abs_7d,
+        ),
     )
     all_target_abs_7d = np.abs(arrays["teacher_actions"][..., :7].astype(np.float32))
     all_phase_bases = _phase_aligned_bases(
@@ -695,14 +806,29 @@ def main(args: Args) -> None:
         coarse_time_stride=coarse_time_stride,
     )
     all_plan_residual_abs_7d = np.abs(arrays["teacher_actions"][..., :7].astype(np.float32) - all_phase_bases[..., :7])
+    all_refresh_target_abs_7d = np.abs(arrays["fresh_ear"][:, :, 0, :7].astype(np.float32))
+    all_plan_refresh_residual_abs_7d = np.abs(
+        arrays["fresh_ear"][:, :, 0, :7].astype(np.float32) - all_phase_bases[..., :7]
+    )
     direct_out_of_range_fraction = float(np.mean(all_target_abs_7d >= 0.98 * effective_residual_scale))
     plan_out_of_range_fraction = float(np.mean(all_plan_residual_abs_7d >= 0.98 * effective_residual_scale))
-    if direct_out_of_range_fraction > 0 or plan_out_of_range_fraction > 0:
+    direct_refresh_out_of_range_fraction = float(np.mean(all_refresh_target_abs_7d >= 0.98 * effective_residual_scale))
+    plan_refresh_out_of_range_fraction = float(
+        np.mean(all_plan_refresh_residual_abs_7d >= 0.98 * effective_residual_scale)
+    )
+    if (
+        direct_out_of_range_fraction > 0
+        or plan_out_of_range_fraction > 0
+        or direct_refresh_out_of_range_fraction > 0
+        or plan_refresh_out_of_range_fraction > 0
+    ):
         raise ValueError(
             "The matched models cannot represent every 7D target within the "
             f"tanh bound {effective_residual_scale:.6f}: "
             f"direct={direct_out_of_range_fraction:.6%}, "
-            f"plan_residual={plan_out_of_range_fraction:.6%}. "
+            f"plan_residual={plan_out_of_range_fraction:.6%}, "
+            f"direct_refresh={direct_refresh_out_of_range_fraction:.6%}, "
+            f"plan_refresh={plan_refresh_out_of_range_fraction:.6%}. "
             "Increase --residual-scale without tuning it to held-out metrics."
         )
     config = multirate_fast_executor.MultiRateFastExecutorConfig(
@@ -710,6 +836,7 @@ def main(args: Args) -> None:
         state_dim=int(arrays["states"].shape[-1]),
         action_dim=int(arrays["teacher_actions"].shape[-1]),
         ear_horizon=int(arrays["fresh_ear"].shape[-2]),
+        iar_tokens=int(arrays["fresh_iar"].shape[-2]),
         iar_dim=int(arrays["fresh_iar"].shape[-1]),
         coarse_time_stride=coarse_time_stride,
         residual_scale=effective_residual_scale,
@@ -745,9 +872,14 @@ def main(args: Args) -> None:
         "num_test_windows": int(test_windows.size),
         "train_target_max_abs_7d": train_target_max_abs_7d,
         "train_plan_residual_max_abs_7d": train_plan_residual_max_abs_7d,
+        "train_refresh_target_max_abs_7d": train_refresh_target_max_abs_7d,
+        "train_plan_refresh_residual_max_abs_7d": train_plan_refresh_residual_max_abs_7d,
         "direct_out_of_range_fraction": direct_out_of_range_fraction,
         "plan_out_of_range_fraction": plan_out_of_range_fraction,
+        "direct_refresh_out_of_range_fraction": direct_refresh_out_of_range_fraction,
+        "plan_refresh_out_of_range_fraction": plan_refresh_out_of_range_fraction,
         "effective_residual_scale": effective_residual_scale,
+        "refresh_loss_weight": args.refresh_loss_weight,
         "config": dataclasses.asdict(config),
         "train": train_summaries,
         "evaluation": evaluation,
