@@ -86,7 +86,7 @@ def _load_norm_stats(
 def _unwrap_lerobot_dataset(dataset: Any) -> Any:
     current = dataset
     while hasattr(current, "_dataset"):
-        current = getattr(current, "_dataset")
+        current = current._dataset  # noqa: SLF001
     if not hasattr(current, "hf_dataset"):
         raise TypeError(f"Expected a LeRobotDataset with hf_dataset, got {type(current)!r}.")
     return current
@@ -149,8 +149,7 @@ def _select_anchors(
         task_candidates = candidates[tasks[candidates] == task_id]
         if task_candidates.size < windows_per_task:
             raise ValueError(
-                f"Task {task_id} has only {task_candidates.size} valid windows; "
-                f"requested {windows_per_task}."
+                f"Task {task_id} has only {task_candidates.size} valid windows; requested {windows_per_task}."
             )
         scores = _event_scores(actions, task_candidates, window_size)
         event_count = min(round(windows_per_task * event_fraction), windows_per_task)
@@ -159,9 +158,7 @@ def _select_anchors(
         order = np.argsort(scores, kind="stable")
         event_pool = task_candidates[order[-max(event_count * 2, event_count) :]]
         event_selected = (
-            rng.choice(event_pool, size=event_count, replace=False)
-            if event_count
-            else np.empty((0,), dtype=np.int64)
+            rng.choice(event_pool, size=event_count, replace=False) if event_count else np.empty((0,), dtype=np.int64)
         )
         remaining_pool = np.setdiff1d(task_candidates, event_selected, assume_unique=False)
         uniform_count = windows_per_task - event_count
@@ -308,9 +305,7 @@ def _make_record(
         )
         iar = np.asarray(result["acot_iar_tokens"], dtype=np.float32)
         if iar.shape != (shape.iar_tokens, shape.iar_dim):
-            raise ValueError(
-                f"Expected IAR shape {(shape.iar_tokens, shape.iar_dim)}, got {iar.shape}."
-            )
+            raise ValueError(f"Expected IAR shape {(shape.iar_tokens, shape.iar_dim)}, got {iar.shape}.")
         fresh_iar[age] = iar
         chunk = _pad_last_dim(
             result["execution_horizon_final_actions_normalized"],

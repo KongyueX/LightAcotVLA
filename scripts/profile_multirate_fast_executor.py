@@ -56,9 +56,7 @@ def main(args: Args) -> None:
             size=(args.batch_size, config.image_views, config.image_size, config.image_size, 3),
         ).astype(np.float32),
         "state": rng.normal(size=(args.batch_size, config.state_dim)).astype(np.float32),
-        "cached_ear": rng.normal(
-            size=(args.batch_size, config.ear_horizon, config.action_dim)
-        ).astype(np.float32),
+        "cached_ear": rng.normal(size=(args.batch_size, config.ear_horizon, config.action_dim)).astype(np.float32),
         "cached_iar": rng.normal(size=(args.batch_size, 18, config.iar_dim)).astype(np.float32),
         "cache_age": rng.integers(
             0,

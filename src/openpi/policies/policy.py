@@ -87,9 +87,7 @@ class Policy(BasePolicy):
         action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
         batched_mc_samples = int(np.asarray(inputs.pop("batched_mc_samples", 0)).item())
-        run_execution_horizon_predictor = _as_bool(
-            inputs.pop("run_execution_horizon_predictor", False)
-        )
+        run_execution_horizon_predictor = _as_bool(inputs.pop("run_execution_horizon_predictor", False))
         previous_actions = inputs.pop("execution_horizon_previous_actions", None)
         previous_h = inputs.pop("execution_horizon_previous_h", 1)
         budget_balance = inputs.pop("execution_horizon_budget_balance", 0.0)
@@ -206,9 +204,7 @@ class Policy(BasePolicy):
 
         if run_execution_horizon_predictor:
             if self._predict_execution_horizon is None:
-                raise ValueError(
-                    "run_execution_horizon_predictor=True requires a V2-P predictor sidecar checkpoint."
-                )
+                raise ValueError("run_execution_horizon_predictor=True requires a V2-P predictor sidecar checkpoint.")
             if not isinstance(result, dict):
                 raise TypeError("Execution-horizon prediction requires structured action outputs.")
             if "execution_horizon_prefix_feature" not in result:
@@ -227,9 +223,7 @@ class Policy(BasePolicy):
                 previous_valid=jnp.asarray(previous_valid, dtype=jnp.bool_).reshape((1,)),
             )
             _block_until_ready(predictor_outputs)
-            detailed_timing["execution_horizon_predictor_ms"] = (
-                time.monotonic() - predictor_start
-            ) * 1000
+            detailed_timing["execution_horizon_predictor_ms"] = (time.monotonic() - predictor_start) * 1000
             result.update({f"execution_horizon_{key}": value for key, value in predictor_outputs.items()})
 
         if isinstance(result, dict):
@@ -375,9 +369,7 @@ class Policy(BasePolicy):
             result["coarse_actions"] = coarse_outputs["explicit_action_reason"]
             result["action_cot_denoising_steps"] = coarse_outputs["action_cot_denoising_steps"]
         if "execution_horizon_prefix_feature" in prefix_state:
-            result["execution_horizon_prefix_feature"] = prefix_state[
-                "execution_horizon_prefix_feature"
-            ]
+            result["execution_horizon_prefix_feature"] = prefix_state["execution_horizon_prefix_feature"]
         if export_acot_cache:
             implicit_action_reason = implicit_outputs.get("implicit_action_reason")
             if implicit_action_reason is None:
@@ -396,7 +388,9 @@ class Policy(BasePolicy):
         if task_name is None:
             return outputs
 
-        print(f"Policy infering for task: {task_name}, with inference time: {outputs['policy_timing']['infer_ms']:.3f} ms")
+        print(
+            f"Policy infering for task: {task_name}, with inference time: {outputs['policy_timing']['infer_ms']:.3f} ms"
+        )
         if task_name not in task_name_requiring_waist:
             # cut off waist actions for tasks that don't require it
             outputs["actions"] = outputs["actions"][:, :16]

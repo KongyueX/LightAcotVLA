@@ -150,9 +150,7 @@ def _batch(
     valid_mask = np.zeros((flat_indices.size, arrays["teacher_actions"].shape[-1]), dtype=np.float32)
     valid_mask[:, :7] = sample_weight[:, None]
     return {
-        "current_images": jnp.asarray(
-            arrays["images"][windows, ages].astype(np.float32) / 255.0
-        ),
+        "current_images": jnp.asarray(arrays["images"][windows, ages].astype(np.float32) / 255.0),
         "state": jnp.asarray(arrays["states"][windows, ages], dtype=jnp.float32),
         "cached_ear": jnp.asarray(cached_ear, dtype=jnp.float32),
         "cached_iar": jnp.asarray(cached_iar, dtype=jnp.float32),
@@ -226,11 +224,15 @@ def _train_variant(
             current_params,
         )
         next_params = optax.apply_updates(current_params, updates)
-        return next_params, next_optimizer_state, {
-            **metrics,
-            "loss": loss,
-            "gradient_norm": optax.global_norm(gradients),
-        }
+        return (
+            next_params,
+            next_optimizer_state,
+            {
+                **metrics,
+                "loss": loss,
+                "gradient_norm": optax.global_norm(gradients),
+            },
+        )
 
     @jax.jit
     def validation_step(
@@ -310,13 +312,9 @@ def _train_variant(
                 record = {
                     "step": step,
                     "elapsed_seconds": time.monotonic() - started,
+                    **{f"train/{name}": float(value) for name, value in jax.device_get(train_metrics).items()},
                     **{
-                        f"train/{name}": float(value)
-                        for name, value in jax.device_get(train_metrics).items()
-                    },
-                    **{
-                        f"validation/{name}": float(value)
-                        for name, value in jax.device_get(validation_metrics).items()
+                        f"validation/{name}": float(value) for name, value in jax.device_get(validation_metrics).items()
                     },
                 }
                 metrics_file.write(json.dumps(record, sort_keys=True) + "\n")
@@ -330,10 +328,7 @@ def _train_variant(
                     stale_logs = 0
                 else:
                     stale_logs += 1
-                if (
-                    args.early_stopping_patience_logs > 0
-                    and stale_logs >= args.early_stopping_patience_logs
-                ):
+                if args.early_stopping_patience_logs > 0 and stale_logs >= args.early_stopping_patience_logs:
                     break
 
     selected_params = best_params if best_params is not None else params
@@ -427,9 +422,7 @@ def _action_metrics(
         "rotation_cosine_age1_to_3": _cosine(predicted[stale], target[stale], slice(3, 6)),
         "gripper_sign_accuracy": float(np.mean(predicted_gripper == teacher_gripper)),
         "event_gripper_sign_accuracy": (
-            float(np.mean(predicted_gripper[event] == teacher_gripper[event]))
-            if np.any(event)
-            else None
+            float(np.mean(predicted_gripper[event] == teacher_gripper[event])) if np.any(event) else None
         ),
         "count": int(ages.size),
         "stale_count": int(np.sum(stale)),
@@ -448,10 +441,7 @@ def _shuffled_plan_map(
     episodes = np.asarray(arrays["episode_id"])
     rng = np.random.default_rng(seed)
     for window in test_windows:
-        candidates = test_windows[
-            (tasks[test_windows] == tasks[window])
-            & (episodes[test_windows] != episodes[window])
-        ]
+        candidates = test_windows[(tasks[test_windows] == tasks[window]) & (episodes[test_windows] != episodes[window])]
         if not candidates.size:
             candidates = test_windows[tasks[test_windows] == tasks[window]]
         mapping[window] = int(rng.choice(candidates))
@@ -550,8 +540,7 @@ def _evaluate(
             "beats_direct": values["plan_stale_over_direct"] <= 0.90,
             "plan_necessity": values["shuffled_over_plan"] >= 1.15,
             "event_gripper": (
-                plan["event_gripper_sign_accuracy"] is not None
-                and plan["event_gripper_sign_accuracy"] >= 0.90
+                plan["event_gripper_sign_accuracy"] is not None and plan["event_gripper_sign_accuracy"] >= 0.90
             ),
             "translation_cosine": plan["translation_cosine_age1_to_3"] >= 0.90,
             "rotation_cosine": plan["rotation_cosine_age1_to_3"] >= 0.90,
@@ -566,10 +555,7 @@ def _evaluate(
                 or values["plan_stale_over_b6"] > 1.50
                 or values["plan_stale_over_hold4"] >= 1.0
                 or values["plan_stale_over_direct"] >= 1.0
-                or (
-                    plan["event_gripper_sign_accuracy"] is not None
-                    and plan["event_gripper_sign_accuracy"] < 0.85
-                )
+                or (plan["event_gripper_sign_accuracy"] is not None and plan["event_gripper_sign_accuracy"] < 0.85)
             ),
         }
     return {
