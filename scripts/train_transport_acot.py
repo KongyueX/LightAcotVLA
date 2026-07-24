@@ -205,19 +205,36 @@ def _sample_training_pairs(
     batch_size: int,
     rng: np.random.Generator,
 ) -> PairIndices:
-    windows = rng.choice(
+    nominal_count = batch_size // 2
+    warped_count = batch_size - nominal_count
+    nominal_windows = rng.choice(
         np.asarray(window_indices, dtype=np.int64),
-        size=batch_size,
-        replace=window_indices.size < batch_size,
+        size=nominal_count,
+        replace=window_indices.size < nominal_count,
     )
-    elapsed_age = rng.integers(1, 4, size=batch_size, dtype=np.int64)
-    physical_progress = np.empty_like(elapsed_age)
-    for index, age in enumerate(elapsed_age):
-        physical_progress[index] = rng.integers(max(0, int(age) - 1), min(3, int(age) + 1) + 1)
+    nominal_age = rng.integers(1, 4, size=nominal_count, dtype=np.int64)
+    warped_windows = rng.choice(
+        np.asarray(window_indices, dtype=np.int64),
+        size=warped_count,
+        replace=window_indices.size < warped_count,
+    )
+    warped_age = rng.integers(1, 4, size=warped_count, dtype=np.int64)
+    warped_progress = np.empty_like(warped_age)
+    for index, age in enumerate(warped_age):
+        candidates = [
+            progress
+            for progress in range(max(0, int(age) - 1), min(3, int(age) + 1) + 1)
+            if progress != age
+        ]
+        warped_progress[index] = rng.choice(candidates)
+    windows = np.concatenate([nominal_windows, warped_windows])
+    elapsed_age = np.concatenate([nominal_age, warped_age])
+    physical_progress = np.concatenate([nominal_age.copy(), warped_progress])
+    permutation = rng.permutation(batch_size)
     return PairIndices(
-        windows=windows,
-        elapsed_age=elapsed_age,
-        physical_progress=physical_progress,
+        windows=windows[permutation],
+        elapsed_age=elapsed_age[permutation],
+        physical_progress=physical_progress[permutation],
     )
 
 
@@ -914,7 +931,10 @@ def main(args: Args) -> None:
             "elapsed_ages": [1, 2, 3],
             "legal_physical_progress": "{d-1,d,d+1} intersect [0,3]",
             "phase_label": "physical_progress / 2",
-            "training_sampling": "uniform elapsed age, then uniform legal physical progress per sampled window",
+            "training_sampling": (
+                "balanced 1:1 nominal and non-nominal time-warp samples; "
+                "uniform elapsed age and legal non-nominal progress"
+            ),
             "validation_and_test": "nominal and exhaustive legal time-warp pairs",
         },
         "range_calibration": {
