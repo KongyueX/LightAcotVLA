@@ -2516,3 +2516,5 @@ IR-ACoT冻结原`10-step coarse + 10-step final`为teacher，分别以consistenc
 16:00只读核对服务器IR-ACoT pilot时没有残留相关进程或tmux，`final_teacher_2k`、`final_b6`和`final_ir`均已完成；新增同步对应summary以及coarse/B6/IR三个短训练metric streams。B6-lite与IR-lite均完成300步、1794条训练记录和206条验证记录；最终验证点B6-lite的final MSE为0.00364254、IR-delta MSE为0.00030865、cosine为0.50246，IR-lite分别为0.00363019、0.00031122、0.49612。IR-lite的clean final MSE仅略低，但response MSE和cosine未优于matched B6-lite，未达到预设的约20% response-RMSE改善门槛；当前只能说明pilot训练链路完成，仍没有闭环LIBERO成功率或完整1×1端到端加速结论。
 
 根`README.md`已从上游官方项目介绍改写为LightAcotVLA研究分支首页，明确列出正式V2-P 10×100结果、Stage B真实NFE降算力数据、Task8/9 targeted SFT/uniform/DAgger证据、IR-ACoT当前负/中性边界、数据索引、核心代码入口和下一阶段闭环门槛。GitHub合并与推送在本记录写入时尚未执行，完成后需另记远端验证结果。
+
+2026-07-24 16:16（Asia/Shanghai）将最终实验数据归档和项目README以squash提交`02ab4d0`合并并推送到GitHub `main`。最终提交包含48个路径：`.gitignore`、项目/实验索引、完整事实日志，以及V2-P、Task8/9、IR-ACoT的小型JSON、JSONL和CSV结果；不包含PPTX、XLSX、汇报草稿、checkpoint、HDF5、视频或完整训练日志，本地5份汇报材料仍保留且已忽略。发布前验证26个JSON、4个JSONL均可解析，11个CSV表头均为29列，5份README本地链接无断链，未发现凭据模式、超过50 MiB的文件或待发布二进制汇报文件；`git ls-remote`与GitHub API均确认远端`main`为`02ab4d0cd26b2c690efcf51f63c5e57f1dd0e8b4`。
