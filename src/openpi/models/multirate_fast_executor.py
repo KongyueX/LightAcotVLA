@@ -203,12 +203,12 @@ class _Conv2D(nnx.Module):
     def __call__(self, images: jax.Array) -> jax.Array:
         outputs = jax.lax.conv_general_dilated(
             images,
-            self.kernel,
+            self.kernel.value,
             window_strides=(2, 2),
             padding="SAME",
             dimension_numbers=("NHWC", "HWIO", "NHWC"),
         )
-        return outputs + self.bias
+        return outputs + self.bias.value
 
 
 class MultiRateFastExecutor(nnx.Module):
@@ -237,10 +237,7 @@ class MultiRateFastExecutor(nnx.Module):
                 )
             )
             in_channels = out_channels
-        # Register the convolution stack as an NNX container so split/merge
-        # passes kernels through ``params`` instead of capturing Param objects
-        # as invalid JIT constants.
-        self.image_convs = nnx.List(image_convs)
+        self.image_convs = image_convs
         self.image_view_proj = nnx.Linear(
             3 * config.cnn_channels[-1],
             hidden,
@@ -324,10 +321,10 @@ class MultiRateFastExecutor(nnx.Module):
         heads = config.attention_heads
         head_dim = config.hidden_dim // heads
         clipped_age = jnp.clip(cache_age, 0, config.max_cache_age)
-        age_feature = self.age_embedding[clipped_age]
+        age_feature = self.age_embedding.value[clipped_age]
 
         ear_tokens = jax.nn.silu(self.ear_input_proj(cached_ear))
-        ear_tokens = ear_tokens + self.ear_position_embedding[None, :, :]
+        ear_tokens = ear_tokens + self.ear_position_embedding.value[None, :, :]
         phase_feature = jax.nn.silu(self.ear_input_proj(base_action)) + age_feature
 
         query = self.ear_query_proj(phase_feature).reshape((batch_size, heads, head_dim))
