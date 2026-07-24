@@ -537,13 +537,18 @@ def _predict_pairs(
     pairs: PairIndices,
     *,
     eval_batch_size: int,
+    ablate_current_observation: bool = False,
 ) -> dict[str, np.ndarray]:
     action_pieces: list[np.ndarray] = []
     ear_pieces: list[np.ndarray] = []
     phase_pieces: list[np.ndarray] = []
     for start in range(0, len(pairs), eval_batch_size):
         selected = pairs.take(slice(start, start + eval_batch_size))
-        predicted_action, predicted_ear, predicted_phase = predict_step(params, _batch(arrays, selected))
+        batch = _batch(arrays, selected)
+        if ablate_current_observation:
+            batch["current_images"] = batch["anchor_images"]
+            batch["current_state"] = batch["anchor_state"]
+        predicted_action, predicted_ear, predicted_phase = predict_step(params, batch)
         action_pieces.append(np.asarray(predicted_action))
         ear_pieces.append(np.asarray(predicted_ear))
         phase_pieces.append(np.asarray(predicted_phase))
@@ -582,10 +587,32 @@ def _evaluate_partition(
         all_pairs,
         eval_batch_size=args.eval_batch_size,
     )
+    nominal_anchor_ablation = _predict_pairs(
+        predict_step,
+        params,
+        arrays,
+        nominal,
+        eval_batch_size=args.eval_batch_size,
+        ablate_current_observation=True,
+    )
+    all_anchor_ablation = _predict_pairs(
+        predict_step,
+        params,
+        arrays,
+        all_pairs,
+        eval_batch_size=args.eval_batch_size,
+        ablate_current_observation=True,
+    )
     return {
         "nominal": {
             "num_pairs": len(nominal),
             "model": _prediction_metrics(nominal_predictions, arrays, nominal, args=args),
+            "model_anchor_observation_ablation": _prediction_metrics(
+                nominal_anchor_ablation,
+                arrays,
+                nominal,
+                args=args,
+            ),
             "baselines": _baselines(
                 arrays,
                 nominal,
@@ -595,6 +622,12 @@ def _evaluate_partition(
         "all_time_warp_pairs": {
             "num_pairs": len(all_pairs),
             "model": _prediction_metrics(all_predictions, arrays, all_pairs, args=args),
+            "model_anchor_observation_ablation": _prediction_metrics(
+                all_anchor_ablation,
+                arrays,
+                all_pairs,
+                args=args,
+            ),
             "baselines": _baselines(
                 arrays,
                 all_pairs,
@@ -685,11 +718,27 @@ def _train(
         )
 
     validation_pairs = _all_time_warp_pairs(validation_windows)
+    validation_nominal_baselines = _baselines(
+        arrays,
+        _nominal_pairs(validation_windows),
+        include_nominal_action_baselines=True,
+    )
+    validation_warp_baselines = _baselines(
+        arrays,
+        validation_pairs,
+        include_nominal_action_baselines=False,
+    )
+    baseline_nominal_action_mse = float(validation_nominal_baselines["stale_fixed_age"]["mse_7d"])
+    baseline_warp_phase_mae = float(validation_warp_baselines["stale_fixed_age"]["phase_mae"])
+    if baseline_nominal_action_mse <= 0 or baseline_warp_phase_mae <= 0:
+        raise ValueError(
+            "Validation baselines must have positive nominal action MSE and time-warp phase MAE."
+        )
     rng = np.random.default_rng(args.seed)
     metrics_path = output_dir / "metrics.jsonl"
     if metrics_path.exists() and not args.overwrite:
         raise FileExistsError(f"Metrics already exist: {metrics_path}")
-    best_loss = float("inf")
+    best_score = float("inf")
     best_step = 0
     best_params: nnx.State | None = None
     stale_logs = 0
@@ -723,6 +772,15 @@ def _train(
                     validation_pairs,
                     args=args,
                 )
+                validation_nominal_action_mse = validation_metrics["by_progress_offset"]["0"]["mse_7d"]
+                validation_warp_phase_mae = validation_metrics["overall"]["phase_mae"]
+                # Select checkpoints with a unitless, balanced score aligned to
+                # the two go/no-go questions: nominal action fidelity and
+                # observation-conditioned time-warp tracking.  Raw training
+                # loss is phase-scale dominated and is not used for selection.
+                validation_score = 0.5 * (
+                    validation_nominal_action_mse / baseline_nominal_action_mse
+                ) + 0.5 * (validation_warp_phase_mae / baseline_warp_phase_mae)
                 record = {
                     "step": step,
                     "elapsed_seconds": time.monotonic() - started,
@@ -735,8 +793,10 @@ def _train(
                         for name, value in validation_metrics["loss"].items()
                     },
                     "validation/action_mse_7d": validation_metrics["overall"]["mse_7d"],
+                    "validation/nominal_action_mse_7d": validation_nominal_action_mse,
                     "validation/transport_mse_7d": validation_metrics["overall"]["transport_mse_7d"],
                     "validation/phase_mae": validation_metrics["overall"]["phase_mae"],
+                    "validation/selection_score": validation_score,
                 }
                 non_finite = {
                     name: value
@@ -748,9 +808,8 @@ def _train(
                 metrics_file.write(json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
                 metrics_file.flush()
                 print(json.dumps(record, sort_keys=True), flush=True)
-                validation_loss = record["validation/total"]
-                if validation_loss < best_loss - args.early_stopping_min_delta:
-                    best_loss = validation_loss
+                if validation_score < best_score - args.early_stopping_min_delta:
+                    best_score = validation_score
                     best_step = step
                     best_params = params
                     stale_logs = 0
@@ -766,7 +825,15 @@ def _train(
         "completed_steps": completed_steps,
         "requested_steps": args.train_steps,
         "best_validation_step": best_step,
-        "best_validation_loss": best_loss,
+        "best_validation_score": best_score,
+        "selection_criterion": (
+            "0.5 * nominal_action_mse / fixed_transport_nominal_action_mse + "
+            "0.5 * all_time_warp_phase_mae / fixed_age_phase_mae"
+        ),
+        "selection_baselines": {
+            "nominal_action_mse_7d": baseline_nominal_action_mse,
+            "all_time_warp_phase_mae": baseline_warp_phase_mae,
+        },
         "elapsed_seconds": time.monotonic() - started,
         "params_path": str(params_path.resolve()),
         "validation_pair_count": len(validation_pairs),

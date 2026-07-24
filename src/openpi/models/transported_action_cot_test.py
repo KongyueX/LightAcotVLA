@@ -140,7 +140,7 @@ def test_parameter_gradients_are_finite() -> None:
     def loss_function(candidate_params: nnx.State) -> jax.Array:
         candidate = nnx.merge(graphdef, candidate_params)
         action, transported_ear, phase = candidate.forward_with_aux(**inputs)
-        phase_target = jnp.clip(phase + 0.25, 0.0, config.max_phase)
+        phase_target = jax.lax.stop_gradient(jnp.clip(phase + 0.25, 0.0, config.max_phase))
         return (
             jnp.mean(jnp.square(action))
             + 0.01 * jnp.mean(jnp.square(transported_ear))
