@@ -1,14 +1,11 @@
 # LightAcotVLA
 
-[![Upstream paper](https://img.shields.io/badge/arXiv-2601.11404-b31b1b.svg)](https://arxiv.org/abs/2601.11404)
-[![Upstream project](https://img.shields.io/badge/Upstream-ACoT--VLA-blue.svg)](https://github.com/AgibotTech/ACoT-VLA)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-LightAcotVLA is a research fork of
-[ACoT-VLA](https://github.com/AgibotTech/ACoT-VLA) focused on making
-action-space reasoning faster, more selective, and easier to verify.
+LightAcotVLA is a research codebase focused on making action-space reasoning
+faster, more selective, and easier to verify.
 
-The base model keeps ACoT-VLA's two reasoning paths:
+The current policy combines three components:
 
 - **Explicit Action Reasoner (EAR):** produces a 15-frame coarse action plan.
 - **Implicit Action Reasoner (IAR):** extracts latent action priors from the
@@ -16,11 +13,20 @@ The base model keeps ACoT-VLA's two reasoning paths:
 - **Final action expert:** consumes EAR and IAR features and generates a
   10-action control chunk.
 
-This fork studies where computation can be removed without hiding failures:
+The project studies where computation can be removed without hiding failures:
 execution-horizon selection, Action-CoT denoising reduction, failure-focused
 adaptation, and one-step EAR/final distillation.
 
-![ACoT-VLA framework](docs/framework.png)
+```mermaid
+flowchart LR
+    O["Observation + instruction"] --> V["Vision-language prefix"]
+    V --> I["Implicit action reasoner"]
+    V --> E["Explicit Action-CoT reasoner"]
+    I --> F["Final action expert"]
+    E --> F
+    F --> A["10-step action chunk"]
+    A --> H["Execution-horizon controller"]
+```
 
 > **Status snapshot: 2026-07-24.** The repository contains formal evaluations,
 > diagnostic oracles, pilot training code, and the corresponding structured
@@ -47,8 +53,8 @@ steps, and real policy/server/RPC timing.
 The distilled selector mostly chooses H10. Its success point estimate is
 slightly above Fixed H9, but its policy time per episode is higher. The current
 evidence therefore does **not** establish a dynamic-selector Pareto win.
-This seeded 100-trial-per-task project protocol is not a direct reproduction of
-the upstream paper's official 50-trial protocol.
+This table reports the project's seeded 100-trial-per-task protocol and should
+not be compared directly with evaluations that use only 50 trials per task.
 
 Evidence:
 
@@ -157,7 +163,7 @@ full training logs, environments, and caches are intentionally not tracked.
 
 | Area | Main files |
 | --- | --- |
-| Base ACoT model and profiling | `src/openpi/models/acot_vla.py`, `src/openpi/policies/policy.py` |
+| Core policy model and profiling | `src/openpi/models/acot_vla.py`, `src/openpi/policies/policy.py` |
 | Execution-horizon predictor | `src/openpi/models/execution_horizon_predictor.py`, `src/openpi/execution_horizon/` |
 | V2-P evaluation and training | `scripts/eval_libero_execution_horizon.py`, `scripts/train_execution_horizon_predictor.py` |
 | Headroom and selector diagnostics | `scripts/audit_execution_horizon_headroom.py`, `scripts/audit_execution_horizon_selector_eval.py` |
@@ -222,21 +228,9 @@ The IR-ACoT server workflow is documented in
    complexity only when held-out rescues exceed regressions at comparable
    policy time.
 
-## Upstream project and citation
+## License and third-party notices
 
-The original model, benchmark tables, and competition baseline come from
-[AgibotTech/ACoT-VLA](https://github.com/AgibotTech/ACoT-VLA). Please cite the
-upstream paper when using the base method:
-
-```bibtex
-@article{zhong2026acot,
-  title={ACoT-VLA: Action Chain-of-Thought for Vision-Language-Action Models},
-  author={Zhong, Linqing and Liu, Yi and Wei, Yifei and Xiong, Ziyu and
-          Yao, Maoqing and Liu, Si and Ren, Guanghui},
-  journal={arXiv preprint arXiv:2601.11404},
-  year={2026}
-}
-```
-
-This repository is built on the
-[OpenPI](https://github.com/Physical-Intelligence/openpi) framework.
+LightAcotVLA is distributed under the [Apache License 2.0](LICENSE). The
+repository contains modified third-party open-source components; source
+provenance and license notices are recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
