@@ -83,6 +83,7 @@ class Policy(BasePolicy):
         coarse_actions_override = inputs.pop("coarse_actions_override", None)
         action_cot_skip_segment = inputs.pop("action_cot_skip_segment", None)
         profile_policy_timing = _as_bool(inputs.pop("profile_policy_timing", False))
+        export_acot_cache = _as_bool(inputs.pop("export_acot_cache", False))
         action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
         batched_mc_samples = int(np.asarray(inputs.pop("batched_mc_samples", 0)).item())
@@ -101,6 +102,7 @@ class Policy(BasePolicy):
             override_inputs.pop("policy_seed", None)
             override_inputs.pop("action_cot_skip_segment", None)
             override_inputs.pop("profile_policy_timing", None)
+            override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             override_inputs.pop("batched_mc_samples", None)
@@ -186,8 +188,13 @@ class Policy(BasePolicy):
             )
             _block_until_ready(result)
             detailed_timing["batched_mc_teacher_ms"] = (time.monotonic() - teacher_start) * 1000
-        elif profile_policy_timing and self._can_profile_sample_actions():
-            result, detailed_timing = self._profile_sample_actions(sample_rng, observation, sample_kwargs)
+        elif (profile_policy_timing or export_acot_cache) and self._can_profile_sample_actions():
+            result, detailed_timing = self._profile_sample_actions(
+                sample_rng,
+                observation,
+                sample_kwargs,
+                export_acot_cache=export_acot_cache,
+            )
         else:
             result = self._sample_actions(sample_rng, observation, **sample_kwargs)
 
@@ -317,6 +324,8 @@ class Policy(BasePolicy):
         sample_rng: at.KeyArrayLike,
         observation: _model.Observation,
         sample_kwargs: dict[str, Any],
+        *,
+        export_acot_cache: bool = False,
     ) -> tuple[dict[str, Any], dict[str, float]]:
         assert self._sample_actions_profile_prefix is not None
         assert self._sample_actions_profile_implicit is not None
@@ -369,6 +378,15 @@ class Policy(BasePolicy):
             result["execution_horizon_prefix_feature"] = prefix_state[
                 "execution_horizon_prefix_feature"
             ]
+        if export_acot_cache:
+            implicit_action_reason = implicit_outputs.get("implicit_action_reason")
+            if implicit_action_reason is None:
+                raise ValueError("export_acot_cache=True requires the implicit action reasoner.")
+            # bfloat16 is not portable through msgpack/websocket encoders.  The
+            # training exporter stores this opt-in cache as float16 after it
+            # crosses the policy boundary, while ordinary inference remains
+            # unchanged and does not return the extra tensor.
+            result["acot_iar_tokens"] = jnp.asarray(implicit_action_reason, dtype=jnp.float32)
         return result, timing
 
     def post_process(self, obs: dict, outputs: dict) -> dict:
