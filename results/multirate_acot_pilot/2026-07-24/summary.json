@@ -1,0 +1,79 @@
+{
+  "status": "offline_rejected",
+  "code_revision": "da628a1",
+  "method": {
+    "name": "fixed_1_to_4_multirate_acot",
+    "slow_path": "full ACoT refreshes cached EAR and IAR once every four policy calls",
+    "fast_path": "observation-gated executor predicts a corrected action on every call",
+    "closed_loop_run": false,
+    "closed_loop_skip_reason": "The pre-registered offline gate failed."
+  },
+  "dataset": {
+    "selected_windows": 2000,
+    "successful_windows": 2000,
+    "failed_windows": 0,
+    "teacher_calls_per_window": 4,
+    "train_windows": 1598,
+    "validation_windows": 194,
+    "test_windows": 208,
+    "test_frames": 832,
+    "stale_test_frames": 624,
+    "gripper_transition_test_frames": 52,
+    "split": "task-stratified and episode-disjoint",
+    "mean_teacher_infer_ms": 85.20231193839572,
+    "p95_teacher_infer_ms": 85.62288610264658
+  },
+  "offline_action_mse_7d_age_1_to_3": {
+    "lower_is_better": true,
+    "b6_one_step_reference": 0.08297184854745865,
+    "hold_last_action_for_four_calls": 0.11547171324491501,
+    "v1_global_pool_executor": 0.12333240360021591,
+    "v2_observation_gated_without_sprd": 0.12478414177894592,
+    "v2_observation_gated_with_sprd": 0.12559691071510315,
+    "v1_fresh_plan_oracle": 0.07934689521789551
+  },
+  "age_3_action_mse_7d": {
+    "b6_one_step_reference": 0.06961771100759506,
+    "hold_last_action_for_four_calls": 0.14436063170433044,
+    "v1_global_pool_executor": 0.1260162740945816,
+    "v2_observation_gated_without_sprd": 0.12810315191745758,
+    "v2_observation_gated_with_sprd": 0.12839601933956146
+  },
+  "gripper_transition_sign_accuracy": {
+    "b6_one_step_reference": 0.7307692307692307,
+    "hold_last_action_for_four_calls": 0.5384615384615384,
+    "v1_global_pool_executor": 0.5769230769230769,
+    "v2_observation_gated_without_sprd": 0.5769230769230769,
+    "v2_observation_gated_with_sprd": 0.5769230769230769
+  },
+  "stale_phase_refresh_mse_7d_age_1_to_3": {
+    "unrefreshed_phase": 0.09030823538929482,
+    "v2_without_sprd": 0.09030823409557343,
+    "v2_with_sprd": 0.08977419137954712,
+    "with_sprd_over_unrefreshed": 0.9940864306843603,
+    "required_ratio": 0.8,
+    "gate_pass": false
+  },
+  "speed": {
+    "device": "cuda:0",
+    "parameter_count": 1781728,
+    "warmup_calls": 50,
+    "timed_calls": 2000,
+    "fast_mean_ms": 0.6440707016736269,
+    "fast_p95_ms": 0.7017401978373528,
+    "full_acot_reference_ms": 95.844,
+    "b6_reference_ms": 68.929,
+    "fixed_1_to_4_amortized_ms": 24.44405302625522,
+    "speedup_vs_full_acot": 3.92095369360615,
+    "speedup_vs_b6": 2.819867880582805,
+    "speed_gate_pass": true,
+    "scope": "Executor call includes host-to-device inputs and synchronization; it excludes RPC, image resizing, and slow-refresh integration."
+  },
+  "gates": {
+    "v1_offline_gate_pass": false,
+    "v2_without_sprd_offline_gate_pass": false,
+    "v2_with_sprd_offline_gate_pass": false,
+    "immediate_stop": true
+  },
+  "conclusion": "The fixed 1:4 architecture meets the latency target but fails the offline accuracy screen. The trained executor is worse than both B6 and the no-network hold-four baseline on stale frames. SPRD improves its auxiliary phase target by only 0.59% versus the required 20% and slightly worsens action MSE. No closed-loop evaluation is justified for this pilot."
+}
