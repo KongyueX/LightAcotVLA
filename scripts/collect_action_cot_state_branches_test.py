@@ -6,10 +6,10 @@ import pathlib
 import numpy as np
 import pytest
 
-
 _SCRIPT = pathlib.Path(__file__).with_name("collect_action_cot_state_branches.py")
 _SPEC = importlib.util.spec_from_file_location("collect_action_cot_state_branches", _SCRIPT)
-assert _SPEC is not None and _SPEC.loader is not None
+assert _SPEC is not None
+assert _SPEC.loader is not None
 collector = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(collector)
 
@@ -19,7 +19,7 @@ def test_canonical_seed_depends_on_physical_root() -> None:
     assert seed == 2_030_048
     assert seed == collector.canonical_policy_seed(7, 2, 3, 41)
     assert seed != collector.canonical_policy_seed(7, 2, 3, 42)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="non-negative"):
         collector.canonical_policy_seed(7, 2, -1, 41)
 
 

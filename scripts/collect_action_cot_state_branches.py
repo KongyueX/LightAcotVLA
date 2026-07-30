@@ -28,9 +28,10 @@ from typing import Any
 import collect_execution_horizon_counterfactuals as horizon_collector
 import eval_libero_action_cot_pruning as libero_eval
 import numpy as np
-from openpi.action_cot import branched_dataset
 from openpi_client import websocket_client_policy as websocket_policy
 from PIL import Image
+
+from openpi.action_cot import branched_dataset
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,9 +141,11 @@ def _capture_canonical_snapshot(env: Any) -> CanonicalSimulatorSnapshot:
         "torques",
     )
     for owner in _controller_objects(env):
-        for name in names:
-            if hasattr(owner, name):
-                mutable_attributes.append((owner, name, copy.deepcopy(getattr(owner, name))))
+        mutable_attributes.extend(
+            (owner, name, copy.deepcopy(getattr(owner, name)))
+            for name in names
+            if hasattr(owner, name)
+        )
     return CanonicalSimulatorSnapshot(
         simulator=horizon_collector._capture_snapshot(env),
         simulator_ctrl=np.asarray(simulator.data.ctrl, dtype=np.float64).copy(),
@@ -652,9 +655,9 @@ def main(args: argparse.Namespace) -> None:
                                 args=args,
                                 shape=shape,
                             )
-                            for name in maximum_gate_errors:
+                            for name, current_maximum in maximum_gate_errors.items():
                                 maximum_gate_errors[name] = max(
-                                    maximum_gate_errors[name],
+                                    current_maximum,
                                     float(gate[name]),
                                 )
                             if key in existing:
