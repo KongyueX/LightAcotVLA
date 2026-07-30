@@ -690,12 +690,9 @@ class TransportedActionCoTExecutor(nnx.Module):
         event_phase_offset = jnp.zeros((batch_size,), dtype=transported_ear.dtype)
         if config.correction_mode == "event":
             learned_offset = config.max_event_phase_offset * jnp.tanh(event_scalar)
-            if config.enable_event_shift:
-                event_phase_offset = learned_offset
-            else:
-                # Keep the identical parameter tree for a matched delta=0
-                # baseline while intentionally blocking head gradients.
-                event_phase_offset = jnp.zeros_like(learned_offset)
+            # Keep the identical parameter tree for a matched delta=0 baseline
+            # while intentionally blocking head gradients.
+            event_phase_offset = learned_offset if config.enable_event_shift else jnp.zeros_like(learned_offset)
             shifted_phase = jnp.clip(
                 event_phase + event_phase_offset[:, None],
                 0.0,

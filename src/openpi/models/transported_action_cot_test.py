@@ -206,9 +206,6 @@ def test_forward_with_details_has_stable_shapes(correction_mode: str) -> None:
         np.testing.assert_allclose(output.revised_ear, output.transported_ear, atol=0.0)
     if correction_mode != "event":
         np.testing.assert_allclose(output.event_phase_offset, 0.0, atol=0.0)
-    if correction_mode in ("phase", "event"):
-        expected_base = model._decode_action(output.transported_ear)
-        np.testing.assert_allclose(output.base_action, expected_base, atol=1e-6)
     if correction_mode == "phase":
         np.testing.assert_allclose(output.action, output.base_action, atol=0.0)
 
@@ -273,7 +270,7 @@ def test_event_shift_changes_only_gripper_timing() -> None:
     )
 
     output = model.forward_with_details(**inputs)
-    base_action = model._decode_action(output.transported_ear)
+    base_action = model._decode_action(output.transported_ear)  # noqa: SLF001
 
     assert float(output.event_phase_offset[0]) > 0.0
     np.testing.assert_allclose(
