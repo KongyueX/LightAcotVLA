@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
+import sys
 
 import numpy as np
 import pytest
 
 _SCRIPT = pathlib.Path(__file__).with_name("collect_action_cot_state_branches.py")
+sys.path.insert(0, str(_SCRIPT.parent))
 _SPEC = importlib.util.spec_from_file_location("collect_action_cot_state_branches", _SCRIPT)
 assert _SPEC is not None
 assert _SPEC.loader is not None
