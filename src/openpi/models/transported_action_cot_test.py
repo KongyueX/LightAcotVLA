@@ -134,6 +134,22 @@ def test_event_correction_adds_only_one_scalar_head() -> None:
     assert event_count - phase_count == phase_config.hidden_dim + 1
 
 
+def test_update_confidence_is_a_zero_initialized_scalar_sidecar() -> None:
+    context_dim = 128
+    router = transported_action_cot.ActionCoTUpdateConfidence(
+        context_dim,
+        rngs=nnx.Rngs(0),
+    )
+    context = jax.random.normal(jax.random.key(31), (3, context_dim))
+
+    logits = router(context)
+
+    assert logits.shape == (3,)
+    np.testing.assert_allclose(logits, 0.0, atol=0.0)
+    assert _parameter_count(router) == context_dim + 1
+    assert _parameter_count(router) == transported_action_cot.estimate_update_confidence_parameter_count(context_dim)
+
+
 def test_zero_initialized_phase_is_nominal_monotonic_transport() -> None:
     config = transported_action_cot.TransportedActionCoTConfig()
     model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
@@ -171,6 +187,7 @@ def test_forward_with_details_has_stable_shapes(correction_mode: str) -> None:
     output = model.forward_with_details(**inputs)
 
     assert output.action.shape == (2, config.action_dim)
+    assert output.base_action.shape == output.action.shape
     assert output.transported_ear.shape == (2, config.ear_horizon, config.action_dim)
     assert output.revised_ear.shape == output.transported_ear.shape
     assert output.phase.shape == (2, config.ear_horizon)
@@ -179,6 +196,7 @@ def test_forward_with_details_has_stable_shapes(correction_mode: str) -> None:
     assert output.gripper_logits.shape == (2, config.ear_horizon)
     assert output.event_prob.shape == (2, config.ear_horizon - 1)
     assert output.direct_action_residual.shape == output.action.shape
+    assert output.update_context.shape == (2, config.hidden_dim)
     assert bool(jnp.all((output.event_prob >= 0.0) & (output.event_prob <= 1.0)))
     if correction_mode != "direct":
         np.testing.assert_allclose(output.direct_action_residual, 0.0, atol=0.0)
@@ -188,6 +206,11 @@ def test_forward_with_details_has_stable_shapes(correction_mode: str) -> None:
         np.testing.assert_allclose(output.revised_ear, output.transported_ear, atol=0.0)
     if correction_mode != "event":
         np.testing.assert_allclose(output.event_phase_offset, 0.0, atol=0.0)
+    if correction_mode in ("phase", "event"):
+        expected_base = model._decode_action(output.transported_ear)
+        np.testing.assert_allclose(output.base_action, expected_base, atol=1e-6)
+    if correction_mode == "phase":
+        np.testing.assert_allclose(output.action, output.base_action, atol=0.0)
 
 
 def test_zero_initialized_plan_heads_start_from_transported_plan() -> None:

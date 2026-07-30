@@ -28,11 +28,15 @@ class TransportedActionCoTOutput(NamedTuple):
 
     ``transported_ear`` is the phase-warped cached plan. ``revised_ear`` also
     includes the explicit low-rank plan correction when ``correction_mode`` is
-    ``"plan"``.  In ``"direct"`` mode the plan is unchanged and
-    ``direct_action_residual`` exposes the observation-to-action baseline.
+    ``"plan"``. ``base_action`` is decoded from the unmodified transported
+    plan, so a separately calibrated router can atomically select the base or
+    proposal without changing how the proposal itself is trained. In
+    ``"direct"`` mode the plan is unchanged and ``direct_action_residual``
+    exposes the observation-to-action baseline.
     """
 
     action: jax.Array
+    base_action: jax.Array
     transported_ear: jax.Array
     revised_ear: jax.Array
     phase: jax.Array
@@ -41,6 +45,7 @@ class TransportedActionCoTOutput(NamedTuple):
     gripper_logits: jax.Array
     event_prob: jax.Array
     direct_action_residual: jax.Array
+    update_context: jax.Array
 
 
 @dataclasses.dataclass(frozen=True)
@@ -138,6 +143,48 @@ class TransportedActionCoTConfig:
                 f"Transported Action-CoT configuration has an estimated {estimated:,} parameters; "
                 f"the limit is {self.max_parameters:,}."
             )
+
+
+class ActionCoTUpdateConfidence(nnx.Module):
+    """Calibrated scalar confidence for accepting a complete EAR update.
+
+    The router is deliberately separate from the plan editor. Its input should
+    be a stopped-gradient ``update_context`` from
+    :class:`TransportedActionCoTExecutor`; its output never multiplies an
+    editor residual during training.
+    """
+
+    def __init__(
+        self,
+        context_dim: int,
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: Any = jnp.float32,
+    ) -> None:
+        if context_dim <= 0:
+            raise ValueError("context_dim must be positive.")
+        self.context_dim = context_dim
+        self.accept_out = nnx.Linear(
+            context_dim,
+            1,
+            rngs=rngs,
+            param_dtype=param_dtype,
+            kernel_init=jax.nn.initializers.zeros,
+            bias_init=jax.nn.initializers.zeros,
+        )
+
+    def __call__(self, update_context: jax.Array) -> jax.Array:
+        update_context = jnp.asarray(update_context, dtype=jnp.float32)
+        _require_shape(update_context, (None, self.context_dim), "update_context")
+        return self.accept_out(update_context)[..., 0]
+
+
+def estimate_update_confidence_parameter_count(context_dim: int) -> int:
+    """Return the exact parameter count of :class:`ActionCoTUpdateConfidence`."""
+
+    if context_dim <= 0:
+        raise ValueError("context_dim must be positive.")
+    return _linear_parameter_count(context_dim, 1)
 
 
 def _linear_parameter_count(in_features: int, out_features: int) -> int:
@@ -750,10 +797,11 @@ class TransportedActionCoTExecutor(nnx.Module):
                 transported_ear,
                 context,
             )
+        # Preserve both candidates for a separately calibrated, hard router.
         # Event-factorized modes must not feed their gripper revision through
         # the decoder, because that would also perturb the continuous action.
-        decoder_ear = revised_ear if config.correction_mode == "plan" else transported_ear
-        action = self._decode_action(decoder_ear)
+        base_action = self._decode_action(transported_ear)
+        action = self._decode_action(revised_ear) if config.correction_mode == "plan" else base_action
         direct_action_residual = jnp.zeros_like(action)
         if config.correction_mode == "plan":
             # The discrete gripper state is part of the revised EAR and cannot
@@ -772,6 +820,7 @@ class TransportedActionCoTExecutor(nnx.Module):
 
         return TransportedActionCoTOutput(
             action=action,
+            base_action=base_action,
             transported_ear=transported_ear,
             revised_ear=revised_ear,
             phase=phase,
@@ -780,6 +829,7 @@ class TransportedActionCoTExecutor(nnx.Module):
             gripper_logits=gripper_logits,
             event_prob=event_probability,
             direct_action_residual=direct_action_residual,
+            update_context=jax.lax.stop_gradient(context),
         )
 
     def forward_with_aux(
