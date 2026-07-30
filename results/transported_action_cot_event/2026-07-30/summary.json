@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "commit": "972e49d",
+  "method": "event-factorized Action-CoT phase correction",
+  "server": {
+    "host": "connect.westb.seetacloud.com",
+    "port": 30803,
+    "worktree": "/root/ACoT-VLA-multirate",
+    "experiment_root": "/root/autodl-tmp/acotvla/transport_acot_v2/20260730_972e49d_fast_seed7",
+    "disk_used_by_experiment": "6.9M",
+    "disk_available_after_experiment": "137G"
+  },
+  "data": {
+    "path": "/root/autodl-tmp/acotvla/multirate_acot_pilot/windows2k",
+    "num_windows": 2000,
+    "test_windows": 208,
+    "test_nominal_pairs": 624,
+    "split_seed": 7,
+    "model_and_sampling_seed": 7
+  },
+  "event_oracle": {
+    "max_absolute_phase_offset": 2.0,
+    "delta_zero_exact_sequence_coverage": 0.6762820512820513,
+    "oracle_exact_sequence_coverage": 0.9711538461538461,
+    "oracle_mean_token_sign_accuracy": 0.99754,
+    "nonzero_offset_additional_exact_pairs": 184,
+    "test_target_transition_distribution": {
+      "zero": 378,
+      "one": 229,
+      "multiple": 17
+    },
+    "phase_gt_gripper_nominal_mse_7d_lower_bounds": {
+      "seed7": 0.056263363787106106,
+      "seed17": 0.057010531425476074,
+      "seed27": 0.05677801583494459
+    }
+  },
+  "fast_validation_protocol": {
+    "train_steps": 600,
+    "batch_size": 128,
+    "selection_mode": "action",
+    "isolate_event_gradients": true,
+    "gripper_state_loss_weight": 0.05,
+    "action_gripper_loss_weight": 0.05,
+    "event_loss_weight": 0.05,
+    "event_offset_regularization_weight": 0.001,
+    "profile_iterations": 200,
+    "matched_comparison": "same event architecture and losses; only enable_event_shift differs"
+  },
+  "test_results": {
+    "event_zero": {
+      "best_validation_step": 500,
+      "training_seconds": 45.78135582245886,
+      "nominal": {
+        "action_mse_7d": 0.12322477996349335,
+        "action_mse_6d": 0.06744176894426346,
+        "gripper_mse": 0.45792287588119507,
+        "gripper_sign_accuracy": 0.8541666666666666,
+        "transport_event_f1": 0.376984126984127
+      },
+      "all_time_warp": {
+        "action_mse_7d": 0.12045952677726746,
+        "action_mse_6d": 0.06633302569389343,
+        "gripper_mse": 0.4452185332775116,
+        "gripper_sign_accuracy": 0.8605769230769231,
+        "transport_event_f1": 0.44045911047345765,
+        "phase_mae": 0.24821339547634125
+      },
+      "profile_p95_ms": 0.42329132556915283,
+      "theoretical_speedup": 3.954825654190376
+    },
+    "event_learned": {
+      "best_validation_step": 400,
+      "training_seconds": 26.592761861160398,
+      "nominal": {
+        "action_mse_7d": 0.12186677753925323,
+        "action_mse_6d": 0.06590153276920319,
+        "gripper_mse": 0.45765823125839233,
+        "gripper_sign_accuracy": 0.8525641025641025,
+        "transport_event_f1": 0.4061302681992337
+      },
+      "all_time_warp": {
+        "action_mse_7d": 0.1186024472117424,
+        "action_mse_6d": 0.06634538620710373,
+        "gripper_mse": 0.4321448504924774,
+        "gripper_sign_accuracy": 0.8623798076923077,
+        "transport_event_f1": 0.4882108183079057,
+        "phase_mae": 0.25057756900787354
+      },
+      "profile_p95_ms": 0.40037245489656925,
+      "theoretical_speedup": 3.951502042926839
+    },
+    "learned_minus_zero": {
+      "nominal_action_mse_7d": -0.0013580024242401123,
+      "nominal_relative_mse_improvement": 0.011020530323871847,
+      "all_time_warp_action_mse_7d": -0.001857079565525055,
+      "all_time_warp_relative_mse_improvement": 0.015416626772566056,
+      "all_time_warp_event_f1": 0.04775170783444804,
+      "by_progress_offset_action_mse_7d": {
+        "-1": -0.004274,
+        "0": -0.001358,
+        "1": 0.001019
+      }
+    }
+  },
+  "decision": {
+    "directional_signal": true,
+    "offline_gate_pass": false,
+    "nominal_action_mse_limit": 0.112335,
+    "all_time_warp_action_mse_reference": 0.11922247,
+    "phase_mae_limit": 0.25,
+    "reason": "The learned offset gives small matched improvements in aggregate action MSE and event F1, but misses the nominal gate by a large margin, narrowly misses the all-warp phase gate, and degrades the fast-progress offset stratum.",
+    "next_action": "Do not launch a multi-seed matrix for this scalar-offset-only branch. Retain it as an event-timing component, and next test a confidence-gated residual/fallback that can create or suppress events."
+  },
+  "limitations": [
+    "Offline four-frame teacher windows only; no closed-loop LIBERO success evaluation was run.",
+    "The fast comparison uses one model seed and 600 steps by design.",
+    "The reported speedup is sidecar-only theoretical amortization and excludes environment and integration overhead."
+  ]
+}
