@@ -27,9 +27,9 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import orbax.checkpoint as ocp
+import train_branched_effective_progress as phase_probe
 import tyro
 
-import train_branched_effective_progress as phase_probe
 from openpi.action_cot import branched_dataset
 
 
