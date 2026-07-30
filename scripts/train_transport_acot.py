@@ -43,6 +43,8 @@ class Args:
     output_dir: str
     correction_mode: str = "phase"
     geometry_rank: int = 4
+    enable_geometry_correction: bool = True
+    isolate_event_gradients: bool = False
     selection_mode: str = "legacy"
     gripper_logit_residual_scale: float = 6.0
     seed: int = 7
@@ -1140,6 +1142,8 @@ def main(args: Args) -> None:
         correction_mode=args.correction_mode,
         geometry_rank=args.geometry_rank,
         geometry_scale=tuple(float(value) for value in ranges["geometry_scale_6d"]),
+        enable_geometry_correction=args.enable_geometry_correction,
+        isolate_event_gradients=args.isolate_event_gradients,
         gripper_logit_residual_scale=args.gripper_logit_residual_scale,
         direct_residual_scale=max(float(value) for value in ranges["direct_residual_scale_7d"]),
     )

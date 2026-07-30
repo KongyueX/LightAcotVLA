@@ -308,6 +308,32 @@ def test_plan_gripper_logits_define_revised_gripper_and_events() -> None:
     np.testing.assert_allclose(output.action[:, 6], output.revised_ear[:, 0, 6], atol=1e-6)
 
 
+def test_isolated_event_only_mode_preserves_continuous_plan() -> None:
+    config = transported_action_cot.TransportedActionCoTConfig(
+        correction_mode="plan",
+        enable_geometry_correction=False,
+        isolate_event_gradients=True,
+    )
+    model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
+    model.plan_temporal_basis.kernel.value = jnp.zeros_like(model.plan_temporal_basis.kernel.value)
+    model.plan_temporal_basis.bias.value = jnp.ones_like(model.plan_temporal_basis.bias.value)
+    model.gripper_coefficients.kernel.value = jnp.zeros_like(model.gripper_coefficients.kernel.value)
+    model.gripper_coefficients.bias.value = jnp.ones_like(model.gripper_coefficients.bias.value)
+    inputs = _inputs(config, batch_size=1)
+    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(0.0)
+
+    output = model.forward_with_details(**inputs)
+
+    np.testing.assert_allclose(output.geometry_residual, 0.0, atol=0.0)
+    np.testing.assert_allclose(
+        output.revised_ear[..., :6],
+        output.transported_ear[..., :6],
+        atol=0.0,
+    )
+    assert float(jnp.min(output.revised_ear[..., 6])) > 0.0
+    np.testing.assert_allclose(output.action[:, 6], output.revised_ear[:, 0, 6], atol=1e-6)
+
+
 def test_parameter_gradients_are_finite() -> None:
     config = transported_action_cot.TransportedActionCoTConfig()
     model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))

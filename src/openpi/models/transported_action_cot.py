@@ -65,6 +65,8 @@ class TransportedActionCoTConfig:
     correction_mode: CorrectionMode = "phase"
     geometry_rank: int = 4
     geometry_scale: tuple[float, ...] = (0.5, 0.5, 0.5, 0.5, 0.5, 0.5)
+    enable_geometry_correction: bool = True
+    isolate_event_gradients: bool = False
     gripper_logit_residual_scale: float = 2.0
     direct_residual_scale: float = 0.5
     max_parameters: int = _PARAMETER_LIMIT
@@ -544,33 +546,41 @@ class TransportedActionCoTExecutor(nnx.Module):
 
         plan_tokens = jax.nn.silu(self.ear_token_proj(transported_ear))
         temporal_basis = jnp.tanh(self.plan_temporal_basis(plan_tokens))
-        geometry_coefficients = self.geometry_coefficients(context).reshape(
-            (batch_size, config.geometry_rank, _GEOMETRY_DIM)
-        )
-        geometry_scale = jnp.asarray(config.geometry_scale, dtype=transported_ear.dtype)
-        geometry_coefficients = jnp.tanh(geometry_coefficients) * geometry_scale[None, None, :]
         rank_normalizer = jnp.sqrt(jnp.asarray(config.geometry_rank, dtype=transported_ear.dtype))
-        geometry_residual = (
-            jnp.einsum(
-                "bhr,brd->bhd",
-                temporal_basis,
-                geometry_coefficients,
+        if config.enable_geometry_correction:
+            geometry_coefficients = self.geometry_coefficients(context).reshape(
+                (batch_size, config.geometry_rank, _GEOMETRY_DIM)
             )
-            / rank_normalizer
-        )
+            geometry_scale = jnp.asarray(config.geometry_scale, dtype=transported_ear.dtype)
+            geometry_coefficients = jnp.tanh(geometry_coefficients) * geometry_scale[None, None, :]
+            geometry_residual = (
+                jnp.einsum(
+                    "bhr,brd->bhd",
+                    temporal_basis,
+                    geometry_coefficients,
+                )
+                / rank_normalizer
+            )
         revised_ear = transported_ear.at[..., :_GEOMETRY_DIM].add(geometry_residual)
 
+        event_context = context
+        event_temporal_basis = temporal_basis
+        event_plan = transported_ear
+        if config.isolate_event_gradients:
+            event_context = jax.lax.stop_gradient(context)
+            event_temporal_basis = jnp.tanh(self.plan_temporal_basis(jax.lax.stop_gradient(plan_tokens)))
+            event_plan = jax.lax.stop_gradient(transported_ear)
         base_gripper = jnp.clip(
-            transported_ear[..., _GRIPPER_INDEX],
+            event_plan[..., _GRIPPER_INDEX],
             -1.0 + 1e-4,
             1.0 - 1e-4,
         )
         base_gripper_logits = jnp.arctanh(base_gripper)
-        gripper_coefficients = config.gripper_logit_residual_scale * jnp.tanh(self.gripper_coefficients(context))
+        gripper_coefficients = config.gripper_logit_residual_scale * jnp.tanh(self.gripper_coefficients(event_context))
         gripper_logit_residual = (
             jnp.einsum(
                 "bhr,br->bh",
-                temporal_basis,
+                event_temporal_basis,
                 gripper_coefficients,
             )
             / rank_normalizer
