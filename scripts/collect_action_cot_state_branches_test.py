@@ -25,7 +25,7 @@ def test_branch_actions_preserve_protocol_and_shape() -> None:
     primary = np.linspace(-0.8, 0.8, 10 * 7, dtype=np.float32).reshape(10, 7)
     branches, strengths = collector.make_branch_actions(primary)
     assert [len(values) for values in branches] == [4, 4, 4, 4, 4, 4]
-    assert strengths.tolist() == [1.0, 0.0, 0.5, 1.25, 0.25, 1.0]
+    assert strengths.tolist() == [1.0, 0.0, 0.5, 1.25, 0.25, -1.0]
     np.testing.assert_allclose(branches[2][:, :6], primary[:4, :6] * 0.5)
     assert np.all(np.abs(branches[3][:, :6]) <= 1.0)
     np.testing.assert_allclose(branches[1][1, :6], 0.0)
