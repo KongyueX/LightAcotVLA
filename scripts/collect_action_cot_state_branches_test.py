@@ -23,7 +23,7 @@ def test_canonical_seed_depends_on_physical_root() -> None:
 
 def test_branch_actions_preserve_protocol_and_shape() -> None:
     primary = np.linspace(-0.8, 0.8, 10 * 7, dtype=np.float32).reshape(10, 7)
-    branches, strengths = collector.make_branch_actions(primary)
+    branches, strengths = collector.make_branch_actions(primary, gripper_shift_direction=1)
     assert [len(values) for values in branches] == [4, 4, 4, 4, 4, 4]
     assert strengths.tolist() == [1.0, 0.0, 0.5, 1.25, 0.25, 1.0]
     np.testing.assert_allclose(branches[2][:, :6], primary[:4, :6] * 0.5)
@@ -31,3 +31,8 @@ def test_branch_actions_preserve_protocol_and_shape() -> None:
     np.testing.assert_allclose(branches[1][1, :6], 0.0)
     assert branches[4][1, 2] == pytest.approx(np.clip(primary[1, 2] + 0.25, -1.0, 1.0))
     np.testing.assert_allclose(branches[5][1:, 6], primary[:3, 6])
+    early, early_strengths = collector.make_branch_actions(primary, gripper_shift_direction=-1)
+    np.testing.assert_allclose(early[5][:-1, 6], primary[1:4, 6])
+    assert early_strengths[-1] == -1.0
+    with pytest.raises(ValueError, match="gripper_shift_direction"):
+        collector.make_branch_actions(primary, gripper_shift_direction=0)
