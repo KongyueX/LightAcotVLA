@@ -244,8 +244,8 @@ def test_zero_initialized_event_mode_is_exactly_matched_to_phase() -> None:
         rngs=nnx.Rngs(0),
     )
     inputs = _inputs(phase_config)
-    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(
-        jnp.linspace(-0.8, 0.8, phase_config.ear_horizon)[None, :]
+    inputs["cached_ear"] = (
+        inputs["cached_ear"].at[..., 6].set(jnp.linspace(-0.8, 0.8, phase_config.ear_horizon)[None, :])
     )
 
     phase_output = phase_model.forward_with_details(**inputs)
@@ -265,9 +265,7 @@ def test_event_shift_changes_only_gripper_timing() -> None:
     model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
     model.event_scalar_out.bias.value = jnp.ones_like(model.event_scalar_out.bias.value)
     inputs = _inputs(config, batch_size=1)
-    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(
-        jnp.linspace(-0.9, 0.9, config.ear_horizon)[None, :]
-    )
+    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(jnp.linspace(-0.9, 0.9, config.ear_horizon)[None, :])
 
     output = model.forward_with_details(**inputs)
     base_action = model._decode_action(output.transported_ear)  # noqa: SLF001

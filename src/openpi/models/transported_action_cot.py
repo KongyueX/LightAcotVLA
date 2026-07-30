@@ -120,8 +120,7 @@ class TransportedActionCoTConfig:
             raise ValueError("max_log_speed must be positive.")
         if self.correction_mode not in ("phase", "plan", "direct", "event"):
             raise ValueError(
-                "correction_mode must be one of 'phase', 'plan', 'direct', "
-                f"or 'event', got {self.correction_mode!r}."
+                f"correction_mode must be one of 'phase', 'plan', 'direct', or 'event', got {self.correction_mode!r}."
             )
         if self.geometry_rank != 4:
             raise ValueError("geometry_rank must be four for the matched plan/direct pilot.")

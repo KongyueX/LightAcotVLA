@@ -300,9 +300,7 @@ def _router_examples(
         gripper_weight=args.gripper_weight,
     )
     base_risk = args.action_risk_weight * base_action_risk + args.transport_risk_weight * base_transport_risk
-    update_risk = (
-        args.action_risk_weight * update_action_risk + args.transport_risk_weight * update_transport_risk
-    )
+    update_risk = args.action_risk_weight * update_action_risk + args.transport_risk_weight * update_transport_risk
     relative_gain = (base_risk - update_risk) / np.maximum(base_risk + update_risk, 1e-8)
     return {
         **predictions,
@@ -550,9 +548,7 @@ def _evaluate_router(
             coverage * np.mean(update_risk) + (1.0 - coverage) * np.mean(base_risk)
         ),
         "oracle_route_mean_risk": oracle_mean_risk,
-        "fraction_of_oracle_gap_closed": (
-            (best_raw_risk - routed_mean_risk) / oracle_gap if oracle_gap > 0 else 0.0
-        ),
+        "fraction_of_oracle_gap_closed": ((best_raw_risk - routed_mean_risk) / oracle_gap if oracle_gap > 0 else 0.0),
         "accepted_regression_rate": float(np.mean(regression[accept])) if np.any(accept) else 0.0,
         "rejected_improvement_rate": float(np.mean(improvement[~accept])) if np.any(~accept) else 0.0,
         "base_action_mse_7d": _mse_7d(examples["base_action"], target_action),
@@ -606,9 +602,7 @@ def _profile(
         jax.block_until_ready(editor_and_router(editor_params, router_params, profile_batch))
         combined_ms[index] = (time.perf_counter() - started) * 1_000.0
     combined_mean = float(np.mean(combined_ms))
-    amortized = (
-        args.full_acot_reference_ms + (args.refresh_interval - 1) * combined_mean
-    ) / args.refresh_interval
+    amortized = (args.full_acot_reference_ms + (args.refresh_interval - 1) * combined_mean) / args.refresh_interval
     return {
         "device": str(jax.devices()[0]),
         "iterations": args.profile_iterations,
@@ -661,9 +655,7 @@ def main(args: Args) -> None:
         partitions[name] = _router_examples(predictions, arrays, pairs, args=args)
         pair_counts[name] = len(pairs)
     router, train_summary = _fit_router(partitions["train"], partitions["validation"], args=args)
-    probabilities = {
-        name: _router_probabilities(router, examples["context"]) for name, examples in partitions.items()
-    }
+    probabilities = {name: _router_probabilities(router, examples["context"]) for name, examples in partitions.items()}
     threshold_selection = _select_threshold(
         probabilities["validation"],
         partitions["validation"]["base_risk"],
@@ -682,9 +674,7 @@ def main(args: Args) -> None:
     _save_router(router, router_path)
     test_metrics = evaluations["test"]
     router_gate_pass = (
-        args.minimum_accept_coverage
-        <= test_metrics["accept_coverage"]
-        <= args.maximum_accept_coverage
+        args.minimum_accept_coverage <= test_metrics["accept_coverage"] <= args.maximum_accept_coverage
         and test_metrics["auroc"] > 0.55
         and test_metrics["learned_route_mean_risk"]
         < min(test_metrics["base_mean_risk"], test_metrics["update_mean_risk"])
@@ -702,16 +692,13 @@ def main(args: Args) -> None:
             "correction_mode": config.correction_mode,
         },
         "router_params": str(router_path.resolve()),
-        "router_parameter_count": transported_action_cot.estimate_update_confidence_parameter_count(
-            config.hidden_dim
-        ),
+        "router_parameter_count": transported_action_cot.estimate_update_confidence_parameter_count(config.hidden_dim),
         "split": "same task-stratified, episode-disjoint split as editor",
         "pair_counts": pair_counts,
         "args": dataclasses.asdict(args),
         "label": {
             "definition": (
-                "(base combined risk - update combined risk) / "
-                "max(base combined risk + update combined risk, 1e-8)"
+                "(base combined risk - update combined risk) / max(base combined risk + update combined risk, 1e-8)"
             ),
             "accept_if_gain_above": args.improvement_margin,
             "reject_if_gain_below": -args.improvement_margin,
