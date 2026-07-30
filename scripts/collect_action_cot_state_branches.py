@@ -301,18 +301,12 @@ def _teacher_tensors(
     }
 
 
-def make_branch_actions(
-    primary_actions: np.ndarray,
-    *,
-    gripper_shift_direction: int = 1,
-) -> tuple[list[np.ndarray], np.ndarray]:
+def make_branch_actions(primary_actions: np.ndarray) -> tuple[list[np.ndarray], np.ndarray]:
     """Create fixed-age branches in environment action space."""
 
     primary = np.asarray(primary_actions, dtype=np.float32)
     if primary.ndim != 2 or primary.shape[0] < 4 or primary.shape[1] < 7:
         raise ValueError(f"Expected primary actions [>=4, >=7], got {primary.shape}.")
-    if gripper_shift_direction not in (-1, 1):
-        raise ValueError("gripper_shift_direction must be -1 (early) or 1 (late).")
     primary = primary[:, :7]
 
     nominal = primary[:4].copy()
@@ -330,11 +324,9 @@ def make_branch_actions(
     translation_pulse = primary[:4].copy()
     translation_pulse[1, 2] = np.clip(translation_pulse[1, 2] + 0.25, -1.0, 1.0)
 
-    shifted_gripper = primary[:4].copy()
-    if gripper_shift_direction > 0:
-        shifted_gripper[1:, 6] = primary[:3, 6]
-    else:
-        shifted_gripper[:-1, 6] = primary[1:4, 6]
+    gripper_fault = primary[:4].copy()
+    original_sign = np.where(primary[1:3, 6] >= 0.0, 1.0, -1.0)
+    gripper_fault[1:3, 6] = -original_sign
 
     branches = [
         nominal,
@@ -342,12 +334,9 @@ def make_branch_actions(
         underact,
         overact,
         translation_pulse,
-        shifted_gripper,
+        gripper_fault,
     ]
-    strengths = np.asarray(
-        (1.0, 0.0, 0.5, 1.25, 0.25, float(gripper_shift_direction)),
-        dtype=np.float32,
-    )
+    strengths = np.asarray((1.0, 0.0, 0.5, 1.25, 0.25, -1.0), dtype=np.float32)
     return branches, strengths
 
 
@@ -491,11 +480,7 @@ def _collect_root(
     anchor = _teacher_tensors(anchor_result, shape)
     anchor_images = _images(policy_input, shape.image_height)
     arrays = _empty_branch_arrays(shape, anchor, anchor_images)
-    gripper_shift_direction = 1 if root_id % 2 == 0 else -1
-    branch_actions, strengths = make_branch_actions(
-        anchor["actions_env"],
-        gripper_shift_direction=gripper_shift_direction,
-    )
+    branch_actions, strengths = make_branch_actions(anchor["actions_env"])
     arrays["branch_strength"][:] = strengths
     gate = _snapshot_determinism_gate(
         env,

@@ -26,7 +26,7 @@ BRANCH_NAMES = (
     "action_scale_down",
     "action_scale_up",
     "translation_pulse",
-    "gripper_shift",
+    "gripper_fault",
 )
 BRANCH_IDS = {name: index for index, name in enumerate(BRANCH_NAMES)}
 
