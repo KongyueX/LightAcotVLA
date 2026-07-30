@@ -1,3 +1,5 @@
+# ruff: noqa: SLF001
+
 """Train a discrete Event-Option selector over a cached action chunk.
 
 The selector is deliberately bottlenecked: observations may only choose one
@@ -27,9 +29,8 @@ import optax
 import orbax.checkpoint as ocp
 import tyro
 
-from openpi.action_cot import branched_dataset
-
 import train_branched_effective_progress as phase_probe
+from openpi.action_cot import branched_dataset
 
 
 @dataclasses.dataclass(frozen=True)
