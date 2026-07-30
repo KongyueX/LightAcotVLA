@@ -642,28 +642,40 @@ def main(args: argparse.Namespace) -> None:
                         root_id = task_id * 1_000_000 + episode_id * 1_000 + root_index
                         primary_actions: np.ndarray | None = None
                         try:
-                            record, primary_actions, gate = _collect_root(
-                                env,
-                                observation,
-                                snapshot,
-                                client=client,
-                                task_description=task_description,
-                                task_id=task_id,
-                                episode_id=episode_id,
-                                decision_step=step,
-                                root_id=root_id,
-                                policy_seed=policy_seed,
-                                args=args,
-                                shape=shape,
-                            )
-                            for name, current_maximum in maximum_gate_errors.items():
-                                maximum_gate_errors[name] = max(
-                                    current_maximum,
-                                    float(gate[name]),
-                                )
                             if key in existing:
+                                policy_input = libero_eval._observation_to_policy_input(
+                                    observation,
+                                    task_description,
+                                    args.resize_size,
+                                )
+                                result = _teacher_request(
+                                    client,
+                                    policy_input,
+                                    policy_seed=policy_seed,
+                                    denoising_steps=args.action_cot_denoising_steps,
+                                )
+                                primary_actions = _teacher_tensors(result, shape)["actions_env"]
                                 skipped += 1
                             else:
+                                record, primary_actions, gate = _collect_root(
+                                    env,
+                                    observation,
+                                    snapshot,
+                                    client=client,
+                                    task_description=task_description,
+                                    task_id=task_id,
+                                    episode_id=episode_id,
+                                    decision_step=step,
+                                    root_id=root_id,
+                                    policy_seed=policy_seed,
+                                    args=args,
+                                    shape=shape,
+                                )
+                                for name, current_maximum in maximum_gate_errors.items():
+                                    maximum_gate_errors[name] = max(
+                                        current_maximum,
+                                        float(gate[name]),
+                                    )
                                 writer.append(record)
                                 processed += 1
                                 valid = np.asarray(record["branch_valid"], dtype=np.bool_)
@@ -711,6 +723,19 @@ def main(args: argparse.Namespace) -> None:
                         finally:
                             observation = _restore_canonical_snapshot(env, snapshot)
 
+                        if primary_actions is None and args.continue_on_error:
+                            policy_input = libero_eval._observation_to_policy_input(
+                                observation,
+                                task_description,
+                                args.resize_size,
+                            )
+                            result = _teacher_request(
+                                client,
+                                policy_input,
+                                policy_seed=policy_seed,
+                                denoising_steps=args.action_cot_denoising_steps,
+                            )
+                            primary_actions = _teacher_tensors(result, shape)["actions_env"]
                         if primary_actions is None:
                             break
                         observation, done, executed = _step_actions(
