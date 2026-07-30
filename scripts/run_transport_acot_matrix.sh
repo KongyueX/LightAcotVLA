@@ -8,6 +8,7 @@ dataset=${TRANSPORT_DATASET:?Set TRANSPORT_DATASET to the multirate window direc
 output_root=${TRANSPORT_OUTPUT_ROOT:?Set TRANSPORT_OUTPUT_ROOT to a new experiment directory.}
 train_steps=${TRANSPORT_TRAIN_STEPS:-1500}
 seed=${TRANSPORT_SEED:-7}
+split_seed=${TRANSPORT_SPLIT_SEED:-7}
 
 mkdir -p "${output_root}/logs"
 export PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
@@ -18,6 +19,7 @@ common_args=(
   --dataset "${dataset}"
   --selection-mode action
   --seed "${seed}"
+  --split-seed "${split_seed}"
   --train-steps "${train_steps}"
   --batch-size 128
   --eval-batch-size 512

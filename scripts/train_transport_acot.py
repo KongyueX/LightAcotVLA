@@ -46,6 +46,7 @@ class Args:
     selection_mode: str = "legacy"
     gripper_logit_residual_scale: float = 6.0
     seed: int = 7
+    split_seed: int = 7
     train_steps: int = 1_500
     batch_size: int = 128
     eval_batch_size: int = 512
@@ -120,6 +121,8 @@ def _validate_args(args: Args) -> None:
         raise ValueError("selection_mode must be one of: legacy, action.")
     if args.geometry_rank != 4:
         raise ValueError("geometry_rank must be four for the matched plan/direct pilot.")
+    if args.seed < 0 or args.split_seed < 0:
+        raise ValueError("seed and split_seed must be non-negative.")
     if (
         args.train_steps <= 0
         or args.batch_size <= 0
@@ -1112,7 +1115,7 @@ def main(args: Args) -> None:
         arrays,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
-        seed=args.seed,
+        seed=args.split_seed,
     )
     ranges = _training_ranges(
         arrays,
@@ -1205,6 +1208,10 @@ def main(args: Args) -> None:
         "num_validation_windows": int(validation_windows.size),
         "num_test_windows": int(test_windows.size),
         "split": "task-stratified and episode-disjoint",
+        "random_seeds": {
+            "model_and_sampling_seed": args.seed,
+            "split_seed": args.split_seed,
+        },
         "time_warp_protocol": {
             "anchor_age": 0,
             "elapsed_ages": [1, 2, 3],
