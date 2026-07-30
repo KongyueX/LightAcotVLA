@@ -4,8 +4,9 @@
 
 The selector is deliberately bottlenecked: observations may only choose one
 of the ten cached action tokens.  They cannot produce an action residual or a
-new action.  Training uses a differentiable soft mixture of cached continuous
-actions, while the primary deployable evaluation uses hard argmax selection.
+new action. Training minimizes the expected risk of selecting a cached token;
+the soft action mixture is diagnostic only, while deployable evaluation uses
+hard argmax selection.
 
 Roots are split by episode before branches are flattened.  A second,
 independently trained no-current-observation model is included so that the
@@ -371,14 +372,15 @@ def _loss(
     probabilities = jax.nn.softmax(logits, axis=-1)
     mixed_action = jnp.einsum("nh,nhd->nd", probabilities, batch["cached_actions"][..., :6])
     target_action = batch["fresh_actions"][:, 0, :6]
-    action_mse = jnp.mean(jnp.square(mixed_action - target_action))
+    soft_mixture_action_mse = jnp.mean(jnp.square(mixed_action - target_action))
     token_costs = jnp.mean(
         jnp.square(batch["cached_actions"][..., :6] - target_action[:, None]),
         axis=-1,
     )
+    expected_candidate_risk = jnp.mean(jnp.sum(probabilities * token_costs, axis=-1))
     soft_target = jax.nn.softmax(-token_costs / soft_target_temperature, axis=-1)
     soft_target_ce = -jnp.mean(jnp.sum(soft_target * jax.nn.log_softmax(logits, axis=-1), axis=-1))
-    total = action_loss_weight * action_mse + soft_target_ce_weight * soft_target_ce
+    total = action_loss_weight * expected_candidate_risk + soft_target_ce_weight * soft_target_ce
     hard_tokens = jnp.argmax(logits, axis=-1)
     hard_action = batch["cached_actions"][
         jnp.arange(batch["cached_actions"].shape[0]),
@@ -387,7 +389,8 @@ def _loss(
     ]
     return total, {
         "loss": total,
-        "soft_mixture_action_mse_6d": action_mse,
+        "expected_candidate_risk_6d": expected_candidate_risk,
+        "soft_mixture_action_mse_6d": soft_mixture_action_mse,
         "hard_argmax_action_mse_6d": jnp.mean(jnp.square(hard_action - target_action)),
         "soft_target_ce": soft_target_ce,
         "hard_oracle_token_accuracy": jnp.mean(
@@ -958,7 +961,8 @@ def main(args: Args) -> None:
             ),
             "forbidden_path": "no observation-to-action residual and no action decoder",
             "training_relaxation": (
-                "softmax mixture action MSE plus cost-derived soft-target cross entropy"
+                "expected per-token candidate risk plus cost-derived soft-target cross entropy; "
+                "soft action mixtures are diagnostic only"
             ),
             "deployable_output": "hard argmax cached-action token",
             "gripper_rule": f"dimension 6 always comes from cached token index {args.fixed_gripper_age}",
