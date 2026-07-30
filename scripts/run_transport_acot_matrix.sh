@@ -9,6 +9,7 @@ output_root=${TRANSPORT_OUTPUT_ROOT:?Set TRANSPORT_OUTPUT_ROOT to a new experime
 train_steps=${TRANSPORT_TRAIN_STEPS:-1500}
 seed=${TRANSPORT_SEED:-7}
 split_seed=${TRANSPORT_SPLIT_SEED:-7}
+requested_cases=${TRANSPORT_CASES:-}
 
 mkdir -p "${output_root}/logs"
 export PYTHONPATH="${repo_root}/src${PYTHONPATH:+:${PYTHONPATH}}"
@@ -32,18 +33,22 @@ common_args=(
 run_case() {
   local name=$1
   shift
+  if [[ -n "${requested_cases}" && ",${requested_cases}," != *",${name},"* ]]; then
+    echo "Skipping unrequested case ${name}"
+    return
+  fi
   local case_dir="${output_root}/${name}"
   local log_path="${output_root}/logs/${name}.log"
   if [[ -f "${case_dir}/summary.json" ]]; then
     echo "Skipping completed case ${name}: ${case_dir}/summary.json"
     return
   fi
-  echo "Starting ${name} at $(date --iso-8601=seconds)"
+  echo "Starting ${name} at $(date -Iseconds)"
   "${python_bin}" "${repo_root}/scripts/train_transport_acot.py" \
     "${common_args[@]}" \
     --output-dir "${case_dir}" \
     "$@" 2>&1 | tee "${log_path}"
-  echo "Finished ${name} at $(date --iso-8601=seconds)"
+  echo "Finished ${name} at $(date -Iseconds)"
 }
 
 run_case phase \
@@ -70,5 +75,23 @@ run_case plan_event_strong \
   --action-gripper-loss-weight 0.05 \
   --event-loss-weight 0.05 \
   --geometry-regularization-weight 0.001
+
+run_case plan_event_isolated_low \
+  --correction-mode plan \
+  --no-enable-geometry-correction \
+  --isolate-event-gradients \
+  --velocity-loss-weight 0.25 \
+  --gripper-state-loss-weight 0.01 \
+  --action-gripper-loss-weight 0.01 \
+  --event-loss-weight 0.01
+
+run_case plan_event_isolated_strong \
+  --correction-mode plan \
+  --no-enable-geometry-correction \
+  --isolate-event-gradients \
+  --velocity-loss-weight 0.25 \
+  --gripper-state-loss-weight 0.05 \
+  --action-gripper-loss-weight 0.05 \
+  --event-loss-weight 0.05
 
 touch "${output_root}/matrix.complete"
