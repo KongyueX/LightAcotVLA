@@ -10,13 +10,36 @@ residual policy.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 
 _PARAMETER_LIMIT = 5_000_000
+_GEOMETRY_DIM = 6
+_GRIPPER_INDEX = 6
+
+CorrectionMode = Literal["phase", "plan", "direct"]
+
+
+class TransportedActionCoTOutput(NamedTuple):
+    """Detailed outputs for training, diagnostics, and causal ablations.
+
+    ``transported_ear`` is the phase-warped cached plan. ``revised_ear`` also
+    includes the explicit low-rank plan correction when ``correction_mode`` is
+    ``"plan"``.  In ``"direct"`` mode the plan is unchanged and
+    ``direct_action_residual`` exposes the observation-to-action baseline.
+    """
+
+    action: jax.Array
+    transported_ear: jax.Array
+    revised_ear: jax.Array
+    phase: jax.Array
+    geometry_residual: jax.Array
+    gripper_logits: jax.Array
+    event_prob: jax.Array
+    direct_action_residual: jax.Array
 
 
 @dataclasses.dataclass(frozen=True)
@@ -39,6 +62,11 @@ class TransportedActionCoTConfig:
     cnn_channels: tuple[int, ...] = (16, 32, 64, 96)
     cnn_kernel_sizes: tuple[int, ...] = (5, 3, 3, 3)
     hidden_dim: int = 128
+    correction_mode: CorrectionMode = "phase"
+    geometry_rank: int = 4
+    geometry_scale: tuple[float, ...] = (0.5, 0.5, 0.5, 0.5, 0.5, 0.5)
+    gripper_logit_residual_scale: float = 2.0
+    direct_residual_scale: float = 0.5
     max_parameters: int = _PARAMETER_LIMIT
 
     def __post_init__(self) -> None:
@@ -54,6 +82,7 @@ class TransportedActionCoTConfig:
             "coarse_time_stride",
             "decoder_tokens",
             "hidden_dim",
+            "geometry_rank",
             "max_parameters",
         )
         for name in integer_fields:
@@ -77,6 +106,22 @@ class TransportedActionCoTConfig:
             raise ValueError("max_phase_offset must be positive.")
         if self.max_log_speed <= 0:
             raise ValueError("max_log_speed must be positive.")
+        if self.correction_mode not in ("phase", "plan", "direct"):
+            raise ValueError(
+                f"correction_mode must be one of 'phase', 'plan', or 'direct', got {self.correction_mode!r}."
+            )
+        if self.geometry_rank != 4:
+            raise ValueError("geometry_rank must be four for the matched plan/direct pilot.")
+        if len(self.geometry_scale) != _GEOMETRY_DIM:
+            raise ValueError(f"geometry_scale must contain {_GEOMETRY_DIM} values.")
+        if any(scale <= 0 for scale in self.geometry_scale):
+            raise ValueError("All geometry_scale values must be positive.")
+        if self.gripper_logit_residual_scale <= 0:
+            raise ValueError("gripper_logit_residual_scale must be positive.")
+        if self.direct_residual_scale <= 0:
+            raise ValueError("direct_residual_scale must be positive.")
+        if self.correction_mode == "plan" and self.action_dim <= _GRIPPER_INDEX:
+            raise ValueError(f"Plan correction requires action_dim greater than {_GRIPPER_INDEX}.")
         if self.max_parameters > _PARAMETER_LIMIT:
             raise ValueError(f"max_parameters may not exceed {_PARAMETER_LIMIT}.")
         estimated = estimate_parameter_count(self)
@@ -113,6 +158,15 @@ def estimate_parameter_count(config: TransportedActionCoTConfig) -> int:
     count += _linear_parameter_count(hidden, 2)
     count += _linear_parameter_count(config.decoder_tokens * config.action_dim, hidden)
     count += _linear_parameter_count(hidden, config.action_dim)
+    if config.correction_mode == "plan":
+        count += _linear_parameter_count(hidden, config.geometry_rank)
+        count += _linear_parameter_count(
+            hidden,
+            config.geometry_rank * _GEOMETRY_DIM,
+        )
+        count += _linear_parameter_count(hidden, config.geometry_rank)
+    elif config.correction_mode == "direct":
+        count += _linear_parameter_count(hidden, config.action_dim)
     return count
 
 
@@ -277,6 +331,46 @@ class TransportedActionCoTExecutor(nnx.Module):
             bias_init=jax.nn.initializers.zeros,
         )
 
+        if config.correction_mode == "plan":
+            # A shared rank-four temporal basis keeps both geometry and
+            # gripper correction inside the explicit EAR plan.  The
+            # observation-conditioned coefficient heads are zero initialized,
+            # so enabling this mode starts from phase transport.
+            self.plan_temporal_basis = nnx.Linear(
+                hidden,
+                config.geometry_rank,
+                rngs=rngs,
+                param_dtype=param_dtype,
+            )
+            self.geometry_coefficients = nnx.Linear(
+                hidden,
+                config.geometry_rank * _GEOMETRY_DIM,
+                rngs=rngs,
+                param_dtype=param_dtype,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+            self.gripper_coefficients = nnx.Linear(
+                hidden,
+                config.geometry_rank,
+                rngs=rngs,
+                param_dtype=param_dtype,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+        elif config.correction_mode == "direct":
+            # Matched observation-to-action residual baseline.  With the
+            # default dimensions this has exactly as many extra parameters as
+            # the three plan-correction projections above.
+            self.direct_action_out = nnx.Linear(
+                hidden,
+                config.action_dim,
+                rngs=rngs,
+                param_dtype=param_dtype,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+
     @staticmethod
     def _normalize_images(images: jax.Array) -> jax.Array:
         mean = jnp.mean(images, axis=(1, 2), keepdims=True)
@@ -319,7 +413,7 @@ class TransportedActionCoTExecutor(nnx.Module):
             )
         return jnp.mean(jax.nn.silu(self.iar_proj(cached_iar)), axis=1)
 
-    def _predict_phase(
+    def _predict_phase_and_context(
         self,
         anchor_images: jax.Array,
         current_images: jax.Array,
@@ -328,7 +422,7 @@ class TransportedActionCoTExecutor(nnx.Module):
         cached_ear: jax.Array,
         cached_iar: jax.Array | None,
         cache_age: jax.Array,
-    ) -> jax.Array:
+    ) -> tuple[jax.Array, jax.Array]:
         config = self.config
         batch_size = cached_ear.shape[0]
         anchor_visual = self._encode_images(anchor_images)
@@ -350,9 +444,7 @@ class TransportedActionCoTExecutor(nnx.Module):
 
         state_delta = current_state - anchor_state
         state_feature = jax.nn.silu(
-            self.state_delta_proj(
-                jnp.concatenate([anchor_state, current_state, state_delta], axis=-1)
-            )
+            self.state_delta_proj(jnp.concatenate([anchor_state, current_state, state_delta], axis=-1))
         )
         ear_feature = self._encode_ear(cached_ear)
         iar_feature = self._encode_iar(cached_iar, batch_size=batch_size)
@@ -381,9 +473,9 @@ class TransportedActionCoTExecutor(nnx.Module):
         speed = jnp.exp(config.max_log_speed * jnp.tanh(phase_parameters[:, 1]))
         token_positions = jnp.arange(config.ear_horizon, dtype=jnp.float32)
         phase = nominal_start[:, None] + start_offset[:, None] + speed[:, None] * token_positions[None, :]
-        return jnp.clip(phase, 0.0, config.max_phase)
+        return jnp.clip(phase, 0.0, config.max_phase), hidden
 
-    def forward_with_aux(
+    def _predict_phase(
         self,
         anchor_images: jax.Array,
         current_images: jax.Array,
@@ -392,8 +484,117 @@ class TransportedActionCoTExecutor(nnx.Module):
         cached_ear: jax.Array,
         cached_iar: jax.Array | None,
         cache_age: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
-        """Return ``(action, transported_ear, phase)`` for the current tick."""
+    ) -> jax.Array:
+        """Return phase only, preserving the original private helper API."""
+
+        phase, _ = self._predict_phase_and_context(
+            anchor_images,
+            current_images,
+            anchor_state,
+            current_state,
+            cached_ear,
+            cached_iar,
+            cache_age,
+        )
+        return phase
+
+    def _decode_action(self, ear: jax.Array) -> jax.Array:
+        """Decode an action from EAR tokens without an observation bypass."""
+
+        config = self.config
+        batch_size = ear.shape[0]
+        decoder_input = ear[:, : config.decoder_tokens].reshape((batch_size, config.decoder_tokens * config.action_dim))
+        decoder_feature = jax.nn.silu(self.decoder_hidden(decoder_input))
+        return ear[:, 0] + self.decoder_out(decoder_feature)
+
+    def _gripper_statistics(self, ear: jax.Array) -> tuple[jax.Array, jax.Array]:
+        """Return gripper state logits and adjacent-token event probabilities."""
+
+        if ear.shape[-1] <= _GRIPPER_INDEX:
+            logits = jnp.zeros(ear.shape[:2], dtype=ear.dtype)
+            return logits, jnp.zeros((ear.shape[0], max(ear.shape[1] - 1, 0)), dtype=ear.dtype)
+        clipped_gripper = jnp.clip(
+            ear[..., _GRIPPER_INDEX],
+            -1.0 + 1e-4,
+            1.0 - 1e-4,
+        )
+        logits = jnp.arctanh(clipped_gripper)
+        probability = jax.nn.sigmoid(2.0 * logits)
+        event_probability = (
+            probability[:, 1:] * (1.0 - probability[:, :-1]) + (1.0 - probability[:, 1:]) * probability[:, :-1]
+        )
+        return logits, event_probability
+
+    def _revise_plan(
+        self,
+        transported_ear: jax.Array,
+        context: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Apply the explicit rank-four plan correction, when configured."""
+
+        config = self.config
+        batch_size = transported_ear.shape[0]
+        geometry_residual = jnp.zeros(
+            (batch_size, config.ear_horizon, _GEOMETRY_DIM),
+            dtype=transported_ear.dtype,
+        )
+        if config.correction_mode != "plan":
+            gripper_logits, event_probability = self._gripper_statistics(transported_ear)
+            return transported_ear, geometry_residual, gripper_logits, event_probability
+
+        plan_tokens = jax.nn.silu(self.ear_token_proj(transported_ear))
+        temporal_basis = jnp.tanh(self.plan_temporal_basis(plan_tokens))
+        geometry_coefficients = self.geometry_coefficients(context).reshape(
+            (batch_size, config.geometry_rank, _GEOMETRY_DIM)
+        )
+        geometry_scale = jnp.asarray(config.geometry_scale, dtype=transported_ear.dtype)
+        geometry_coefficients = jnp.tanh(geometry_coefficients) * geometry_scale[None, None, :]
+        rank_normalizer = jnp.sqrt(jnp.asarray(config.geometry_rank, dtype=transported_ear.dtype))
+        geometry_residual = (
+            jnp.einsum(
+                "bhr,brd->bhd",
+                temporal_basis,
+                geometry_coefficients,
+            )
+            / rank_normalizer
+        )
+        revised_ear = transported_ear.at[..., :_GEOMETRY_DIM].add(geometry_residual)
+
+        base_gripper = jnp.clip(
+            transported_ear[..., _GRIPPER_INDEX],
+            -1.0 + 1e-4,
+            1.0 - 1e-4,
+        )
+        base_gripper_logits = jnp.arctanh(base_gripper)
+        gripper_coefficients = config.gripper_logit_residual_scale * jnp.tanh(self.gripper_coefficients(context))
+        gripper_logit_residual = (
+            jnp.einsum(
+                "bhr,br->bh",
+                temporal_basis,
+                gripper_coefficients,
+            )
+            / rank_normalizer
+        )
+        gripper_logits = base_gripper_logits + gripper_logit_residual
+        revised_ear = revised_ear.at[..., _GRIPPER_INDEX].set(jnp.tanh(gripper_logits))
+        gripper_probability = jax.nn.sigmoid(2.0 * gripper_logits)
+        event_probability = (
+            gripper_probability[:, 1:] * (1.0 - gripper_probability[:, :-1])
+            + (1.0 - gripper_probability[:, 1:]) * gripper_probability[:, :-1]
+        )
+        return revised_ear, geometry_residual, gripper_logits, event_probability
+
+    def forward_with_details(
+        self,
+        anchor_images: jax.Array,
+        current_images: jax.Array,
+        anchor_state: jax.Array,
+        current_state: jax.Array,
+        cached_ear: jax.Array,
+        cached_iar: jax.Array | None,
+        cache_age: jax.Array,
+    ) -> TransportedActionCoTOutput:
+        """Return detailed phase, plan-correction, event, and action outputs."""
 
         config = self.config
         anchor_images = jnp.asarray(anchor_images, dtype=jnp.float32)
@@ -435,7 +636,7 @@ class TransportedActionCoTExecutor(nnx.Module):
             cached_iar = jnp.asarray(cached_iar, dtype=jnp.float32)
             _require_shape(cached_iar, (batch_size, None, config.iar_dim), "cached_iar")
 
-        phase = self._predict_phase(
+        phase, context = self._predict_phase_and_context(
             anchor_images,
             current_images,
             anchor_state,
@@ -445,12 +646,58 @@ class TransportedActionCoTExecutor(nnx.Module):
             cache_age,
         )
         transported_ear = interpolate_ear(cached_ear, phase)
-        decoder_input = transported_ear[:, : config.decoder_tokens].reshape(
-            (batch_size, config.decoder_tokens * config.action_dim)
+        revised_ear, geometry_residual, gripper_logits, event_probability = self._revise_plan(
+            transported_ear,
+            context,
         )
-        decoder_feature = jax.nn.silu(self.decoder_hidden(decoder_input))
-        action = transported_ear[:, 0] + self.decoder_out(decoder_feature)
-        return action, transported_ear, phase
+        action = self._decode_action(revised_ear)
+        direct_action_residual = jnp.zeros_like(action)
+        if config.correction_mode == "plan":
+            # The discrete gripper state is part of the revised EAR and cannot
+            # be overwritten by a continuous decoder residual.
+            action = action.at[..., _GRIPPER_INDEX].set(revised_ear[:, 0, _GRIPPER_INDEX])
+        elif config.correction_mode == "direct":
+            direct_action_residual = config.direct_residual_scale * jnp.tanh(self.direct_action_out(context))
+            action = action + direct_action_residual
+
+        return TransportedActionCoTOutput(
+            action=action,
+            transported_ear=transported_ear,
+            revised_ear=revised_ear,
+            phase=phase,
+            geometry_residual=geometry_residual,
+            gripper_logits=gripper_logits,
+            event_prob=event_probability,
+            direct_action_residual=direct_action_residual,
+        )
+
+    def forward_with_aux(
+        self,
+        anchor_images: jax.Array,
+        current_images: jax.Array,
+        anchor_state: jax.Array,
+        current_state: jax.Array,
+        cached_ear: jax.Array,
+        cached_iar: jax.Array | None,
+        cache_age: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        """Return ``(action, revised_ear, phase)`` for the current tick.
+
+        With the default ``correction_mode="phase"``, ``revised_ear`` is
+        exactly the original phase-transported EAR and the parameter tree is
+        unchanged.
+        """
+
+        output = self.forward_with_details(
+            anchor_images,
+            current_images,
+            anchor_state,
+            current_state,
+            cached_ear,
+            cached_iar,
+            cache_age,
+        )
+        return output.action, output.revised_ear, output.phase
 
     def __call__(
         self,

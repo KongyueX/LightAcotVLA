@@ -29,17 +29,22 @@ import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from openpi.action_cot import multirate_dataset
-from openpi.models import transported_action_cot
 import optax
 import orbax.checkpoint as ocp
 import tyro
+
+from openpi.action_cot import multirate_dataset
+from openpi.models import transported_action_cot
 
 
 @dataclasses.dataclass(frozen=True)
 class Args:
     dataset: tuple[str, ...]
     output_dir: str
+    correction_mode: str = "phase"
+    geometry_rank: int = 4
+    selection_mode: str = "legacy"
+    gripper_logit_residual_scale: float = 6.0
     seed: int = 7
     train_steps: int = 1_500
     batch_size: int = 128
@@ -55,6 +60,17 @@ class Args:
     action_loss_weight: float = 1.0
     transport_loss_weight: float = 1.0
     phase_loss_weight: float = 0.25
+    velocity_loss_weight: float = 0.0
+    gripper_state_loss_weight: float = 0.0
+    action_gripper_loss_weight: float = 0.0
+    event_loss_weight: float = 0.0
+    geometry_regularization_weight: float = 0.0
+    event_positive_weight_cap: float = 10.0
+    selection_phase_mae_limit: float = 0.25
+    profile_warmup: int = 50
+    profile_iterations: int = 2_000
+    refresh_interval: int = 4
+    full_acot_reference_ms: float = 95.844
     huber_delta: float = 0.1
     gripper_weight: float = 4.0
     minimum_action_residual_scale: float = 0.5
@@ -80,11 +96,7 @@ class PairIndices:
             raise TypeError("elapsed_age and physical_progress must contain integers.")
         if np.any((elapsed_age < 1) | (elapsed_age > 3)):
             raise ValueError("elapsed_age must be in [1, 3].")
-        legal = (
-            (physical_progress >= 0)
-            & (physical_progress <= 3)
-            & (np.abs(physical_progress - elapsed_age) <= 1)
-        )
+        legal = (physical_progress >= 0) & (physical_progress <= 3) & (np.abs(physical_progress - elapsed_age) <= 1)
         if not np.all(legal):
             raise ValueError("physical_progress must be a legal local time warp around elapsed_age.")
 
@@ -102,7 +114,20 @@ class PairIndices:
 def _validate_args(args: Args) -> None:
     if not args.dataset:
         raise ValueError("At least one --dataset path is required.")
-    if args.train_steps <= 0 or args.batch_size <= 0 or args.eval_batch_size <= 0:
+    if args.correction_mode not in {"phase", "plan", "direct"}:
+        raise ValueError("correction_mode must be one of: phase, plan, direct.")
+    if args.selection_mode not in {"legacy", "action"}:
+        raise ValueError("selection_mode must be one of: legacy, action.")
+    if args.geometry_rank != 4:
+        raise ValueError("geometry_rank must be four for the matched plan/direct pilot.")
+    if (
+        args.train_steps <= 0
+        or args.batch_size <= 0
+        or args.eval_batch_size <= 0
+        or args.profile_warmup < 0
+        or args.profile_iterations <= 0
+        or args.refresh_interval <= 1
+    ):
         raise ValueError("train_steps and batch sizes must be positive.")
     if args.log_interval <= 0:
         raise ValueError("log_interval must be positive.")
@@ -112,6 +137,8 @@ def _validate_args(args: Args) -> None:
         args.learning_rate <= 0
         or args.weight_decay < 0
         or args.gradient_clip_norm <= 0
+        or args.gripper_logit_residual_scale <= 0
+        or args.full_acot_reference_ms <= 0
         or args.huber_delta <= 0
         or args.gripper_weight <= 0
         or args.minimum_action_residual_scale <= 0
@@ -120,10 +147,26 @@ def _validate_args(args: Args) -> None:
         raise ValueError(
             "Optimizer/loss scales must be positive, weight_decay non-negative, and output_margin greater than one."
         )
-    if args.action_loss_weight < 0 or args.transport_loss_weight < 0 or args.phase_loss_weight < 0:
+    auxiliary_weights = (
+        args.velocity_loss_weight,
+        args.gripper_state_loss_weight,
+        args.action_gripper_loss_weight,
+        args.event_loss_weight,
+        args.geometry_regularization_weight,
+    )
+    if (
+        args.action_loss_weight < 0
+        or args.transport_loss_weight < 0
+        or args.phase_loss_weight < 0
+        or any(weight < 0 for weight in auxiliary_weights)
+    ):
         raise ValueError("Loss weights must be non-negative.")
-    if args.action_loss_weight + args.transport_loss_weight + args.phase_loss_weight <= 0:
+    if args.action_loss_weight + args.transport_loss_weight + args.phase_loss_weight + sum(auxiliary_weights) <= 0:
         raise ValueError("At least one loss weight must be positive.")
+    if args.event_positive_weight_cap < 1.0:
+        raise ValueError("event_positive_weight_cap must be at least one.")
+    if args.selection_phase_mae_limit <= 0:
+        raise ValueError("selection_phase_mae_limit must be positive.")
     if not 0 < args.validation_fraction < 0.5 or not 0 < args.test_fraction < 0.5:
         raise ValueError("validation_fraction and test_fraction must be in (0, 0.5).")
     if args.validation_fraction + args.test_fraction >= 0.5:
@@ -221,11 +264,7 @@ def _sample_training_pairs(
     warped_age = rng.integers(1, 4, size=warped_count, dtype=np.int64)
     warped_progress = np.empty_like(warped_age)
     for index, age in enumerate(warped_age):
-        candidates = [
-            progress
-            for progress in range(max(0, int(age) - 1), min(3, int(age) + 1) + 1)
-            if progress != age
-        ]
+        candidates = [progress for progress in range(max(0, int(age) - 1), min(3, int(age) + 1) + 1) if progress != age]
         warped_progress[index] = rng.choice(candidates)
     windows = np.concatenate([nominal_windows, warped_windows])
     elapsed_age = np.concatenate([nominal_age, warped_age])
@@ -279,16 +318,33 @@ def _weighted_huber_7d(
     return jnp.sum(weighted) / jnp.asarray(denominator, dtype=values.dtype)
 
 
+def _binary_cross_entropy_with_logits(logits: jax.Array, targets: jax.Array) -> jax.Array:
+    targets = jnp.asarray(targets, dtype=logits.dtype)
+    return jnp.maximum(logits, 0.0) - logits * targets + jnp.log1p(jnp.exp(-jnp.abs(logits)))
+
+
+def _event_focal_loss(
+    probabilities: jax.Array,
+    targets: jax.Array,
+    *,
+    positive_weight: float,
+) -> jax.Array:
+    targets = jnp.asarray(targets, dtype=probabilities.dtype)
+    probabilities = jnp.clip(probabilities, 1e-6, 1.0 - 1e-6)
+    class_weight = jnp.where(targets > 0.5, positive_weight, 1.0)
+    target_probability = jnp.where(targets > 0.5, probabilities, 1.0 - probabilities)
+    return jnp.mean(class_weight * jnp.square(1.0 - target_probability) * (-jnp.log(target_probability)))
+
+
 def _loss(
-    predicted_action: jax.Array,
-    predicted_ear: jax.Array,
-    predicted_phase: jax.Array,
+    output: transported_action_cot.TransportedActionCoTOutput,
     batch: dict[str, jax.Array],
     *,
     args: Args,
+    event_positive_weight: float,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     action_loss = _weighted_huber_7d(
-        predicted_action,
+        output.action,
         batch["target_action"],
         delta=args.huber_delta,
         gripper_weight=args.gripper_weight,
@@ -296,29 +352,58 @@ def _loss(
     # Supervise all EAR time tokens, but only the seven physical action
     # dimensions.  Remaining padded dimensions must not dominate transport.
     transport_loss = _weighted_huber_7d(
-        predicted_ear,
+        output.revised_ear,
         batch["target_ear"],
         delta=args.huber_delta,
         gripper_weight=args.gripper_weight,
     )
-    if predicted_phase.ndim != 2 or predicted_phase.shape[0] != batch["phase_label"].shape[0]:
+    predicted_velocity = jnp.diff(output.revised_ear[..., :6], axis=1)
+    target_velocity = jnp.diff(batch["target_ear"][..., :6], axis=1)
+    velocity_loss = jnp.mean(_huber(predicted_velocity - target_velocity, args.huber_delta))
+    target_gripper = (batch["target_ear"][..., 6] >= 0).astype(jnp.float32)
+    gripper_state_loss = jnp.mean(_binary_cross_entropy_with_logits(2.0 * output.gripper_logits, target_gripper))
+    target_action_gripper = (batch["target_action"][..., 6] >= 0).astype(jnp.float32)
+    action_gripper_loss = jnp.mean(
+        _binary_cross_entropy_with_logits(
+            2.0 * output.gripper_logits[:, 0],
+            target_action_gripper,
+        )
+    )
+    target_event = (target_gripper[:, 1:] != target_gripper[:, :-1]).astype(jnp.float32)
+    event_loss = _event_focal_loss(
+        output.event_prob,
+        target_event,
+        positive_weight=event_positive_weight,
+    )
+    geometry_regularization = jnp.mean(jnp.square(output.geometry_residual))
+    if output.phase.ndim != 2 or output.phase.shape[0] != batch["phase_label"].shape[0]:
         raise ValueError(
             "Predicted phase must have shape [batch, EAR horizon], got "
-            f"{predicted_phase.shape} for labels {batch['phase_label'].shape}."
+            f"{output.phase.shape} for labels {batch['phase_label'].shape}."
         )
     # The explicit time-warp label supervises the transported plan's starting
     # phase.  The full-EAR loss supplies the corresponding speed/shape signal.
-    phase_start = predicted_phase[:, 0]
+    phase_start = output.phase[:, 0]
     phase_loss = jnp.mean(jnp.square(phase_start - batch["phase_label"]))
     total = (
         args.action_loss_weight * action_loss
         + args.transport_loss_weight * transport_loss
         + args.phase_loss_weight * phase_loss
+        + args.velocity_loss_weight * velocity_loss
+        + args.gripper_state_loss_weight * gripper_state_loss
+        + args.action_gripper_loss_weight * action_gripper_loss
+        + args.event_loss_weight * event_loss
+        + args.geometry_regularization_weight * geometry_regularization
     )
     return total, {
         "action_huber": action_loss,
         "transport_huber": transport_loss,
         "phase_mse": phase_loss,
+        "velocity_huber": velocity_loss,
+        "gripper_state_bce": gripper_state_loss,
+        "action_gripper_bce": action_gripper_loss,
+        "event_focal": event_loss,
+        "geometry_regularization": geometry_regularization,
         "total": total,
     }
 
@@ -346,7 +431,7 @@ def _training_ranges(
     *,
     minimum_action_residual_scale: float,
     output_margin: float,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Calibrate bounded action outputs using training windows only."""
 
     pairs = _all_time_warp_pairs(train_windows)
@@ -357,11 +442,17 @@ def _training_ranges(
     )
     target_action = arrays["teacher_actions"][pairs.windows, pairs.physical_progress].astype(np.float32)
     action_target_max_abs_7d = float(np.max(np.abs(target_action[..., :7])))
-    action_residual_max_abs_7d = float(
-        np.max(np.abs(target_action[..., :7] - oracle_transport[:, 0, :7]))
-    )
+    action_residual_max_abs_7d = float(np.max(np.abs(target_action[..., :7] - oracle_transport[:, 0, :7])))
     transport_target = arrays["fresh_ear"][pairs.windows, pairs.physical_progress].astype(np.float32)
     transport_target_max_abs_7d = float(np.max(np.abs(transport_target[..., :7])))
+    geometry_target = transport_target[..., :6] - oracle_transport[..., :6]
+    direct_target = target_action[..., :7] - oracle_transport[:, 0, :7]
+    geometry_quantile = np.quantile(np.abs(geometry_target), 0.995, axis=(0, 1))
+    direct_quantile = np.quantile(np.abs(direct_target), 0.995, axis=0)
+    geometry_scale = np.maximum(0.05, output_margin * geometry_quantile).astype(np.float32)
+    direct_scale = np.maximum(minimum_action_residual_scale, output_margin * direct_quantile).astype(np.float32)
+    geometry_out_of_range = float(np.mean(np.abs(geometry_target) >= geometry_scale[None, None, :]))
+    direct_out_of_range = float(np.mean(np.abs(direct_target) >= direct_scale[None, :]))
     effective_action_residual_scale = max(
         minimum_action_residual_scale,
         output_margin * max(action_target_max_abs_7d, action_residual_max_abs_7d),
@@ -371,7 +462,26 @@ def _training_ranges(
         "action_residual_max_abs_7d": action_residual_max_abs_7d,
         "transport_target_max_abs_7d": transport_target_max_abs_7d,
         "suggested_action_residual_scale": effective_action_residual_scale,
+        "geometry_scale_6d": geometry_scale.tolist(),
+        "direct_residual_scale_7d": direct_scale.tolist(),
+        "geometry_target_out_of_range_fraction": geometry_out_of_range,
+        "direct_target_out_of_range_fraction": direct_out_of_range,
     }
+
+
+def _event_positive_weight(
+    arrays: dict[str, np.ndarray],
+    train_windows: np.ndarray,
+    *,
+    cap: float,
+) -> tuple[float, int, int]:
+    gripper = arrays["fresh_ear"][train_windows, ..., 6] >= 0
+    event = gripper[..., 1:] != gripper[..., :-1]
+    positive_count = int(np.sum(event))
+    negative_count = int(event.size - positive_count)
+    if positive_count == 0:
+        return 1.0, positive_count, negative_count
+    return min(cap, negative_count / positive_count), positive_count, negative_count
 
 
 def _save_params(params: nnx.State, target: pathlib.Path, *, overwrite: bool) -> None:
@@ -410,11 +520,40 @@ def _action_metrics(predicted: np.ndarray, target: np.ndarray) -> dict[str, Any]
     target_gripper = target[..., 6] >= 0
     return {
         "mse_7d": float(np.mean(np.square(error))),
+        "mse_6d": float(np.mean(np.square(error[..., :6]))),
         "translation_mse": float(np.mean(np.square(error[..., :3]))),
         "rotation_mse": float(np.mean(np.square(error[..., 3:6]))),
         "gripper_mse": float(np.mean(np.square(error[..., 6]))),
         "gripper_sign_accuracy": float(np.mean(predicted_gripper == target_gripper)),
         "count": int(error.reshape((-1, error.shape[-1])).shape[0]),
+    }
+
+
+def _binary_metrics(predicted: np.ndarray, target: np.ndarray) -> dict[str, Any]:
+    predicted = np.asarray(predicted, dtype=np.bool_).reshape(-1)
+    target = np.asarray(target, dtype=np.bool_).reshape(-1)
+    if predicted.shape != target.shape or not predicted.size:
+        raise ValueError(
+            f"Binary metric arrays must be matching and non-empty, got {predicted.shape} and {target.shape}."
+        )
+    true_positive = int(np.sum(predicted & target))
+    false_positive = int(np.sum(predicted & ~target))
+    false_negative = int(np.sum(~predicted & target))
+    true_negative = int(np.sum(~predicted & ~target))
+
+    def f1(tp: int, fp: int, fn: int) -> float:
+        denominator = 2 * tp + fp + fn
+        return float(2 * tp / denominator) if denominator else 1.0
+
+    positive_f1 = f1(true_positive, false_positive, false_negative)
+    negative_f1 = f1(true_negative, false_negative, false_positive)
+    return {
+        "accuracy": float(np.mean(predicted == target)),
+        "f1": positive_f1,
+        "macro_f1": 0.5 * (positive_f1 + negative_f1),
+        "target_positive_count": int(np.sum(target)),
+        "predicted_positive_count": int(np.sum(predicted)),
+        "count": int(target.size),
     }
 
 
@@ -430,9 +569,7 @@ def _prediction_metrics(
     phase_label = pairs.physical_progress.astype(np.float32) / 2.0
     predicted_phase = np.asarray(predictions["phase"], dtype=np.float32)
     if predicted_phase.ndim != 2 or predicted_phase.shape[0] != len(pairs):
-        raise ValueError(
-            f"Predicted phase must have shape [pairs, EAR horizon], got {predicted_phase.shape}."
-        )
+        raise ValueError(f"Predicted phase must have shape [pairs, EAR horizon], got {predicted_phase.shape}.")
     phase = predicted_phase[:, 0]
     action_huber = _numpy_weighted_huber_7d(
         predictions["action"],
@@ -455,17 +592,36 @@ def _prediction_metrics(
 
     def subset(mask: np.ndarray) -> dict[str, Any]:
         action = _action_metrics(predictions["action"][mask], target_action[mask])
+        predicted_ear = predictions["ear"][mask]
+        selected_target_ear = target_ear[mask]
+        predicted_gripper = predicted_ear[..., 6] >= 0
+        target_gripper = selected_target_ear[..., 6] >= 0
+        predicted_event = predicted_gripper[:, 1:] != predicted_gripper[:, :-1]
+        target_event = target_gripper[:, 1:] != target_gripper[:, :-1]
+        gripper_metrics = _binary_metrics(predicted_gripper, target_gripper)
+        event_metrics = _binary_metrics(predicted_event, target_event)
         return {
             **action,
-            "transport_mse_7d": float(np.mean(np.square(predictions["ear"][mask, :, :7] - target_ear[mask, :, :7]))),
+            "transport_mse_7d": float(np.mean(np.square(predicted_ear[..., :7] - selected_target_ear[..., :7]))),
+            "transport_mse_6d": float(np.mean(np.square(predicted_ear[..., :6] - selected_target_ear[..., :6]))),
             "transport_token0_mse_7d": float(
-                np.mean(np.square(predictions["ear"][mask, 0, :7] - target_ear[mask, 0, :7]))
+                np.mean(np.square(predicted_ear[:, 0, :7] - selected_target_ear[:, 0, :7]))
             ),
+            "transport_velocity_mse_6d": float(
+                np.mean(
+                    np.square(np.diff(predicted_ear[..., :6], axis=1) - np.diff(selected_target_ear[..., :6], axis=1))
+                )
+            ),
+            "transport_gripper_sign_accuracy": gripper_metrics["accuracy"],
+            "transport_gripper_macro_f1": gripper_metrics["macro_f1"],
+            "transport_event_f1": event_metrics["f1"],
+            "transport_event_target_count": event_metrics["target_positive_count"],
+            "transport_event_predicted_count": event_metrics["predicted_positive_count"],
             "phase_mse": float(np.mean(np.square(phase[mask] - phase_label[mask]))),
             "phase_mae": float(np.mean(np.abs(phase[mask] - phase_label[mask]))),
         }
 
-    metrics = {
+    return {
         "loss": {
             "total": total,
             "action_huber": action_huber,
@@ -474,9 +630,7 @@ def _prediction_metrics(
         },
         "overall": subset(np.ones((len(pairs),), dtype=np.bool_)),
         "by_elapsed_age": {
-            str(age): subset(pairs.elapsed_age == age)
-            for age in range(1, 4)
-            if np.any(pairs.elapsed_age == age)
+            str(age): subset(pairs.elapsed_age == age) for age in range(1, 4) if np.any(pairs.elapsed_age == age)
         },
         "by_progress_offset": {
             str(offset): subset((pairs.physical_progress - pairs.elapsed_age) == offset)
@@ -484,7 +638,6 @@ def _prediction_metrics(
             if np.any((pairs.physical_progress - pairs.elapsed_age) == offset)
         },
     }
-    return metrics
 
 
 def _transport_baseline_metrics(
@@ -496,12 +649,26 @@ def _transport_baseline_metrics(
     target_action = arrays["teacher_actions"][pairs.windows, pairs.physical_progress].astype(np.float32)
     target_ear = arrays["fresh_ear"][pairs.windows, pairs.physical_progress].astype(np.float32)
     phase_label = pairs.physical_progress.astype(np.float32) / 2.0
+    predicted_gripper = predicted_ear[..., 6] >= 0
+    target_gripper = target_ear[..., 6] >= 0
+    gripper_metrics = _binary_metrics(predicted_gripper, target_gripper)
+    event_metrics = _binary_metrics(
+        predicted_gripper[:, 1:] != predicted_gripper[:, :-1],
+        target_gripper[:, 1:] != target_gripper[:, :-1],
+    )
     return {
         **_action_metrics(predicted_ear[:, 0], target_action),
         "transport_mse_7d": float(np.mean(np.square(predicted_ear[..., :7] - target_ear[..., :7]))),
-        "transport_token0_mse_7d": float(
-            np.mean(np.square(predicted_ear[:, 0, :7] - target_ear[:, 0, :7]))
+        "transport_mse_6d": float(np.mean(np.square(predicted_ear[..., :6] - target_ear[..., :6]))),
+        "transport_token0_mse_7d": float(np.mean(np.square(predicted_ear[:, 0, :7] - target_ear[:, 0, :7]))),
+        "transport_velocity_mse_6d": float(
+            np.mean(np.square(np.diff(predicted_ear[..., :6], axis=1) - np.diff(target_ear[..., :6], axis=1)))
         ),
+        "transport_gripper_sign_accuracy": gripper_metrics["accuracy"],
+        "transport_gripper_macro_f1": gripper_metrics["macro_f1"],
+        "transport_event_f1": event_metrics["f1"],
+        "transport_event_target_count": event_metrics["target_positive_count"],
+        "transport_event_predicted_count": event_metrics["predicted_positive_count"],
         "phase_mse": float(np.mean(np.square(predicted_phase - phase_label))),
         "phase_mae": float(np.mean(np.abs(predicted_phase - phase_label))),
     }
@@ -578,6 +745,59 @@ def _predict_pairs(
     if any(non_finite.values()):
         raise FloatingPointError(f"Transported Action-CoT produced non-finite predictions: {non_finite}.")
     return outputs
+
+
+def _profile_fast_path(
+    predict_step: Callable[[nnx.State, dict[str, jax.Array]], tuple[jax.Array, jax.Array, jax.Array]],
+    params: nnx.State,
+    batch: dict[str, jax.Array],
+    *,
+    warmup: int,
+    iterations: int,
+    refresh_interval: int,
+    full_acot_reference_ms: float,
+) -> dict[str, Any]:
+    profile_batch = {
+        name: value[:1]
+        for name, value in batch.items()
+        if name
+        in {
+            "anchor_images",
+            "current_images",
+            "anchor_state",
+            "current_state",
+            "cached_ear",
+            "cached_iar",
+            "cache_age",
+        }
+    }
+    for _ in range(warmup):
+        jax.block_until_ready(predict_step(params, profile_batch)[0])
+    samples_ms = np.empty((iterations,), dtype=np.float64)
+    for index in range(iterations):
+        started = time.perf_counter()
+        jax.block_until_ready(predict_step(params, profile_batch)[0])
+        samples_ms[index] = (time.perf_counter() - started) * 1_000.0
+    mean_ms = float(np.mean(samples_ms))
+    p95_ms = float(np.percentile(samples_ms, 95))
+    amortized_ms = (full_acot_reference_ms + (refresh_interval - 1) * mean_ms) / refresh_interval
+    return {
+        "device": str(jax.devices()[0]),
+        "batch_size": 1,
+        "warmup": warmup,
+        "iterations": iterations,
+        "mean_ms": mean_ms,
+        "p50_ms": float(np.percentile(samples_ms, 50)),
+        "p95_ms": p95_ms,
+        "p99_ms": float(np.percentile(samples_ms, 99)),
+        "full_acot_reference_ms": full_acot_reference_ms,
+        "refresh_interval": refresh_interval,
+        "formula": "(full_acot_reference_ms + (refresh_interval - 1) * fast_mean_ms) / refresh_interval",
+        "theoretical_amortized_ms": amortized_ms,
+        "theoretical_speedup_vs_full_acot": full_acot_reference_ms / amortized_ms,
+        "speed_gate_p95_below_2ms": p95_ms < 2.0,
+        "note": "Sidecar-only device latency; excludes camera, networking, environment, and closed-loop integration.",
+    }
 
 
 def _evaluate_partition(
@@ -661,6 +881,7 @@ def _train(
     *,
     args: Args,
     config: transported_action_cot.TransportedActionCoTConfig,
+    event_positive_weight: float,
     output_dir: pathlib.Path,
 ) -> tuple[Any, nnx.State, dict[str, Any]]:
     model = transported_action_cot.TransportedActionCoTExecutor(
@@ -684,7 +905,7 @@ def _train(
         current_model = nnx.merge(graphdef, current_params)
 
         def loss_fn(candidate: transported_action_cot.TransportedActionCoTExecutor):
-            predicted_action, predicted_ear, predicted_phase = candidate.forward_with_aux(
+            output = candidate.forward_with_details(
                 batch["anchor_images"],
                 batch["current_images"],
                 batch["anchor_state"],
@@ -694,11 +915,10 @@ def _train(
                 batch["cache_age"],
             )
             return _loss(
-                predicted_action,
-                predicted_ear,
-                predicted_phase,
+                output,
                 batch,
                 args=args,
+                event_positive_weight=event_positive_weight,
             )
 
         (loss, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(current_model)
@@ -747,10 +967,15 @@ def _train(
     )
     baseline_nominal_action_mse = float(validation_nominal_baselines["stale_fixed_age"]["mse_7d"])
     baseline_warp_phase_mae = float(validation_warp_baselines["stale_fixed_age"]["phase_mae"])
-    if baseline_nominal_action_mse <= 0 or baseline_warp_phase_mae <= 0:
-        raise ValueError(
-            "Validation baselines must have positive nominal action MSE and time-warp phase MAE."
-        )
+    action_nominal_reference_mse = float(validation_nominal_baselines["hold4"]["mse_7d"])
+    action_warp_reference_mse = float(validation_warp_baselines["stale_fixed_age"]["mse_7d"])
+    if (
+        baseline_nominal_action_mse <= 0
+        or baseline_warp_phase_mae <= 0
+        or action_nominal_reference_mse <= 0
+        or action_warp_reference_mse <= 0
+    ):
+        raise ValueError("Validation baselines must have positive action MSE and time-warp phase MAE.")
     rng = np.random.default_rng(args.seed)
     metrics_path = output_dir / "metrics.jsonl"
     if metrics_path.exists() and not args.overwrite:
@@ -790,35 +1015,36 @@ def _train(
                     args=args,
                 )
                 validation_nominal_action_mse = validation_metrics["by_progress_offset"]["0"]["mse_7d"]
+                validation_warp_action_mse = validation_metrics["overall"]["mse_7d"]
                 validation_warp_phase_mae = validation_metrics["overall"]["phase_mae"]
-                # Select checkpoints with a unitless, balanced score aligned to
-                # the two go/no-go questions: nominal action fidelity and
-                # observation-conditioned time-warp tracking.  Raw training
-                # loss is phase-scale dominated and is not used for selection.
-                validation_score = 0.5 * (
-                    validation_nominal_action_mse / baseline_nominal_action_mse
-                ) + 0.5 * (validation_warp_phase_mae / baseline_warp_phase_mae)
+                if args.selection_mode == "legacy":
+                    validation_score = 0.5 * (validation_nominal_action_mse / baseline_nominal_action_mse) + 0.5 * (
+                        validation_warp_phase_mae / baseline_warp_phase_mae
+                    )
+                else:
+                    # All correction modes use the same deployable action
+                    # criterion. This prevents the structured model from being
+                    # selected on an auxiliary EAR/phase metric that the direct
+                    # residual baseline does not need at execution time.
+                    validation_score = 0.5 * (validation_nominal_action_mse / action_nominal_reference_mse) + 0.5 * (
+                        validation_warp_action_mse / action_warp_reference_mse
+                    )
                 record = {
                     "step": step,
                     "elapsed_seconds": time.monotonic() - started,
-                    **{
-                        f"train/{name}": float(value)
-                        for name, value in jax.device_get(train_metrics).items()
-                    },
-                    **{
-                        f"validation/{name}": float(value)
-                        for name, value in validation_metrics["loss"].items()
-                    },
+                    **{f"train/{name}": float(value) for name, value in jax.device_get(train_metrics).items()},
+                    **{f"validation/{name}": float(value) for name, value in validation_metrics["loss"].items()},
                     "validation/action_mse_7d": validation_metrics["overall"]["mse_7d"],
                     "validation/nominal_action_mse_7d": validation_nominal_action_mse,
                     "validation/transport_mse_7d": validation_metrics["overall"]["transport_mse_7d"],
                     "validation/phase_mae": validation_metrics["overall"]["phase_mae"],
+                    "validation/phase_gate_pass": float(
+                        validation_metrics["overall"]["phase_mae"] <= args.selection_phase_mae_limit
+                    ),
                     "validation/selection_score": validation_score,
                 }
                 non_finite = {
-                    name: value
-                    for name, value in record.items()
-                    if isinstance(value, float) and not np.isfinite(value)
+                    name: value for name, value in record.items() if isinstance(value, float) and not np.isfinite(value)
                 }
                 if non_finite:
                     raise FloatingPointError(f"Non-finite transport training metrics: {non_finite}.")
@@ -838,18 +1064,27 @@ def _train(
     selected_params = best_params if best_params is not None else params
     params_path = output_dir / "final" / "params"
     _save_params(selected_params, params_path, overwrite=args.overwrite)
+    if args.selection_mode == "legacy":
+        selection_criterion = (
+            "0.5 * nominal_action_mse / fixed_transport_nominal_action_mse + "
+            "0.5 * all_time_warp_phase_mae / fixed_age_phase_mae"
+        )
+    else:
+        selection_criterion = (
+            "0.5 * nominal_action_mse / hold4_nominal_action_mse + "
+            "0.5 * all_time_warp_action_mse / fixed_age_all_time_warp_action_mse"
+        )
     summary = {
         "completed_steps": completed_steps,
         "requested_steps": args.train_steps,
         "best_validation_step": best_step,
         "best_validation_score": best_score,
-        "selection_criterion": (
-            "0.5 * nominal_action_mse / fixed_transport_nominal_action_mse + "
-            "0.5 * all_time_warp_phase_mae / fixed_age_phase_mae"
-        ),
+        "selection_criterion": selection_criterion,
         "selection_baselines": {
-            "nominal_action_mse_7d": baseline_nominal_action_mse,
-            "all_time_warp_phase_mae": baseline_warp_phase_mae,
+            "legacy_fixed_transport_nominal_action_mse_7d": baseline_nominal_action_mse,
+            "legacy_fixed_age_all_time_warp_phase_mae": baseline_warp_phase_mae,
+            "action_hold4_nominal_action_mse_7d": action_nominal_reference_mse,
+            "action_fixed_age_all_time_warp_action_mse_7d": action_warp_reference_mse,
         },
         "elapsed_seconds": time.monotonic() - started,
         "params_path": str(params_path.resolve()),
@@ -885,6 +1120,11 @@ def main(args: Args) -> None:
         minimum_action_residual_scale=args.minimum_action_residual_scale,
         output_margin=args.output_margin,
     )
+    event_positive_weight, event_positive_count, event_negative_count = _event_positive_weight(
+        arrays,
+        train_windows,
+        cap=args.event_positive_weight_cap,
+    )
     config = transported_action_cot.TransportedActionCoTConfig(
         image_size=int(arrays["images"].shape[3]),
         state_dim=int(arrays["states"].shape[-1]),
@@ -894,6 +1134,11 @@ def main(args: Args) -> None:
         iar_dim=int(arrays["fresh_iar"].shape[-1]),
         coarse_time_stride=2,
         max_phase=float(arrays["fresh_ear"].shape[-2] - 1),
+        correction_mode=args.correction_mode,
+        geometry_rank=args.geometry_rank,
+        geometry_scale=tuple(float(value) for value in ranges["geometry_scale_6d"]),
+        gripper_logit_residual_scale=args.gripper_logit_residual_scale,
+        direct_residual_scale=max(float(value) for value in ranges["direct_residual_scale_7d"]),
     )
     predict_step, params, train_summary = _train(
         arrays,
@@ -901,7 +1146,22 @@ def main(args: Args) -> None:
         validation_windows,
         args=args,
         config=config,
+        event_positive_weight=event_positive_weight,
         output_dir=output_dir,
+    )
+    profile_pairs = _nominal_pairs(test_windows[:1]).take(slice(0, 1))
+    profile = _profile_fast_path(
+        predict_step,
+        params,
+        _batch(arrays, profile_pairs),
+        warmup=args.profile_warmup,
+        iterations=args.profile_iterations,
+        refresh_interval=args.refresh_interval,
+        full_acot_reference_ms=args.full_acot_reference_ms,
+    )
+    (output_dir / "profile.json").write_text(
+        json.dumps(profile, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
     )
     validation_evaluation = _evaluate_partition(
         predict_step,
@@ -917,9 +1177,28 @@ def main(args: Args) -> None:
         test_windows,
         args=args,
     )
+    test_nominal_model = test_evaluation["nominal"]["model"]["overall"]
+    test_nominal_baselines = test_evaluation["nominal"]["baselines"]
+    test_warp_model = test_evaluation["all_time_warp_pairs"]["model"]["overall"]
+    test_warp_fixed = test_evaluation["all_time_warp_pairs"]["baselines"]["stale_fixed_age"]
+    test_warp_anchor = test_evaluation["all_time_warp_pairs"]["model_anchor_observation_ablation"]["overall"]
+    transport_improvement = 1.0 - (test_warp_model["transport_mse_7d"] / test_warp_fixed["transport_mse_7d"])
+    anchor_action_degradation = test_warp_anchor["mse_7d"] / test_warp_model["mse_7d"] - 1.0
+    action_gate_pass = (
+        test_nominal_model["mse_7d"] <= 0.112335
+        and test_nominal_model["mse_7d"] < test_nominal_baselines["hold4"]["mse_7d"]
+        and test_warp_model["mse_7d"] < 0.11922247
+        and test_warp_model["phase_mae"] <= args.selection_phase_mae_limit
+        and anchor_action_degradation >= 0.10
+    )
+    plan_gate_pass = args.correction_mode != "plan" or (
+        transport_improvement >= 0.50 and test_warp_model["transport_gripper_macro_f1"] >= 0.90
+    )
+    speed_gate_pass = profile["speed_gate_p95_below_2ms"] and profile["theoretical_speedup_vs_full_acot"] >= 3.0
     summary = {
+        "schema_version": 2,
         "status": "complete",
-        "method": "transported_action_cot_time_warp",
+        "method": f"transported_action_cot_{args.correction_mode}_time_warp",
         "dataset": list(args.dataset),
         "num_windows": int(arrays["anchor_index"].shape[0]),
         "num_train_windows": int(train_windows.size),
@@ -941,11 +1220,34 @@ def main(args: Args) -> None:
             "source": "training partition only",
             **ranges,
         },
+        "event_supervision": {
+            "source": "training partition only",
+            "positive_weight": event_positive_weight,
+            "positive_count": event_positive_count,
+            "negative_count": event_negative_count,
+        },
+        "parameter_count": transported_action_cot.estimate_parameter_count(config),
         "config": dataclasses.asdict(config),
         "args": dataclasses.asdict(args),
         "train": train_summary,
+        "profile": profile,
         "validation": validation_evaluation,
         "test": test_evaluation,
+        "offline_gate": {
+            "action_gate_pass": action_gate_pass,
+            "plan_gate_pass": plan_gate_pass,
+            "speed_gate_pass": speed_gate_pass,
+            "offline_gate_pass": action_gate_pass and plan_gate_pass and speed_gate_pass,
+            "nominal_action_mse_limit": 0.112335,
+            "all_time_warp_action_mse_reference": 0.11922247,
+            "phase_mae_limit": args.selection_phase_mae_limit,
+            "minimum_anchor_ablation_degradation": 0.10,
+            "minimum_plan_transport_improvement": 0.50,
+            "minimum_plan_gripper_macro_f1": 0.90,
+            "minimum_theoretical_speedup": 3.0,
+            "observed_plan_transport_improvement": transport_improvement,
+            "observed_anchor_action_degradation": anchor_action_degradation,
+        },
         "note": "Episode-held-out open-loop transport/action fidelity; not a LIBERO success-rate result.",
     }
     summary_path.write_text(

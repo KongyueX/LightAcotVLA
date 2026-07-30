@@ -1,9 +1,12 @@
+import dataclasses
+
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from openpi.models import transported_action_cot
 import pytest
+
+from openpi.models import transported_action_cot
 
 
 def _inputs(
@@ -49,9 +52,25 @@ def _activate_observation_phase_path(
     model: transported_action_cot.TransportedActionCoTExecutor,
 ) -> None:
     kernel = jnp.zeros_like(model.phase_out.kernel.value)
-    model.phase_out.kernel.value = kernel.at[:, 0].set(
-        jnp.linspace(-0.02, 0.02, kernel.shape[0], dtype=kernel.dtype)
-    )
+    model.phase_out.kernel.value = kernel.at[:, 0].set(jnp.linspace(-0.02, 0.02, kernel.shape[0], dtype=kernel.dtype))
+
+
+def _activate_plan_geometry_path(
+    model: transported_action_cot.TransportedActionCoTExecutor,
+) -> None:
+    kernel = jnp.zeros_like(model.geometry_coefficients.kernel.value)
+    input_pattern = jnp.linspace(-0.02, 0.02, kernel.shape[0], dtype=kernel.dtype)
+    output_pattern = jnp.linspace(0.25, 1.0, kernel.shape[1], dtype=kernel.dtype)
+    model.geometry_coefficients.kernel.value = input_pattern[:, None] * output_pattern[None, :]
+
+
+def _activate_direct_action_path(
+    model: transported_action_cot.TransportedActionCoTExecutor,
+) -> None:
+    kernel = jnp.zeros_like(model.direct_action_out.kernel.value)
+    input_pattern = jnp.linspace(-0.02, 0.02, kernel.shape[0], dtype=kernel.dtype)
+    output_pattern = jnp.linspace(0.25, 1.0, kernel.shape[1], dtype=kernel.dtype)
+    model.direct_action_out.kernel.value = input_pattern[:, None] * output_pattern[None, :]
 
 
 def test_default_configuration_is_below_parameter_budget() -> None:
@@ -62,7 +81,38 @@ def test_default_configuration_is_below_parameter_budget() -> None:
     actual = _parameter_count(model)
 
     assert actual == estimated
+    assert actual == 474_530
     assert actual < 5_000_000
+    assert config.correction_mode == "phase"
+    assert not hasattr(model, "plan_temporal_basis")
+    assert not hasattr(model, "direct_action_out")
+
+
+def test_plan_and_direct_corrections_have_matched_default_parameter_counts() -> None:
+    phase_config = transported_action_cot.TransportedActionCoTConfig()
+    plan_config = dataclasses.replace(phase_config, correction_mode="plan")
+    direct_config = dataclasses.replace(phase_config, correction_mode="direct")
+    phase_model = transported_action_cot.TransportedActionCoTExecutor(
+        phase_config,
+        rngs=nnx.Rngs(0),
+    )
+    plan_model = transported_action_cot.TransportedActionCoTExecutor(
+        plan_config,
+        rngs=nnx.Rngs(0),
+    )
+    direct_model = transported_action_cot.TransportedActionCoTExecutor(
+        direct_config,
+        rngs=nnx.Rngs(0),
+    )
+
+    phase_count = _parameter_count(phase_model)
+    plan_count = _parameter_count(plan_model)
+    direct_count = _parameter_count(direct_model)
+
+    assert plan_count == transported_action_cot.estimate_parameter_count(plan_config)
+    assert direct_count == transported_action_cot.estimate_parameter_count(direct_config)
+    assert plan_count - phase_count == 4_128
+    assert direct_count == plan_count
 
 
 def test_zero_initialized_phase_is_nominal_monotonic_transport() -> None:
@@ -87,6 +137,52 @@ def test_zero_initialized_phase_is_nominal_monotonic_transport() -> None:
     assert action.shape == (2, config.action_dim)
     assert transported_ear.shape == (2, config.ear_horizon, config.action_dim)
     assert phase.shape == (2, config.ear_horizon)
+
+
+@pytest.mark.parametrize("correction_mode", ["phase", "plan", "direct"])
+def test_forward_with_details_has_stable_shapes(correction_mode: str) -> None:
+    config = transported_action_cot.TransportedActionCoTConfig(
+        correction_mode=correction_mode,  # type: ignore[arg-type]
+    )
+    model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
+    inputs = _inputs(config)
+    bounded_gripper = jnp.linspace(-0.8, 0.8, config.ear_horizon)
+    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(bounded_gripper[None, :])
+
+    output = model.forward_with_details(**inputs)
+
+    assert output.action.shape == (2, config.action_dim)
+    assert output.transported_ear.shape == (2, config.ear_horizon, config.action_dim)
+    assert output.revised_ear.shape == output.transported_ear.shape
+    assert output.phase.shape == (2, config.ear_horizon)
+    assert output.geometry_residual.shape == (2, config.ear_horizon, 6)
+    assert output.gripper_logits.shape == (2, config.ear_horizon)
+    assert output.event_prob.shape == (2, config.ear_horizon - 1)
+    assert output.direct_action_residual.shape == output.action.shape
+    assert bool(jnp.all((output.event_prob >= 0.0) & (output.event_prob <= 1.0)))
+    if correction_mode != "direct":
+        np.testing.assert_allclose(output.direct_action_residual, 0.0, atol=0.0)
+    if correction_mode != "plan":
+        np.testing.assert_allclose(output.geometry_residual, 0.0, atol=0.0)
+        np.testing.assert_allclose(output.revised_ear, output.transported_ear, atol=0.0)
+
+
+def test_zero_initialized_plan_heads_start_from_transported_plan() -> None:
+    config = transported_action_cot.TransportedActionCoTConfig(correction_mode="plan")
+    model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
+    inputs = _inputs(config)
+    bounded_gripper = jnp.linspace(-0.8, 0.8, config.ear_horizon)
+    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(bounded_gripper[None, :])
+
+    output = model.forward_with_details(**inputs)
+
+    np.testing.assert_allclose(output.geometry_residual, 0.0, atol=0.0)
+    np.testing.assert_allclose(output.revised_ear, output.transported_ear, atol=1e-6)
+    np.testing.assert_allclose(
+        output.action[:, 6],
+        output.revised_ear[:, 0, 6],
+        atol=1e-6,
+    )
 
 
 def test_observation_change_can_affect_phase() -> None:
@@ -131,6 +227,87 @@ def test_action_has_no_direct_observation_path() -> None:
     np.testing.assert_allclose(first_action, second_action, atol=1e-6)
 
 
+def test_plan_mode_observation_correction_is_mediated_by_revised_ear() -> None:
+    config = transported_action_cot.TransportedActionCoTConfig(correction_mode="plan")
+    model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
+    _activate_plan_geometry_path(model)
+    inputs = _inputs(config, batch_size=1)
+    constant_token = jnp.linspace(-0.8, 0.8, config.action_dim, dtype=jnp.float32)
+    inputs["cached_ear"] = jnp.broadcast_to(
+        constant_token,
+        (1, config.ear_horizon, config.action_dim),
+    )
+    inputs["cache_age"] = jnp.zeros((1,), dtype=jnp.float32)
+
+    first_inputs = dict(inputs)
+    first_inputs["current_images"] = inputs["anchor_images"]
+    second_inputs = dict(inputs)
+    second_inputs["current_images"] = -inputs["anchor_images"]
+    first = model.forward_with_details(**first_inputs)
+    second = model.forward_with_details(**second_inputs)
+
+    np.testing.assert_allclose(first.phase, second.phase, atol=1e-6)
+    np.testing.assert_allclose(first.transported_ear, second.transported_ear, atol=1e-6)
+    assert float(jnp.max(jnp.abs(first.geometry_residual - second.geometry_residual))) > 1e-6
+    assert float(jnp.max(jnp.abs(first.revised_ear - second.revised_ear))) > 1e-6
+    assert float(jnp.max(jnp.abs(first.action - second.action))) > 1e-6
+    np.testing.assert_allclose(first.direct_action_residual, 0.0, atol=0.0)
+    np.testing.assert_allclose(second.direct_action_residual, 0.0, atol=0.0)
+
+
+def test_direct_mode_changes_action_without_revising_plan() -> None:
+    config = transported_action_cot.TransportedActionCoTConfig(correction_mode="direct")
+    model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
+    _activate_direct_action_path(model)
+    inputs = _inputs(config, batch_size=1)
+    constant_token = jnp.linspace(-0.8, 0.8, config.action_dim, dtype=jnp.float32)
+    inputs["cached_ear"] = jnp.broadcast_to(
+        constant_token,
+        (1, config.ear_horizon, config.action_dim),
+    )
+    inputs["cache_age"] = jnp.zeros((1,), dtype=jnp.float32)
+
+    first_inputs = dict(inputs)
+    first_inputs["current_images"] = inputs["anchor_images"]
+    second_inputs = dict(inputs)
+    second_inputs["current_images"] = -inputs["anchor_images"]
+    first = model.forward_with_details(**first_inputs)
+    second = model.forward_with_details(**second_inputs)
+
+    np.testing.assert_allclose(first.phase, second.phase, atol=1e-6)
+    np.testing.assert_allclose(first.revised_ear, second.revised_ear, atol=1e-6)
+    assert float(jnp.max(jnp.abs(first.direct_action_residual - second.direct_action_residual))) > 1e-6
+    assert float(jnp.max(jnp.abs(first.action - second.action))) > 1e-6
+    np.testing.assert_allclose(first.geometry_residual, 0.0, atol=0.0)
+    np.testing.assert_allclose(second.geometry_residual, 0.0, atol=0.0)
+
+
+def test_plan_gripper_logits_define_revised_gripper_and_events() -> None:
+    config = transported_action_cot.TransportedActionCoTConfig(correction_mode="plan")
+    model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
+    model.gripper_coefficients.bias.value = jnp.linspace(
+        -0.5,
+        0.5,
+        config.geometry_rank,
+    )
+    inputs = _inputs(config, batch_size=1)
+    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(jnp.linspace(-0.8, 0.8, config.ear_horizon)[None, :])
+
+    output = model.forward_with_details(**inputs)
+    probability = jax.nn.sigmoid(2.0 * output.gripper_logits)
+    expected_event_probability = (
+        probability[:, 1:] * (1.0 - probability[:, :-1]) + (1.0 - probability[:, 1:]) * probability[:, :-1]
+    )
+
+    np.testing.assert_allclose(
+        output.revised_ear[..., 6],
+        jnp.tanh(output.gripper_logits),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(output.event_prob, expected_event_probability, atol=1e-6)
+    np.testing.assert_allclose(output.action[:, 6], output.revised_ear[:, 0, 6], atol=1e-6)
+
+
 def test_parameter_gradients_are_finite() -> None:
     config = transported_action_cot.TransportedActionCoTConfig()
     model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
@@ -145,6 +322,31 @@ def test_parameter_gradients_are_finite() -> None:
             jnp.mean(jnp.square(action))
             + 0.01 * jnp.mean(jnp.square(transported_ear))
             + jnp.mean(jnp.square(phase - phase_target))
+        )
+
+    loss, gradients = jax.value_and_grad(loss_function)(params)
+
+    assert bool(jnp.isfinite(loss))
+    assert jax.tree.leaves(gradients)
+    assert all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree.leaves(gradients))
+
+
+@pytest.mark.parametrize("correction_mode", ["plan", "direct"])
+def test_correction_parameter_gradients_are_finite(correction_mode: str) -> None:
+    config = transported_action_cot.TransportedActionCoTConfig(
+        correction_mode=correction_mode,  # type: ignore[arg-type]
+    )
+    model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
+    graphdef, params = nnx.split(model)
+    inputs = _inputs(config)
+
+    def loss_function(candidate_params: nnx.State) -> jax.Array:
+        candidate = nnx.merge(graphdef, candidate_params)
+        output = candidate.forward_with_details(**inputs)
+        return (
+            jnp.mean(jnp.square(output.action))
+            + jnp.mean(jnp.square(output.revised_ear[..., :7]))
+            + 0.1 * jnp.mean(jnp.square(output.event_prob))
         )
 
     loss, gradients = jax.value_and_grad(loss_function)(params)
@@ -173,3 +375,21 @@ def test_invalid_shapes_are_rejected() -> None:
 
     with pytest.raises(ValueError, match="anchor_images axis 2"):
         model(**inputs)
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"correction_mode": "unknown"}, "correction_mode"),
+        ({"geometry_rank": 3}, "geometry_rank"),
+        ({"geometry_scale": (0.5,) * 5}, "geometry_scale"),
+        ({"geometry_scale": (0.5, 0.5, 0.5, 0.5, 0.5, 0.0)}, "geometry_scale"),
+        ({"direct_residual_scale": 0.0}, "direct_residual_scale"),
+    ],
+)
+def test_invalid_correction_configuration_is_rejected(
+    updates: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        transported_action_cot.TransportedActionCoTConfig(**updates)  # type: ignore[arg-type]
