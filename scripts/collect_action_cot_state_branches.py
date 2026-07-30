@@ -99,7 +99,7 @@ class CanonicalSimulatorSnapshot:
     """MuJoCo plus robosuite controller state required for exact branches."""
 
     simulator: horizon_collector.SimulatorSnapshot
-    simulator_ctrl: np.ndarray
+    simulator_data: dict[str, np.ndarray]
     mutable_attributes: list[tuple[Any, str, Any]]
 
 
@@ -131,6 +131,21 @@ def _controller_objects(env: Any) -> list[Any]:
 
 def _capture_canonical_snapshot(env: Any) -> CanonicalSimulatorSnapshot:
     simulator = horizon_collector._simulator(env)
+    simulator_fields = (
+        "ctrl",
+        "qacc",
+        "qacc_warmstart",
+        "qfrc_applied",
+        "xfrc_applied",
+        "mocap_pos",
+        "mocap_quat",
+        "userdata",
+    )
+    simulator_data = {
+        name: np.asarray(getattr(simulator.data, name)).copy()
+        for name in simulator_fields
+        if hasattr(simulator.data, name)
+    }
     mutable_attributes: list[tuple[Any, str, Any]] = []
     names = (
         "current_action",
@@ -148,7 +163,7 @@ def _capture_canonical_snapshot(env: Any) -> CanonicalSimulatorSnapshot:
         )
     return CanonicalSimulatorSnapshot(
         simulator=horizon_collector._capture_snapshot(env),
-        simulator_ctrl=np.asarray(simulator.data.ctrl, dtype=np.float64).copy(),
+        simulator_data=simulator_data,
         mutable_attributes=mutable_attributes,
     )
 
@@ -173,6 +188,9 @@ def _restore_canonical_snapshot(
         simulator.set_state_from_flattened(physics)
     else:
         simulator.set_state(physics)
+    for name in ("mocap_pos", "mocap_quat", "userdata", "ctrl"):
+        if name in snapshot.simulator_data:
+            getattr(simulator.data, name)[...] = snapshot.simulator_data[name]
     simulator.forward()
     for owner, name, value in snapshot.simulator.scalar_attributes:
         with contextlib.suppress(Exception):
@@ -184,7 +202,8 @@ def _restore_canonical_snapshot(
                 generator.set_state(copy.deepcopy(state))
             elif hasattr(generator, "bit_generator"):
                 generator.bit_generator.state = copy.deepcopy(state)
-    simulator.data.ctrl[...] = snapshot.simulator_ctrl
+    for name, value in snapshot.simulator_data.items():
+        getattr(simulator.data, name)[...] = value
     for owner, name, value in snapshot.mutable_attributes:
         _restore_mutable_attribute(owner, name, value)
     for owner in _controller_objects(env):
