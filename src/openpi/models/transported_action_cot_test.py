@@ -115,6 +115,25 @@ def test_plan_and_direct_corrections_have_matched_default_parameter_counts() -> 
     assert direct_count == plan_count
 
 
+def test_event_correction_adds_only_one_scalar_head() -> None:
+    phase_config = transported_action_cot.TransportedActionCoTConfig()
+    event_config = dataclasses.replace(phase_config, correction_mode="event")
+    phase_model = transported_action_cot.TransportedActionCoTExecutor(
+        phase_config,
+        rngs=nnx.Rngs(0),
+    )
+    event_model = transported_action_cot.TransportedActionCoTExecutor(
+        event_config,
+        rngs=nnx.Rngs(0),
+    )
+
+    phase_count = _parameter_count(phase_model)
+    event_count = _parameter_count(event_model)
+
+    assert event_count == transported_action_cot.estimate_parameter_count(event_config)
+    assert event_count - phase_count == phase_config.hidden_dim + 1
+
+
 def test_zero_initialized_phase_is_nominal_monotonic_transport() -> None:
     config = transported_action_cot.TransportedActionCoTConfig()
     model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
@@ -139,7 +158,7 @@ def test_zero_initialized_phase_is_nominal_monotonic_transport() -> None:
     assert phase.shape == (2, config.ear_horizon)
 
 
-@pytest.mark.parametrize("correction_mode", ["phase", "plan", "direct"])
+@pytest.mark.parametrize("correction_mode", ["phase", "plan", "direct", "event"])
 def test_forward_with_details_has_stable_shapes(correction_mode: str) -> None:
     config = transported_action_cot.TransportedActionCoTConfig(
         correction_mode=correction_mode,  # type: ignore[arg-type]
@@ -155,6 +174,7 @@ def test_forward_with_details_has_stable_shapes(correction_mode: str) -> None:
     assert output.transported_ear.shape == (2, config.ear_horizon, config.action_dim)
     assert output.revised_ear.shape == output.transported_ear.shape
     assert output.phase.shape == (2, config.ear_horizon)
+    assert output.event_phase_offset.shape == (2,)
     assert output.geometry_residual.shape == (2, config.ear_horizon, 6)
     assert output.gripper_logits.shape == (2, config.ear_horizon)
     assert output.event_prob.shape == (2, config.ear_horizon - 1)
@@ -164,7 +184,10 @@ def test_forward_with_details_has_stable_shapes(correction_mode: str) -> None:
         np.testing.assert_allclose(output.direct_action_residual, 0.0, atol=0.0)
     if correction_mode != "plan":
         np.testing.assert_allclose(output.geometry_residual, 0.0, atol=0.0)
+    if correction_mode not in ("plan", "event"):
         np.testing.assert_allclose(output.revised_ear, output.transported_ear, atol=0.0)
+    if correction_mode != "event":
+        np.testing.assert_allclose(output.event_phase_offset, 0.0, atol=0.0)
 
 
 def test_zero_initialized_plan_heads_start_from_transported_plan() -> None:
@@ -181,6 +204,64 @@ def test_zero_initialized_plan_heads_start_from_transported_plan() -> None:
     np.testing.assert_allclose(
         output.action[:, 6],
         output.revised_ear[:, 0, 6],
+        atol=1e-6,
+    )
+
+
+def test_zero_initialized_event_mode_is_exactly_matched_to_phase() -> None:
+    phase_config = transported_action_cot.TransportedActionCoTConfig()
+    event_config = dataclasses.replace(
+        phase_config,
+        correction_mode="event",
+        isolate_event_gradients=True,
+    )
+    phase_model = transported_action_cot.TransportedActionCoTExecutor(
+        phase_config,
+        rngs=nnx.Rngs(0),
+    )
+    event_model = transported_action_cot.TransportedActionCoTExecutor(
+        event_config,
+        rngs=nnx.Rngs(0),
+    )
+    inputs = _inputs(phase_config)
+    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(
+        jnp.linspace(-0.8, 0.8, phase_config.ear_horizon)[None, :]
+    )
+
+    phase_output = phase_model.forward_with_details(**inputs)
+    event_output = event_model.forward_with_details(**inputs)
+
+    np.testing.assert_allclose(event_output.event_phase_offset, 0.0, atol=0.0)
+    np.testing.assert_allclose(event_output.phase, phase_output.phase, atol=1e-6)
+    np.testing.assert_allclose(event_output.revised_ear, phase_output.revised_ear, atol=1e-6)
+    np.testing.assert_allclose(event_output.action, phase_output.action, atol=1e-6)
+
+
+def test_event_shift_changes_only_gripper_timing() -> None:
+    config = transported_action_cot.TransportedActionCoTConfig(
+        correction_mode="event",
+        isolate_event_gradients=True,
+    )
+    model = transported_action_cot.TransportedActionCoTExecutor(config, rngs=nnx.Rngs(0))
+    model.event_scalar_out.bias.value = jnp.ones_like(model.event_scalar_out.bias.value)
+    inputs = _inputs(config, batch_size=1)
+    inputs["cached_ear"] = inputs["cached_ear"].at[..., 6].set(
+        jnp.linspace(-0.9, 0.9, config.ear_horizon)[None, :]
+    )
+
+    output = model.forward_with_details(**inputs)
+    base_action = model._decode_action(output.transported_ear)
+
+    assert float(output.event_phase_offset[0]) > 0.0
+    np.testing.assert_allclose(
+        output.revised_ear[..., :6],
+        output.transported_ear[..., :6],
+        atol=0.0,
+    )
+    np.testing.assert_allclose(output.action[..., :6], base_action[..., :6], atol=0.0)
+    np.testing.assert_allclose(
+        output.action[..., 6] - base_action[..., 6],
+        output.revised_ear[:, 0, 6] - output.transported_ear[:, 0, 6],
         atol=1e-6,
     )
 
@@ -357,7 +438,7 @@ def test_parameter_gradients_are_finite() -> None:
     assert all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree.leaves(gradients))
 
 
-@pytest.mark.parametrize("correction_mode", ["plan", "direct"])
+@pytest.mark.parametrize("correction_mode", ["plan", "direct", "event"])
 def test_correction_parameter_gradients_are_finite(correction_mode: str) -> None:
     config = transported_action_cot.TransportedActionCoTConfig(
         correction_mode=correction_mode,  # type: ignore[arg-type]
@@ -411,6 +492,7 @@ def test_invalid_shapes_are_rejected() -> None:
         ({"geometry_scale": (0.5,) * 5}, "geometry_scale"),
         ({"geometry_scale": (0.5, 0.5, 0.5, 0.5, 0.5, 0.0)}, "geometry_scale"),
         ({"direct_residual_scale": 0.0}, "direct_residual_scale"),
+        ({"max_event_phase_offset": 0.0}, "max_event_phase_offset"),
     ],
 )
 def test_invalid_correction_configuration_is_rejected(

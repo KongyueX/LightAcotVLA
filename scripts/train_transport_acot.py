@@ -44,9 +44,11 @@ class Args:
     correction_mode: str = "phase"
     geometry_rank: int = 4
     enable_geometry_correction: bool = True
+    enable_event_shift: bool = True
     isolate_event_gradients: bool = False
     selection_mode: str = "legacy"
     gripper_logit_residual_scale: float = 6.0
+    max_event_phase_offset: float = 2.0
     seed: int = 7
     split_seed: int = 7
     train_steps: int = 1_500
@@ -67,6 +69,7 @@ class Args:
     gripper_state_loss_weight: float = 0.0
     action_gripper_loss_weight: float = 0.0
     event_loss_weight: float = 0.0
+    event_offset_regularization_weight: float = 0.0
     geometry_regularization_weight: float = 0.0
     event_positive_weight_cap: float = 10.0
     selection_phase_mae_limit: float = 0.25
@@ -117,8 +120,8 @@ class PairIndices:
 def _validate_args(args: Args) -> None:
     if not args.dataset:
         raise ValueError("At least one --dataset path is required.")
-    if args.correction_mode not in {"phase", "plan", "direct"}:
-        raise ValueError("correction_mode must be one of: phase, plan, direct.")
+    if args.correction_mode not in {"phase", "plan", "direct", "event"}:
+        raise ValueError("correction_mode must be one of: phase, plan, direct, event.")
     if args.selection_mode not in {"legacy", "action"}:
         raise ValueError("selection_mode must be one of: legacy, action.")
     if args.geometry_rank != 4:
@@ -143,6 +146,7 @@ def _validate_args(args: Args) -> None:
         or args.weight_decay < 0
         or args.gradient_clip_norm <= 0
         or args.gripper_logit_residual_scale <= 0
+        or args.max_event_phase_offset <= 0
         or args.full_acot_reference_ms <= 0
         or args.huber_delta <= 0
         or args.gripper_weight <= 0
@@ -157,6 +161,7 @@ def _validate_args(args: Args) -> None:
         args.gripper_state_loss_weight,
         args.action_gripper_loss_weight,
         args.event_loss_weight,
+        args.event_offset_regularization_weight,
         args.geometry_regularization_weight,
     )
     if (
@@ -381,6 +386,11 @@ def _loss(
         positive_weight=event_positive_weight,
     )
     geometry_regularization = jnp.mean(jnp.square(output.geometry_residual))
+    no_event = jnp.max(target_event, axis=1) < 0.5
+    no_event_count = jnp.maximum(jnp.sum(no_event), 1)
+    event_offset_regularization = jnp.sum(
+        jnp.where(no_event, jnp.square(output.event_phase_offset), 0.0)
+    ) / no_event_count
     if output.phase.ndim != 2 or output.phase.shape[0] != batch["phase_label"].shape[0]:
         raise ValueError(
             "Predicted phase must have shape [batch, EAR horizon], got "
@@ -398,6 +408,7 @@ def _loss(
         + args.gripper_state_loss_weight * gripper_state_loss
         + args.action_gripper_loss_weight * action_gripper_loss
         + args.event_loss_weight * event_loss
+        + args.event_offset_regularization_weight * event_offset_regularization
         + args.geometry_regularization_weight * geometry_regularization
     )
     return total, {
@@ -408,6 +419,7 @@ def _loss(
         "gripper_state_bce": gripper_state_loss,
         "action_gripper_bce": action_gripper_loss,
         "event_focal": event_loss,
+        "event_offset_regularization": event_offset_regularization,
         "geometry_regularization": geometry_regularization,
         "total": total,
     }
@@ -720,7 +732,10 @@ def _baselines(
 
 
 def _predict_pairs(
-    predict_step: Callable[[nnx.State, dict[str, jax.Array]], tuple[jax.Array, jax.Array, jax.Array]],
+    predict_step: Callable[
+        [nnx.State, dict[str, jax.Array]],
+        tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+    ],
     params: nnx.State,
     arrays: dict[str, np.ndarray],
     pairs: PairIndices,
@@ -731,20 +746,23 @@ def _predict_pairs(
     action_pieces: list[np.ndarray] = []
     ear_pieces: list[np.ndarray] = []
     phase_pieces: list[np.ndarray] = []
+    event_offset_pieces: list[np.ndarray] = []
     for start in range(0, len(pairs), eval_batch_size):
         selected = pairs.take(slice(start, start + eval_batch_size))
         batch = _batch(arrays, selected)
         if ablate_current_observation:
             batch["current_images"] = batch["anchor_images"]
             batch["current_state"] = batch["anchor_state"]
-        predicted_action, predicted_ear, predicted_phase = predict_step(params, batch)
+        predicted_action, predicted_ear, predicted_phase, predicted_event_offset = predict_step(params, batch)
         action_pieces.append(np.asarray(predicted_action))
         ear_pieces.append(np.asarray(predicted_ear))
         phase_pieces.append(np.asarray(predicted_phase))
+        event_offset_pieces.append(np.asarray(predicted_event_offset))
     outputs = {
         "action": np.concatenate(action_pieces, axis=0),
         "ear": np.concatenate(ear_pieces, axis=0),
         "phase": np.concatenate(phase_pieces, axis=0),
+        "event_phase_offset": np.concatenate(event_offset_pieces, axis=0),
     }
     non_finite = {name: int(np.sum(~np.isfinite(value))) for name, value in outputs.items()}
     if any(non_finite.values()):
@@ -753,7 +771,10 @@ def _predict_pairs(
 
 
 def _profile_fast_path(
-    predict_step: Callable[[nnx.State, dict[str, jax.Array]], tuple[jax.Array, jax.Array, jax.Array]],
+    predict_step: Callable[
+        [nnx.State, dict[str, jax.Array]],
+        tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+    ],
     params: nnx.State,
     batch: dict[str, jax.Array],
     *,
@@ -806,7 +827,10 @@ def _profile_fast_path(
 
 
 def _evaluate_partition(
-    predict_step: Callable[[nnx.State, dict[str, jax.Array]], tuple[jax.Array, jax.Array, jax.Array]],
+    predict_step: Callable[
+        [nnx.State, dict[str, jax.Array]],
+        tuple[jax.Array, jax.Array, jax.Array, jax.Array],
+    ],
     params: nnx.State,
     arrays: dict[str, np.ndarray],
     window_indices: np.ndarray,
@@ -947,9 +971,9 @@ def _train(
     def predict_step(
         current_params: nnx.State,
         batch: dict[str, jax.Array],
-    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
         current_model = nnx.merge(graphdef, current_params)
-        return current_model.forward_with_aux(
+        output = current_model.forward_with_details(
             batch["anchor_images"],
             batch["current_images"],
             batch["anchor_state"],
@@ -957,6 +981,12 @@ def _train(
             batch["cached_ear"],
             batch["cached_iar"],
             batch["cache_age"],
+        )
+        return (
+            output.action,
+            output.revised_ear,
+            output.phase,
+            output.event_phase_offset,
         )
 
     validation_pairs = _all_time_warp_pairs(validation_windows)
@@ -1139,10 +1169,12 @@ def main(args: Args) -> None:
         iar_dim=int(arrays["fresh_iar"].shape[-1]),
         coarse_time_stride=2,
         max_phase=float(arrays["fresh_ear"].shape[-2] - 1),
+        max_event_phase_offset=args.max_event_phase_offset,
         correction_mode=args.correction_mode,
         geometry_rank=args.geometry_rank,
         geometry_scale=tuple(float(value) for value in ranges["geometry_scale_6d"]),
         enable_geometry_correction=args.enable_geometry_correction,
+        enable_event_shift=args.enable_event_shift,
         isolate_event_gradients=args.isolate_event_gradients,
         gripper_logit_residual_scale=args.gripper_logit_residual_scale,
         direct_residual_scale=max(float(value) for value in ranges["direct_residual_scale_7d"]),

@@ -20,7 +20,7 @@ _PARAMETER_LIMIT = 5_000_000
 _GEOMETRY_DIM = 6
 _GRIPPER_INDEX = 6
 
-CorrectionMode = Literal["phase", "plan", "direct"]
+CorrectionMode = Literal["phase", "plan", "direct", "event"]
 
 
 class TransportedActionCoTOutput(NamedTuple):
@@ -36,6 +36,7 @@ class TransportedActionCoTOutput(NamedTuple):
     transported_ear: jax.Array
     revised_ear: jax.Array
     phase: jax.Array
+    event_phase_offset: jax.Array
     geometry_residual: jax.Array
     gripper_logits: jax.Array
     event_prob: jax.Array
@@ -58,6 +59,7 @@ class TransportedActionCoTConfig:
     decoder_tokens: int = 3
     max_phase: float = 14.0
     max_phase_offset: float = 3.0
+    max_event_phase_offset: float = 2.0
     max_log_speed: float = 0.25
     cnn_channels: tuple[int, ...] = (16, 32, 64, 96)
     cnn_kernel_sizes: tuple[int, ...] = (5, 3, 3, 3)
@@ -66,6 +68,7 @@ class TransportedActionCoTConfig:
     geometry_rank: int = 4
     geometry_scale: tuple[float, ...] = (0.5, 0.5, 0.5, 0.5, 0.5, 0.5)
     enable_geometry_correction: bool = True
+    enable_event_shift: bool = True
     isolate_event_gradients: bool = False
     gripper_logit_residual_scale: float = 2.0
     direct_residual_scale: float = 0.5
@@ -106,11 +109,14 @@ class TransportedActionCoTConfig:
             raise ValueError("max_phase may not exceed the last EAR token index.")
         if self.max_phase_offset <= 0:
             raise ValueError("max_phase_offset must be positive.")
+        if self.max_event_phase_offset <= 0:
+            raise ValueError("max_event_phase_offset must be positive.")
         if self.max_log_speed <= 0:
             raise ValueError("max_log_speed must be positive.")
-        if self.correction_mode not in ("phase", "plan", "direct"):
+        if self.correction_mode not in ("phase", "plan", "direct", "event"):
             raise ValueError(
-                f"correction_mode must be one of 'phase', 'plan', or 'direct', got {self.correction_mode!r}."
+                "correction_mode must be one of 'phase', 'plan', 'direct', "
+                f"or 'event', got {self.correction_mode!r}."
             )
         if self.geometry_rank != 4:
             raise ValueError("geometry_rank must be four for the matched plan/direct pilot.")
@@ -122,8 +128,8 @@ class TransportedActionCoTConfig:
             raise ValueError("gripper_logit_residual_scale must be positive.")
         if self.direct_residual_scale <= 0:
             raise ValueError("direct_residual_scale must be positive.")
-        if self.correction_mode == "plan" and self.action_dim <= _GRIPPER_INDEX:
-            raise ValueError(f"Plan correction requires action_dim greater than {_GRIPPER_INDEX}.")
+        if self.correction_mode in ("plan", "event") and self.action_dim <= _GRIPPER_INDEX:
+            raise ValueError(f"Gripper correction requires action_dim greater than {_GRIPPER_INDEX}.")
         if self.max_parameters > _PARAMETER_LIMIT:
             raise ValueError(f"max_parameters may not exceed {_PARAMETER_LIMIT}.")
         estimated = estimate_parameter_count(self)
@@ -169,6 +175,8 @@ def estimate_parameter_count(config: TransportedActionCoTConfig) -> int:
         count += _linear_parameter_count(hidden, config.geometry_rank)
     elif config.correction_mode == "direct":
         count += _linear_parameter_count(hidden, config.action_dim)
+    elif config.correction_mode == "event":
+        count += _linear_parameter_count(hidden, 1)
     return count
 
 
@@ -367,6 +375,17 @@ class TransportedActionCoTExecutor(nnx.Module):
             self.direct_action_out = nnx.Linear(
                 hidden,
                 config.action_dim,
+                rngs=rngs,
+                param_dtype=param_dtype,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+        elif config.correction_mode == "event":
+            # The event-factorized model receives exactly one additional
+            # scalar and spends it on *when* to sample the cached gripper plan.
+            self.event_scalar_out = nnx.Linear(
+                hidden,
+                1,
                 rngs=rngs,
                 param_dtype=param_dtype,
                 kernel_init=jax.nn.initializers.zeros,
@@ -594,6 +613,64 @@ class TransportedActionCoTExecutor(nnx.Module):
         )
         return revised_ear, geometry_residual, gripper_logits, event_probability
 
+    def _revise_event_timing(
+        self,
+        transported_ear: jax.Array,
+        cached_ear: jax.Array,
+        phase: jax.Array,
+        context: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Factor gripper timing from the shared continuous-action phase.
+
+        ``event`` predicts one bounded phase offset and resamples only the
+        cached gripper channel.  The continuous six-dimensional plan remains
+        exactly the ordinary phase transport.
+        """
+
+        config = self.config
+        batch_size = transported_ear.shape[0]
+        event_context = context
+        event_phase = phase
+        event_cache = cached_ear
+        if config.isolate_event_gradients:
+            # Event losses must not update the shared observation encoder or
+            # the base phase path in the strict-isolation ablation.
+            event_context = jax.lax.stop_gradient(context)
+            event_phase = jax.lax.stop_gradient(phase)
+            event_cache = jax.lax.stop_gradient(cached_ear)
+
+        event_scalar = self.event_scalar_out(event_context)[:, 0]
+        event_phase_offset = jnp.zeros((batch_size,), dtype=transported_ear.dtype)
+        if config.correction_mode == "event":
+            learned_offset = config.max_event_phase_offset * jnp.tanh(event_scalar)
+            if config.enable_event_shift:
+                event_phase_offset = learned_offset
+            else:
+                # Keep the identical parameter tree for a matched delta=0
+                # baseline while intentionally blocking head gradients.
+                event_phase_offset = jnp.zeros_like(learned_offset)
+            shifted_phase = jnp.clip(
+                event_phase + event_phase_offset[:, None],
+                0.0,
+                config.max_phase,
+            )
+            shifted_gripper = interpolate_ear(
+                event_cache[..., _GRIPPER_INDEX : _GRIPPER_INDEX + 1],
+                shifted_phase,
+            )[..., 0]
+            if config.isolate_event_gradients:
+                # Straight-through identity for the base gripper path: forward
+                # uses the shifted event plan, while base-plan gradients remain
+                # exactly those of the matched phase transport at delta=0.
+                base_gripper = transported_ear[..., _GRIPPER_INDEX]
+                shifted_gripper = base_gripper + shifted_gripper - jax.lax.stop_gradient(base_gripper)
+            revised_ear = transported_ear.at[..., _GRIPPER_INDEX].set(shifted_gripper)
+        else:
+            raise ValueError(f"Event timing revision does not support mode {config.correction_mode!r}.")
+
+        gripper_logits, event_probability = self._gripper_statistics(revised_ear)
+        return revised_ear, event_phase_offset, gripper_logits, event_probability
+
     def forward_with_details(
         self,
         anchor_images: jax.Array,
@@ -656,16 +733,39 @@ class TransportedActionCoTExecutor(nnx.Module):
             cache_age,
         )
         transported_ear = interpolate_ear(cached_ear, phase)
-        revised_ear, geometry_residual, gripper_logits, event_probability = self._revise_plan(
-            transported_ear,
-            context,
-        )
-        action = self._decode_action(revised_ear)
+        event_phase_offset = jnp.zeros((batch_size,), dtype=transported_ear.dtype)
+        if config.correction_mode == "event":
+            revised_ear, event_phase_offset, gripper_logits, event_probability = self._revise_event_timing(
+                transported_ear,
+                cached_ear,
+                phase,
+                context,
+            )
+            geometry_residual = jnp.zeros(
+                (batch_size, config.ear_horizon, _GEOMETRY_DIM),
+                dtype=transported_ear.dtype,
+            )
+        else:
+            revised_ear, geometry_residual, gripper_logits, event_probability = self._revise_plan(
+                transported_ear,
+                context,
+            )
+        # Event-factorized modes must not feed their gripper revision through
+        # the decoder, because that would also perturb the continuous action.
+        decoder_ear = revised_ear if config.correction_mode == "plan" else transported_ear
+        action = self._decode_action(decoder_ear)
         direct_action_residual = jnp.zeros_like(action)
         if config.correction_mode == "plan":
             # The discrete gripper state is part of the revised EAR and cannot
             # be overwritten by a continuous decoder residual.
             action = action.at[..., _GRIPPER_INDEX].set(revised_ear[:, 0, _GRIPPER_INDEX])
+        elif config.correction_mode == "event":
+            # Express the event revision as a delta around the ordinary
+            # phase-only decoder. Therefore delta=0 is exactly matched to the
+            # phase baseline even after the decoder has learned a residual.
+            action = action.at[..., _GRIPPER_INDEX].add(
+                revised_ear[:, 0, _GRIPPER_INDEX] - transported_ear[:, 0, _GRIPPER_INDEX]
+            )
         elif config.correction_mode == "direct":
             direct_action_residual = config.direct_residual_scale * jnp.tanh(self.direct_action_out(context))
             action = action + direct_action_residual
@@ -675,6 +775,7 @@ class TransportedActionCoTExecutor(nnx.Module):
             transported_ear=transported_ear,
             revised_ear=revised_ear,
             phase=phase,
+            event_phase_offset=event_phase_offset,
             geometry_residual=geometry_residual,
             gripper_logits=gripper_logits,
             event_prob=event_probability,
