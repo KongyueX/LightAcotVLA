@@ -95,6 +95,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "mean response L2 exceeds this deployable confidence threshold."
         ),
     )
+    parser.add_argument(
+        "--matched-diff-max-control-step",
+        type=int,
+        default=None,
+        help=(
+            "If set, retain stale H6 at and after this post-wait control step. "
+            "Together with the minimum this can isolate a single recovery event."
+        ),
+    )
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
     parser.add_argument("--corrector-summary", default=None)
     parser.add_argument("--corrector-params", default=None)
@@ -119,6 +128,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         and args.matched_diff_max_response_l2 <= 0
     ):
         raise ValueError("matched-diff-max-response-l2 must be positive when set.")
+    if (
+        args.matched_diff_max_control_step is not None
+        and args.matched_diff_max_control_step
+        <= args.matched_diff_min_control_step
+    ):
+        raise ValueError(
+            "matched-diff-max-control-step must exceed matched-diff-min-control-step."
+        )
     if any(mode in args.modes for mode in CORRECTOR_MODES):
         if args.corrector_summary is None:
             raise ValueError("Corrector modes require --corrector-summary.")
@@ -517,8 +534,15 @@ def _run_episode(
                 if (
                     mode == "matched_diff_h10"
                     and cache is not None
-                    and step - args.num_steps_wait
-                    < args.matched_diff_min_control_step
+                    and (
+                        step - args.num_steps_wait
+                        < args.matched_diff_min_control_step
+                        or (
+                            args.matched_diff_max_control_step is not None
+                            and step - args.num_steps_wait
+                            >= args.matched_diff_max_control_step
+                        )
+                    )
                 ):
                     action_queue.extend(cache.base_actions)
                     cache = None
@@ -1018,6 +1042,9 @@ def main() -> None:
                             "matched_diff_max_response_l2": (
                                 args.matched_diff_max_response_l2
                             ),
+                            "matched_diff_max_control_step": (
+                                args.matched_diff_max_control_step
+                            ),
                             "corrector_schedule": (
                                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                                 "matched-difference mode retains stale and adds the clipped "
@@ -1055,6 +1082,7 @@ def main() -> None:
             "denoising_steps": args.action_cot_denoising_steps,
             "matched_diff_min_control_step": args.matched_diff_min_control_step,
             "matched_diff_max_response_l2": args.matched_diff_max_response_l2,
+            "matched_diff_max_control_step": args.matched_diff_max_control_step,
             "corrector_schedule": (
                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                 "matched-difference mode retains stale and adds the clipped "
