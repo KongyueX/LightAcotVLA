@@ -67,7 +67,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-start", type=int, default=8)
     parser.add_argument("--max-tasks", type=int, default=1)
     parser.add_argument("--trial-start", type=int, default=10)
-    parser.add_argument("--num-trials", type=int, default=10)
+    parser.add_argument("--num-trials", type=int, default=20)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--resize-size", type=int, default=224)
