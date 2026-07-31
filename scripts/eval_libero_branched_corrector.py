@@ -7,6 +7,8 @@ compares three execution schedules on identical LIBERO initial states:
 * ``stale_h10``: refresh ACoT every ten actions and execute the whole chunk.
 * ``corrector_h10``: refresh ACoT every ten actions, execute its first four
   actions, then replace actions 4:10 with the saved direct H6 corrector output.
+* ``matched_diff_h10``: anchor the second H6 at stale and add only the clipped
+  response between current and independently trained no-current checkpoints.
 
 The corrector arm never makes a policy RPC at the four-action boundary.  Its
 latest image is read directly from the environment and its latest state is
@@ -38,12 +40,15 @@ from openpi.shared import normalize as _normalize
 import train_branched_action_corrector as corrector_lib
 
 
-MODES = ("full_h4", "stale_h10", "corrector_h10")
+MODES = ("full_h4", "stale_h10", "corrector_h10", "matched_diff_h10")
 ACTION_DIM = 7
 MODEL_ACTION_DIM = 32
 ANCHOR_STEPS = 4
 CORRECTED_STEPS = 6
 SMALL_IMAGE_SIZE = 64
+MATCHED_DIFF_ALPHA = 1.0
+MATCHED_DIFF_TRUST_REGION_L2 = 0.025
+CORRECTOR_MODES = ("corrector_h10", "matched_diff_h10")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -89,11 +94,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("num-steps-wait must be non-negative and resize-size must be positive.")
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action-cot-denoising-steps must be positive.")
-    if "corrector_h10" in args.modes:
+    if any(mode in args.modes for mode in CORRECTOR_MODES):
         if args.corrector_summary is None:
-            raise ValueError("corrector_h10 requires --corrector-summary.")
+            raise ValueError("Corrector modes require --corrector-summary.")
         if args.norm_stats_dir is None:
-            raise ValueError("corrector_h10 requires --norm-stats-dir.")
+            raise ValueError("Corrector modes require --norm-stats-dir.")
 
 
 def _small_images(element: dict[str, Any]) -> np.ndarray:
@@ -132,7 +137,11 @@ class DirectCorrector:
         self,
         summary_path: str,
         params_path: str | None,
+        *,
+        run_name: str = "current",
     ) -> None:
+        if run_name not in {"current", "no_current"}:
+            raise ValueError(f"Unsupported direct corrector run_name={run_name!r}.")
         summary_file = pathlib.Path(summary_path)
         summary = json.loads(summary_file.read_text(encoding="utf-8"))
         args = dict(summary["args"])
@@ -166,11 +175,11 @@ class DirectCorrector:
             token_layers=int(args.get("token_layers", 4)),
             token_heads=int(args.get("token_heads", 4)),
         )
-        selected_params = params_path or summary["train"]["current"]["params_path"]
+        selected_params = params_path or summary["train"][run_name]["params_path"]
         loaded = model_lib.convert_str_keys_to_int(
             model_lib.restore_params(selected_params, dtype=jnp.float32)
         )
-        expected_name = "branched_action_corrector_direct_current"
+        expected_name = f"branched_action_corrector_direct_{run_name}"
         if expected_name in loaded:
             loaded = loaded[expected_name]
         elif len(loaded) == 1:
@@ -185,6 +194,7 @@ class DirectCorrector:
         self._params = state
         self.summary_path = str(summary_file.resolve())
         self.params_path = str(pathlib.Path(selected_params).resolve())
+        self.run_name = run_name
 
         @jax.jit
         def predict(current_params: nnx.State, batch: dict[str, jax.Array]):
@@ -230,6 +240,75 @@ class DirectCorrector:
         actions = np.asarray(jax.device_get(output.actions[0]), dtype=np.float32)
         elapsed_ms = (time.perf_counter() - started) * 1_000.0
         return actions, elapsed_ms
+
+
+class MatchedDifferenceCorrector:
+    """Conservative stale-anchored response from matched direct checkpoints."""
+
+    def __init__(
+        self,
+        summary_path: str,
+        current_params_path: str | None,
+    ) -> None:
+        self.current = DirectCorrector(
+            summary_path,
+            current_params_path,
+            run_name="current",
+        )
+        self.no_current = DirectCorrector(
+            summary_path,
+            None,
+            run_name="no_current",
+        )
+        self.summary_path = self.current.summary_path
+        self.current_params_path = self.current.params_path
+        self.no_current_params_path = self.no_current.params_path
+        self.alpha = MATCHED_DIFF_ALPHA
+        self.trust_region_l2 = MATCHED_DIFF_TRUST_REGION_L2
+
+    def __call__(
+        self,
+        cache: CorrectorCache,
+        current_images: np.ndarray,
+        current_state: np.ndarray,
+    ) -> tuple[np.ndarray, dict[str, float]]:
+        started = time.perf_counter()
+        current_actions, current_ms = self.current(
+            cache,
+            current_images,
+            current_state,
+        )
+        no_current_actions, no_current_ms = self.no_current(
+            cache,
+            cache.anchor_images,
+            cache.anchor_state,
+        )
+        response = self.alpha * (
+            current_actions[..., :6] - no_current_actions[..., :6]
+        )
+        response_l2 = np.linalg.norm(response, axis=-1)
+        clip_scale = np.minimum(
+            1.0,
+            self.trust_region_l2 / np.maximum(response_l2, 1e-8),
+        )
+        clipped_response = response * clip_scale[:, None]
+        actions = np.array(cache.base_actions, dtype=np.float32, copy=True)
+        actions[..., :6] += clipped_response
+        # Gripper is deliberately inherited from stale, irrespective of both
+        # corrector outputs.
+        actions[..., 6] = cache.base_actions[..., 6]
+        elapsed_ms = (time.perf_counter() - started) * 1_000.0
+        return actions, {
+            "elapsed_ms": float(elapsed_ms),
+            "current_corrector_ms": float(current_ms),
+            "no_current_corrector_ms": float(no_current_ms),
+            "response_l2_mean": float(np.mean(response_l2)),
+            "response_l2_max": float(np.max(response_l2)),
+            "applied_response_l2_mean": float(
+                np.mean(np.linalg.norm(clipped_response, axis=-1))
+            ),
+            "clip_fraction": float(np.mean(response_l2 > self.trust_region_l2)),
+        }
 
 
 def _full_request(
@@ -347,6 +426,7 @@ def _run_episode(
     args: argparse.Namespace,
     client: Any,
     corrector: DirectCorrector | None,
+    matched_diff_corrector: MatchedDifferenceCorrector | None,
     norm_stats: dict[str, Any] | None,
 ) -> dict[str, Any]:
     env, task_description = base_eval._get_libero_env(
@@ -370,6 +450,12 @@ def _run_episode(
         policy_infer_ms: list[float] = []
         policy_server_ms: list[float] = []
         corrector_ms: list[float] = []
+        matched_diff_current_ms: list[float] = []
+        matched_diff_no_current_ms: list[float] = []
+        matched_diff_response_l2: list[float] = []
+        matched_diff_response_l2_max: list[float] = []
+        matched_diff_applied_l2: list[float] = []
+        matched_diff_clip_fraction: list[float] = []
         correction_l2: list[float] = []
         correction_boundary_l2: list[float] = []
         correction_gripper_changes: list[float] = []
@@ -400,16 +486,46 @@ def _run_episode(
                     task_description,
                     args.resize_size,
                 )
-                if mode == "corrector_h10" and cache is not None:
-                    if corrector is None or norm_stats is None:
+                if mode in CORRECTOR_MODES and cache is not None:
+                    if norm_stats is None:
                         raise RuntimeError("Corrector runtime was not initialised.")
                     current_images = _small_images(element)
                     current_state = _normalise_state(element["observation/state"], norm_stats)
-                    corrected_actions, elapsed_ms = corrector(
-                        cache,
-                        current_images,
-                        current_state,
-                    )
+                    if mode == "matched_diff_h10":
+                        if matched_diff_corrector is None:
+                            raise RuntimeError("Matched-difference runtime was not initialised.")
+                        corrected_actions, matched_metrics = matched_diff_corrector(
+                            cache,
+                            current_images,
+                            current_state,
+                        )
+                        elapsed_ms = matched_metrics["elapsed_ms"]
+                        matched_diff_current_ms.append(
+                            matched_metrics["current_corrector_ms"]
+                        )
+                        matched_diff_no_current_ms.append(
+                            matched_metrics["no_current_corrector_ms"]
+                        )
+                        matched_diff_response_l2.append(
+                            matched_metrics["response_l2_mean"]
+                        )
+                        matched_diff_response_l2_max.append(
+                            matched_metrics["response_l2_max"]
+                        )
+                        matched_diff_applied_l2.append(
+                            matched_metrics["applied_response_l2_mean"]
+                        )
+                        matched_diff_clip_fraction.append(
+                            matched_metrics["clip_fraction"]
+                        )
+                    else:
+                        if corrector is None:
+                            raise RuntimeError("Direct corrector runtime was not initialised.")
+                        corrected_actions, elapsed_ms = corrector(
+                            cache,
+                            current_images,
+                            current_state,
+                        )
                     if corrected_actions.shape != (CORRECTED_STEPS, ACTION_DIM):
                         raise ValueError(
                             f"Corrector returned {corrected_actions.shape}; expected {(CORRECTED_STEPS, ACTION_DIM)}."
@@ -445,7 +561,7 @@ def _run_episode(
                     cache = None
                 else:
                     policy_seed = args.seed + task_id * 1_000_000 + episode_idx * 10_000 + step
-                    export_cache = mode == "corrector_h10"
+                    export_cache = mode in CORRECTOR_MODES
                     result, timing = _full_request(
                         client,
                         element,
@@ -519,6 +635,52 @@ def _run_episode(
             "policy_server_ms_total": float(np.sum(policy_server_ms)),
             "corrector_ms_total": float(np.sum(corrector_ms)),
             "corrector_ms_mean": float(np.mean(corrector_ms)) if corrector_ms else float("nan"),
+            "matched_diff_current_corrector_ms_total": float(
+                np.sum(matched_diff_current_ms)
+            ),
+            "matched_diff_current_corrector_ms_mean": (
+                float(np.mean(matched_diff_current_ms))
+                if matched_diff_current_ms
+                else float("nan")
+            ),
+            "matched_diff_no_current_corrector_ms_total": float(
+                np.sum(matched_diff_no_current_ms)
+            ),
+            "matched_diff_no_current_corrector_ms_mean": (
+                float(np.mean(matched_diff_no_current_ms))
+                if matched_diff_no_current_ms
+                else float("nan")
+            ),
+            "matched_diff_dual_corrector_ms_total": (
+                float(np.sum(corrector_ms))
+                if mode == "matched_diff_h10"
+                else float("nan")
+            ),
+            "matched_diff_dual_corrector_ms_mean": (
+                float(np.mean(corrector_ms))
+                if mode == "matched_diff_h10" and corrector_ms
+                else float("nan")
+            ),
+            "matched_diff_response_l2_mean": (
+                float(np.mean(matched_diff_response_l2))
+                if matched_diff_response_l2
+                else float("nan")
+            ),
+            "matched_diff_response_l2_max_mean": (
+                float(np.mean(matched_diff_response_l2_max))
+                if matched_diff_response_l2_max
+                else float("nan")
+            ),
+            "matched_diff_applied_response_l2_mean": (
+                float(np.mean(matched_diff_applied_l2))
+                if matched_diff_applied_l2
+                else float("nan")
+            ),
+            "matched_diff_clip_fraction_mean": (
+                float(np.mean(matched_diff_clip_fraction))
+                if matched_diff_clip_fraction
+                else float("nan")
+            ),
             "correction_l2_mean": float(np.mean(correction_l2)) if correction_l2 else float("nan"),
             "correction_boundary_l2_mean": (
                 float(np.mean(correction_boundary_l2)) if correction_boundary_l2 else float("nan")
@@ -567,6 +729,30 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "mean_policy_wall_ms_total": _finite_mean(selected, "policy_wall_ms_total"),
             "mean_policy_infer_ms_total": _finite_mean(selected, "policy_infer_ms_total"),
             "mean_corrector_ms_total": _finite_mean(selected, "corrector_ms_total"),
+            "mean_matched_diff_current_corrector_ms_total": _finite_mean(
+                selected,
+                "matched_diff_current_corrector_ms_total",
+            ),
+            "mean_matched_diff_no_current_corrector_ms_total": _finite_mean(
+                selected,
+                "matched_diff_no_current_corrector_ms_total",
+            ),
+            "mean_matched_diff_dual_corrector_ms_total": _finite_mean(
+                selected,
+                "matched_diff_dual_corrector_ms_total",
+            ),
+            "mean_matched_diff_response_l2": _finite_mean(
+                selected,
+                "matched_diff_response_l2_mean",
+            ),
+            "mean_matched_diff_applied_response_l2": _finite_mean(
+                selected,
+                "matched_diff_applied_response_l2_mean",
+            ),
+            "mean_matched_diff_clip_fraction": _finite_mean(
+                selected,
+                "matched_diff_clip_fraction_mean",
+            ),
             "mean_action_delta_l2": _finite_mean(selected, "action_delta_l2"),
             "mean_action_jerk_l2": _finite_mean(selected, "action_jerk_l2"),
             "mean_gripper_flip_count": _finite_mean(selected, "gripper_flip_count"),
@@ -586,40 +772,73 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for row in rows
     }
     paired = {}
-    for reference in ("full_h4", "stale_h10"):
-        keys = sorted(
-            (task_id, episode_idx)
-            for mode, task_id, episode_idx in lookup
-            if mode == reference
-            and ("corrector_h10", task_id, episode_idx) in lookup
-        )
-        if not keys:
-            continue
-        rescues = 0
-        regressions = 0
-        agreements_success = 0
-        agreements_failure = 0
-        for task_id, episode_idx in keys:
-            reference_success = bool(lookup[(reference, task_id, episode_idx)]["success"])
-            corrector_success = bool(lookup[("corrector_h10", task_id, episode_idx)]["success"])
-            if corrector_success and not reference_success:
-                rescues += 1
-            elif reference_success and not corrector_success:
-                regressions += 1
-            elif reference_success:
-                agreements_success += 1
-            else:
-                agreements_failure += 1
-        paired[f"corrector_h10_vs_{reference}"] = {
-            "paired_episodes": len(keys),
-            "rescues": rescues,
-            "regressions": regressions,
-            "net_rescues": rescues - regressions,
-            "both_success": agreements_success,
-            "both_failure": agreements_failure,
-            "paired_success_rate_delta": (rescues - regressions) / len(keys),
-        }
+    for candidate in CORRECTOR_MODES:
+        for reference in ("full_h4", "stale_h10"):
+            keys = sorted(
+                (task_id, episode_idx)
+                for mode, task_id, episode_idx in lookup
+                if mode == reference
+                and (candidate, task_id, episode_idx) in lookup
+            )
+            if not keys:
+                continue
+            rescues = 0
+            regressions = 0
+            agreements_success = 0
+            agreements_failure = 0
+            for task_id, episode_idx in keys:
+                reference_success = bool(lookup[(reference, task_id, episode_idx)]["success"])
+                candidate_success = bool(lookup[(candidate, task_id, episode_idx)]["success"])
+                if candidate_success and not reference_success:
+                    rescues += 1
+                elif reference_success and not candidate_success:
+                    regressions += 1
+                elif reference_success:
+                    agreements_success += 1
+                else:
+                    agreements_failure += 1
+            paired[f"{candidate}_vs_{reference}"] = {
+                "paired_episodes": len(keys),
+                "rescues": rescues,
+                "regressions": regressions,
+                "net_rescues": rescues - regressions,
+                "both_success": agreements_success,
+                "both_failure": agreements_failure,
+                "paired_success_rate_delta": (rescues - regressions) / len(keys),
+            }
     return {"by_mode": by_mode, "paired": paired}
+
+
+def _corrector_metadata(
+    corrector: DirectCorrector | None,
+    matched_diff_corrector: MatchedDifferenceCorrector | None,
+) -> dict[str, Any] | None:
+    if corrector is None and matched_diff_corrector is None:
+        return None
+    return {
+        "direct": (
+            {
+                "summary_path": corrector.summary_path,
+                "params_path": corrector.params_path,
+            }
+            if corrector is not None
+            else None
+        ),
+        "matched_difference": (
+            {
+                "summary_path": matched_diff_corrector.summary_path,
+                "current_params_path": matched_diff_corrector.current_params_path,
+                "no_current_params_path": matched_diff_corrector.no_current_params_path,
+                "alpha": matched_diff_corrector.alpha,
+                "per_token_continuous_l2_trust_region": (
+                    matched_diff_corrector.trust_region_l2
+                ),
+                "gripper": "stale",
+            }
+            if matched_diff_corrector is not None
+            else None
+        ),
+    }
 
 
 def main() -> None:
@@ -639,12 +858,20 @@ def main() -> None:
 
     norm_stats = (
         _normalize.load(args.norm_stats_dir)
-        if "corrector_h10" in args.modes
+        if any(mode in args.modes for mode in CORRECTOR_MODES)
         else None
     )
     corrector = (
         DirectCorrector(args.corrector_summary, args.corrector_params)
         if "corrector_h10" in args.modes
+        else None
+    )
+    matched_diff_corrector = (
+        MatchedDifferenceCorrector(
+            args.corrector_summary,
+            args.corrector_params,
+        )
+        if "matched_diff_h10" in args.modes
         else None
     )
     client = _websocket_client_policy.WebsocketClientPolicy(
@@ -683,6 +910,7 @@ def main() -> None:
                         args=args,
                         client=client,
                         corrector=corrector,
+                        matched_diff_corrector=matched_diff_corrector,
                         norm_stats=norm_stats,
                     )
                     output_file.write(json.dumps(row, sort_keys=True, allow_nan=True) + "\n")
@@ -701,19 +929,19 @@ def main() -> None:
                             "num_trials": args.num_trials,
                             "seed": args.seed,
                             "denoising_steps": args.action_cot_denoising_steps,
-                            "corrector_schedule": "fresh ACoT first 4 actions, direct corrector actions 4:10",
+                            "corrector_schedule": (
+                                "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
+                                "matched-difference mode retains stale and adds the clipped "
+                                "current-minus-independent-no-current response"
+                            ),
                             "held_out_note": (
                                 "The canonical corrector dataset contains collector episodes 0-9; "
                                 "trial_start>=10 selects unseen LIBERO initial-state IDs."
                             ),
                         },
-                        "corrector": (
-                            {
-                                "summary_path": corrector.summary_path,
-                                "params_path": corrector.params_path,
-                            }
-                            if corrector is not None
-                            else None
+                        "corrector": _corrector_metadata(
+                            corrector,
+                            matched_diff_corrector,
                         ),
                         "completed_episode_rows": len(rows),
                         **_aggregate(rows),
@@ -736,19 +964,19 @@ def main() -> None:
             "num_trials": args.num_trials,
             "seed": args.seed,
             "denoising_steps": args.action_cot_denoising_steps,
-            "corrector_schedule": "fresh ACoT first 4 actions, direct corrector actions 4:10",
+            "corrector_schedule": (
+                "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
+                "matched-difference mode retains stale and adds the clipped "
+                "current-minus-independent-no-current response"
+            ),
             "held_out_note": (
                 "The canonical corrector dataset contains collector episodes 0-9; "
                 "trial_start>=10 selects unseen LIBERO initial-state IDs."
             ),
         },
-        "corrector": (
-            {
-                "summary_path": corrector.summary_path,
-                "params_path": corrector.params_path,
-            }
-            if corrector is not None
-            else None
+        "corrector": _corrector_metadata(
+            corrector,
+            matched_diff_corrector,
         ),
         "completed_episode_rows": len(rows),
         **_aggregate(rows),

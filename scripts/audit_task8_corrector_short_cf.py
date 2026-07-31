@@ -5,7 +5,8 @@ At every fresh policy decision it executes the first four anchor actions, takes
 one canonical MuJoCo/controller snapshot, and compares three H6 branches:
 
 * ``stale_h6``: cached anchor actions 4:10;
-* ``corrector_h6``: the saved direct age-4 corrector output;
+* ``corrector_h6``: either the saved direct age-4 output or the conservative
+  stale-anchored matched-difference response selected by ``--candidate``;
 * ``fresh_teacher_h6``: a fresh 10/10 ACoT request at the age-4 state.
 
 The stale and corrector endpoints each receive a fresh H9 teacher continuation.
@@ -17,6 +18,8 @@ number satisfied and the sum of their dense continuous progress.
 This is intentionally independent of the ordinary LIBERO evaluation scripts.
 Root records and episode completion records are appended immediately so a
 partially interrupted run can resume deterministically.
+``--audit-root-indices`` can retain representative later macro decisions while
+the stale trajectory still advances through all earlier roots.
 """
 # ruff: noqa: SLF001
 
@@ -46,6 +49,7 @@ AUDIT_HORIZON = 6
 CONTINUATION_HORIZON = 9
 HELD_OUT_START = 10
 ARMS = ("stale_h6", "corrector_h6", "fresh_teacher_h6")
+CANDIDATES = ("direct", "matched_difference")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +60,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--corrector-summary", required=True)
     parser.add_argument("--corrector-params", default=None)
+    parser.add_argument(
+        "--candidate",
+        choices=CANDIDATES,
+        default="direct",
+        help="Action candidate audited as corrector_h6.",
+    )
     parser.add_argument("--norm-stats-dir", required=True)
     parser.add_argument("--task-suite-name", default="libero_10")
     parser.add_argument(
@@ -70,6 +80,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Maximum audited age-4 roots per episode; zero audits the full stale-H10 trajectory.",
+    )
+    parser.add_argument(
+        "--audit-root-indices",
+        nargs="+",
+        type=int,
+        default=None,
+        help=(
+            "Only record these stale-trajectory macro root indices while still advancing "
+            "through earlier roots; for example --audit-root-indices 10 25."
+        ),
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--num-steps-wait", type=int, default=10)
@@ -102,6 +122,18 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--num-trials must be positive.")
     if args.max_roots_per_episode < 0:
         raise ValueError("--max-roots-per-episode must be non-negative.")
+    if args.audit_root_indices is not None:
+        if any(index < 0 for index in args.audit_root_indices):
+            raise ValueError("--audit-root-indices must be non-negative.")
+        if len(set(args.audit_root_indices)) != len(args.audit_root_indices):
+            raise ValueError("--audit-root-indices must not contain duplicates.")
+        if (
+            args.max_roots_per_episode
+            and max(args.audit_root_indices) >= args.max_roots_per_episode
+        ):
+            raise ValueError(
+                "--max-roots-per-episode must exceed every requested audit root index."
+            )
     if args.seed < 0 or args.num_steps_wait < 0:
         raise ValueError("--seed and --num-steps-wait must be non-negative.")
     if args.resize_size <= 0 or args.action_cot_denoising_steps <= 0:
@@ -312,7 +344,10 @@ def _audit_root(
     decision_step: int,
     args: argparse.Namespace,
     client: websocket_policy.WebsocketClientPolicy,
-    corrector: corrector_eval.DirectCorrector,
+    corrector: (
+        corrector_eval.DirectCorrector
+        | corrector_eval.MatchedDifferenceCorrector
+    ),
     norm_stats: dict[str, Any],
     collect_record: bool,
 ) -> tuple[dict[str, Any] | None, dict[str, Any], bool, int]:
@@ -369,11 +404,24 @@ def _audit_root(
         age4_input["observation/state"],
         norm_stats,
     )
-    corrected_actions, corrector_ms = corrector(
-        cache,
-        current_images,
-        current_state,
-    )
+    if args.candidate == "matched_difference":
+        if not isinstance(corrector, corrector_eval.MatchedDifferenceCorrector):
+            raise RuntimeError("Matched-difference candidate runtime was not initialised.")
+        corrected_actions, candidate_timing = corrector(
+            cache,
+            current_images,
+            current_state,
+        )
+        corrector_ms = candidate_timing["elapsed_ms"]
+    else:
+        if not isinstance(corrector, corrector_eval.DirectCorrector):
+            raise RuntimeError("Direct candidate runtime was not initialised.")
+        corrected_actions, corrector_ms = corrector(
+            cache,
+            current_images,
+            current_state,
+        )
+        candidate_timing = None
     corrected_actions = np.asarray(corrected_actions, dtype=np.float32)
     if corrected_actions.shape != (AUDIT_HORIZON, ACTION_DIM):
         raise ValueError(
@@ -417,10 +465,12 @@ def _audit_root(
         "anchor_decision_step": decision_step,
         "age4_decision_step": decision_step + ANCHOR_HORIZON,
         "root_seed": root_seed,
+        "candidate": args.candidate,
         "continuation_seed": continuation_seed,
         "anchor_teacher_wall_ms": float(anchor_result["collector_wall_ms"]),
         "fresh_teacher_wall_ms": float(fresh_result["collector_wall_ms"]),
         "corrector_ms": float(corrector_ms),
+        "candidate_timing": candidate_timing,
         "restore_before_progress_spread": float(max(before_scores) - min(before_scores)),
         "action_distances": {
             "corrector_vs_stale": _action_distance(corrected_actions, stale_actions),
@@ -455,7 +505,10 @@ def _run_episode(
     existing_root_keys: set[tuple[int, int]],
     args: argparse.Namespace,
     client: websocket_policy.WebsocketClientPolicy,
-    corrector: corrector_eval.DirectCorrector,
+    corrector: (
+        corrector_eval.DirectCorrector
+        | corrector_eval.MatchedDifferenceCorrector
+    ),
     norm_stats: dict[str, Any],
     roots_file: Any,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -493,6 +546,10 @@ def _run_episode(
                 termination_reason = "root_limit"
                 break
             root_key = (trial_id, root_index)
+            requested_root = (
+                args.audit_root_indices is None
+                or root_index in args.audit_root_indices
+            )
             record, observation, done, actual_steps = _audit_root(
                 env,
                 observation,
@@ -504,7 +561,7 @@ def _run_episode(
                 client=client,
                 corrector=corrector,
                 norm_stats=norm_stats,
-                collect_record=root_key not in existing_root_keys,
+                collect_record=requested_root and root_key not in existing_root_keys,
             )
             step += actual_steps
             if record is not None:
@@ -553,6 +610,7 @@ def _run_episode(
             "task_description": task_description,
             "trial_id": trial_id,
             "trajectory": "stale_h10",
+            "candidate": args.candidate,
             "success": success,
             "termination_reason": termination_reason,
             "environment_steps": step,
@@ -660,7 +718,10 @@ def _summarize(
     root_records: list[dict[str, Any]],
     episode_records: list[dict[str, Any]],
     args: argparse.Namespace,
-    corrector: corrector_eval.DirectCorrector,
+    corrector: (
+        corrector_eval.DirectCorrector
+        | corrector_eval.MatchedDifferenceCorrector
+    ),
 ) -> dict[str, Any]:
     trial_end = args.trial_start + args.num_trials
     selected_roots = [
@@ -668,12 +729,14 @@ def _summarize(
         for row in root_records
         if int(row["task_id"]) == TASK_ID
         and args.trial_start <= int(row["trial_id"]) < trial_end
+        and str(row.get("candidate", "direct")) == args.candidate
     ]
     selected_episodes_by_trial = {
         int(row["trial_id"]): row
         for row in episode_records
         if int(row["task_id"]) == TASK_ID
         and args.trial_start <= int(row["trial_id"]) < trial_end
+        and str(row.get("candidate", "direct")) == args.candidate
     }
     episode_values = list(selected_episodes_by_trial.values())
     comparisons = {
@@ -721,6 +784,8 @@ def _summarize(
             "num_trials": args.num_trials,
             "held_out_initial_state_ids": list(range(args.trial_start, trial_end)),
             "max_roots_per_episode": args.max_roots_per_episode,
+            "audit_root_indices": args.audit_root_indices,
+            "candidate": args.candidate,
             "trajectory": "stale_h10",
             "anchor_horizon": ANCHOR_HORIZON,
             "audit_horizon": AUDIT_HORIZON,
@@ -736,7 +801,26 @@ def _summarize(
         },
         "corrector": {
             "summary_path": corrector.summary_path,
-            "params_path": corrector.params_path,
+            "params_path": (
+                corrector.params_path
+                if isinstance(corrector, corrector_eval.DirectCorrector)
+                else corrector.current_params_path
+            ),
+            "no_current_params_path": (
+                corrector.no_current_params_path
+                if isinstance(corrector, corrector_eval.MatchedDifferenceCorrector)
+                else None
+            ),
+            "matched_difference_alpha": (
+                corrector.alpha
+                if isinstance(corrector, corrector_eval.MatchedDifferenceCorrector)
+                else None
+            ),
+            "matched_difference_per_token_l2_trust_region": (
+                corrector.trust_region_l2
+                if isinstance(corrector, corrector_eval.MatchedDifferenceCorrector)
+                else None
+            ),
         },
         "completed_trials": len(selected_episodes_by_trial),
         "requested_trials": args.num_trials,
@@ -791,6 +875,40 @@ def _summarize(
         "mean_corrector_ms": _finite_mean(
             [row["corrector_ms"] for row in selected_roots]
         ),
+        "matched_difference_diagnostics": (
+            {
+                "mean_current_corrector_ms": _finite_mean(
+                    [
+                        row["candidate_timing"]["current_corrector_ms"]
+                        for row in selected_roots
+                        if row.get("candidate_timing") is not None
+                    ]
+                ),
+                "mean_no_current_corrector_ms": _finite_mean(
+                    [
+                        row["candidate_timing"]["no_current_corrector_ms"]
+                        for row in selected_roots
+                        if row.get("candidate_timing") is not None
+                    ]
+                ),
+                "mean_response_l2": _finite_mean(
+                    [
+                        row["candidate_timing"]["response_l2_mean"]
+                        for row in selected_roots
+                        if row.get("candidate_timing") is not None
+                    ]
+                ),
+                "mean_clip_fraction": _finite_mean(
+                    [
+                        row["candidate_timing"]["clip_fraction"]
+                        for row in selected_roots
+                        if row.get("candidate_timing") is not None
+                    ]
+                ),
+            }
+            if args.candidate == "matched_difference"
+            else None
+        ),
     }
 
 
@@ -811,17 +929,26 @@ def main() -> None:
         (int(row["trial_id"]), int(row["root_index"]))
         for row in root_records
         if int(row.get("task_id", -1)) == TASK_ID
+        and str(row.get("candidate", "direct")) == args.candidate
     }
     completed_trials = {
         int(row["trial_id"])
         for row in episode_records
         if int(row.get("task_id", -1)) == TASK_ID
+        and str(row.get("candidate", "direct")) == args.candidate
     }
 
     norm_stats = normalize_lib.load(args.norm_stats_dir)
-    corrector = corrector_eval.DirectCorrector(
-        args.corrector_summary,
-        args.corrector_params,
+    corrector = (
+        corrector_eval.MatchedDifferenceCorrector(
+            args.corrector_summary,
+            args.corrector_params,
+        )
+        if args.candidate == "matched_difference"
+        else corrector_eval.DirectCorrector(
+            args.corrector_summary,
+            args.corrector_params,
+        )
     )
     client = websocket_policy.WebsocketClientPolicy(
         args.host,
