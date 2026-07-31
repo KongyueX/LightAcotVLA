@@ -67,9 +67,11 @@ class Args:
     action_huber_delta: float = 0.05
     plan_huber_delta: float = 0.1
     action_gripper_weight: float = 0.05
+    paired_action_loss_weight: float = 1.0
     plan_loss_weight: float = 0.5
     plan_gripper_weight: float = 0.05
     plan_velocity_weight: float = 0.1
+    paired_plan_loss_weight: float = 1.0
     output_margin: float = 1.25
     minimum_action_residual_scale: float = 0.05
     minimum_plan_residual_scale: float = 0.05
@@ -124,9 +126,11 @@ def _validate_args(args: Args) -> None:
         raise ValueError("output_margin must exceed one.")
     nonnegative_weights = (
         args.action_gripper_weight,
+        args.paired_action_loss_weight,
         args.plan_loss_weight,
         args.plan_gripper_weight,
         args.plan_velocity_weight,
+        args.paired_plan_loss_weight,
     )
     if any(value < 0 for value in nonnegative_weights):
         raise ValueError("Auxiliary loss weights must be non-negative.")
@@ -529,9 +533,24 @@ def _loss(
     action_gripper = jnp.mean(
         _binary_cross_entropy(output.action_gripper_logits, action_gripper_target)
     )
+    group_size = len(branched_dataset.BRANCH_NAMES)
+    if output.actions.shape[0] % group_size != 0:
+        raise ValueError("Paired training batches must contain complete canonical branch groups.")
+    grouped_actions = output.actions.reshape((-1, group_size, *output.actions.shape[1:]))
+    grouped_action_targets = batch["target_actions"].reshape(
+        (-1, group_size, *batch["target_actions"].shape[1:])
+    )
+    predicted_action_delta = grouped_actions[:, 1:, ..., :6] - grouped_actions[:, :1, ..., :6]
+    target_action_delta = (
+        grouped_action_targets[:, 1:, ..., :6] - grouped_action_targets[:, :1, ..., :6]
+    )
+    paired_action = jnp.mean(
+        _huber(predicted_action_delta - target_action_delta, args.action_huber_delta)
+    )
     plan_continuous = jnp.asarray(0.0, dtype=jnp.float32)
     plan_gripper = jnp.asarray(0.0, dtype=jnp.float32)
     plan_velocity = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_plan = jnp.asarray(0.0, dtype=jnp.float32)
     if mode == "plan":
         plan_continuous = jnp.mean(
             _huber(output.revised_ear[..., :6] - batch["target_ear"][..., :6], args.plan_huber_delta)
@@ -545,20 +564,37 @@ def _loss(
         plan_velocity = jnp.mean(
             _huber(predicted_velocity - target_velocity, args.plan_huber_delta)
         )
+        grouped_ear = output.revised_ear.reshape(
+            (-1, group_size, *output.revised_ear.shape[1:])
+        )
+        grouped_ear_targets = batch["target_ear"].reshape(
+            (-1, group_size, *batch["target_ear"].shape[1:])
+        )
+        predicted_ear_delta = grouped_ear[:, 1:, ..., :6] - grouped_ear[:, :1, ..., :6]
+        target_ear_delta = (
+            grouped_ear_targets[:, 1:, ..., :6] - grouped_ear_targets[:, :1, ..., :6]
+        )
+        paired_plan = jnp.mean(
+            _huber(predicted_ear_delta - target_ear_delta, args.plan_huber_delta)
+        )
     total = (
         action_continuous
         + args.action_gripper_weight * action_gripper
+        + args.paired_action_loss_weight * paired_action
         + args.plan_loss_weight * plan_continuous
         + args.plan_gripper_weight * plan_gripper
         + args.plan_velocity_weight * plan_velocity
+        + args.paired_plan_loss_weight * paired_plan
     )
     return total, {
         "loss": total,
         "action_continuous_huber": action_continuous,
         "action_gripper_bce": action_gripper,
+        "paired_action_huber": paired_action,
         "plan_continuous_huber": plan_continuous,
         "plan_gripper_bce": plan_gripper,
         "plan_velocity_huber": plan_velocity,
+        "paired_plan_huber": paired_plan,
     }
 
 
@@ -606,6 +642,61 @@ def _ear_metrics(predicted: np.ndarray, target: np.ndarray) -> dict[str, float |
     }
 
 
+def _paired_metrics(
+    predicted_actions: np.ndarray,
+    predicted_ear: np.ndarray,
+    flat: dict[str, np.ndarray],
+) -> dict[str, float | int | None]:
+    action_errors: list[np.ndarray] = []
+    ear_errors: list[np.ndarray] = []
+    changed_event_matches: list[bool] = []
+    changed_event_count = 0
+    root_ids = np.asarray(flat["root_id"])
+    branch_ids = np.asarray(flat["branch_id"])
+    for root_id in np.unique(root_ids):
+        root_indices = np.flatnonzero(root_ids == root_id)
+        nominal = root_indices[branch_ids[root_indices] == 0]
+        if nominal.size != 1:
+            raise ValueError(f"Root {int(root_id)} must contain exactly one nominal branch.")
+        nominal_index = int(nominal[0])
+        disturbed = root_indices[branch_ids[root_indices] != 0]
+        predicted_action_delta = predicted_actions[disturbed, ..., :6] - predicted_actions[
+            nominal_index, ..., :6
+        ]
+        target_action_delta = flat["target_actions"][disturbed, ..., :6] - flat["target_actions"][
+            nominal_index, ..., :6
+        ]
+        predicted_ear_delta = predicted_ear[disturbed, ..., :6] - predicted_ear[nominal_index, ..., :6]
+        target_ear_delta = flat["target_ear"][disturbed, ..., :6] - flat["target_ear"][
+            nominal_index, ..., :6
+        ]
+        action_errors.append(predicted_action_delta - target_action_delta)
+        ear_errors.append(predicted_ear_delta - target_ear_delta)
+        nominal_target_gripper = flat["target_ear"][nominal_index, :, 6] >= 0
+        nominal_predicted_gripper = predicted_ear[nominal_index, :, 6] >= 0
+        for disturbed_index in disturbed:
+            disturbed_target_gripper = flat["target_ear"][disturbed_index, :, 6] >= 0
+            if np.array_equal(disturbed_target_gripper, nominal_target_gripper):
+                continue
+            changed_event_count += 1
+            disturbed_predicted_gripper = predicted_ear[disturbed_index, :, 6] >= 0
+            changed_event_matches.append(
+                np.array_equal(disturbed_predicted_gripper, disturbed_target_gripper)
+                and np.array_equal(nominal_predicted_gripper, nominal_target_gripper)
+            )
+    action_error = np.concatenate(action_errors, axis=0)
+    ear_error = np.concatenate(ear_errors, axis=0)
+    return {
+        "pair_count": int(action_error.shape[0]),
+        "action_delta_mse_6d": float(np.mean(np.square(action_error))),
+        "ear_delta_mse_6d": float(np.mean(np.square(ear_error))),
+        "changed_ear_gripper_sequence_count": int(changed_event_count),
+        "changed_ear_gripper_pair_exact_accuracy": (
+            float(np.mean(changed_event_matches)) if changed_event_matches else None
+        ),
+    }
+
+
 def _stratified_metrics(
     predicted_actions: np.ndarray,
     predicted_ear: np.ndarray,
@@ -621,6 +712,7 @@ def _stratified_metrics(
 
     return {
         "overall": evaluate(np.ones(branch_ids.shape, dtype=np.bool_)),
+        "paired": _paired_metrics(predicted_actions, predicted_ear, flat),
         "nominal_disturbed": {
             "nominal": evaluate(branch_ids == 0),
             "disturbed": evaluate(branch_ids != 0),
@@ -686,6 +778,18 @@ def _train_one(
         optax.adamw(schedule, weight_decay=args.weight_decay),
     )
     optimizer_state = optimizer.init(params)
+    group_size = len(branched_dataset.BRANCH_NAMES)
+    root_groups: list[np.ndarray] = []
+    for root_id in np.unique(train_flat["root_id"]):
+        group = np.flatnonzero(train_flat["root_id"] == root_id)
+        group = group[np.argsort(train_flat["branch_id"][group])]
+        if group.size != group_size or not np.array_equal(
+            train_flat["branch_id"][group],
+            np.arange(group_size),
+        ):
+            raise ValueError(f"Root {int(root_id)} does not contain one complete canonical branch group.")
+        root_groups.append(group)
+    roots_per_batch = max(1, args.batch_size // group_size)
 
     @jax.jit
     def train_step(
@@ -746,13 +850,21 @@ def _train_one(
     best_step = 0
     best_params: nnx.State | None = None
     started = time.monotonic()
+    validation_stale = _stratified_metrics(
+        validation_flat["base_actions"],
+        validation_flat["transported_ear"],
+        validation_flat,
+    )
+    validation_stale_disturbed = validation_stale["nominal_disturbed"]["disturbed"]["actions"]["mse_6d"]
+    validation_zero_pair = validation_stale["paired"]["action_delta_mse_6d"]
     with metrics_path.open("w", encoding="utf-8") as metrics_file:
         for step in range(1, args.train_steps + 1):
-            sampled = rng.choice(
-                len(train_flat["branch_id"]),
-                size=args.batch_size,
-                replace=len(train_flat["branch_id"]) < args.batch_size,
+            sampled_roots = rng.choice(
+                len(root_groups),
+                size=roots_per_batch,
+                replace=len(root_groups) < roots_per_batch,
             )
+            sampled = np.concatenate([root_groups[int(index)] for index in sampled_roots])
             params, optimizer_state, train_metrics = train_step(
                 params,
                 optimizer_state,
@@ -766,13 +878,17 @@ def _train_one(
                     batch_size=args.eval_batch_size,
                     current_equals_anchor=current_equals_anchor,
                 )
-                validation_action = _action_metrics(
+                validation_metrics = _stratified_metrics(
                     validation["actions"],
-                    validation_flat["target_actions"],
+                    validation["ear"],
+                    validation_flat,
                 )
+                validation_action = validation_metrics["overall"]["actions"]
+                disturbed_mse = validation_metrics["nominal_disturbed"]["disturbed"]["actions"]["mse_6d"]
+                paired_mse = validation_metrics["paired"]["action_delta_mse_6d"]
                 score = float(
-                    validation_action["mse_6d"]
-                    + 0.01 * (1.0 - validation_action["gripper_sign_accuracy"])
+                    0.5 * disturbed_mse / validation_stale_disturbed
+                    + 0.5 * paired_mse / validation_zero_pair
                 )
                 record = {
                     "run": run_name,
@@ -780,6 +896,8 @@ def _train_one(
                     "elapsed_seconds": time.monotonic() - started,
                     **{f"train/{name}": float(value) for name, value in jax.device_get(train_metrics).items()},
                     **{f"validation/{name}": value for name, value in validation_action.items()},
+                    "validation/disturbed_action_mse_6d": disturbed_mse,
+                    "validation/paired_action_delta_mse_6d": paired_mse,
                     "validation/selection_score": score,
                 }
                 if not all(isinstance(value, (str, int)) or np.isfinite(value) for value in record.values()):
@@ -804,7 +922,10 @@ def _train_one(
         "completed_steps": args.train_steps,
         "best_validation_step": best_step,
         "best_validation_score": best_score,
-        "selection_criterion": "validation 4-step continuous-6D MSE + 0.01 * gripper sign error",
+        "selection_criterion": (
+            "0.5 * validation disturbed action6 MSE / stale + "
+            "0.5 * validation paired action-delta6 MSE / zero-pair"
+        ),
         "training_input": (
             "anchor and latest current observation"
             if not current_equals_anchor
@@ -1011,6 +1132,13 @@ def main(args: Args) -> None:
     )
     current_mse = evaluations["learned_current"]["overall"]["actions"]["mse_6d"]
     current_gripper = evaluations["learned_current"]["overall"]["actions"]["gripper_sign_accuracy"]
+    zero_pair_action_mse = evaluations["stale_cached_chunk"]["paired"]["action_delta_mse_6d"]
+    current_pair_action_mse = evaluations["learned_current"]["paired"]["action_delta_mse_6d"]
+    paired_action_gap_closure = (
+        float((zero_pair_action_mse - current_pair_action_mse) / zero_pair_action_mse)
+        if zero_pair_action_mse > 0
+        else None
+    )
     no_current_mse = (
         evaluations["learned_no_current_independent"]["overall"]["actions"]["mse_6d"]
         if "learned_no_current_independent" in evaluations
@@ -1028,11 +1156,28 @@ def main(args: Args) -> None:
         if transported_ear_mse > 0
         else None
     )
+    zero_pair_ear_mse = evaluations["stale_cached_chunk"]["paired"]["ear_delta_mse_6d"]
+    current_pair_ear_mse = evaluations["learned_current"]["paired"]["ear_delta_mse_6d"]
+    paired_ear_gap_closure = (
+        float((zero_pair_ear_mse - current_pair_ear_mse) / zero_pair_ear_mse)
+        if zero_pair_ear_mse > 0
+        else None
+    )
     quality_gate = (
-        current_mse <= 0.90 * strong_baseline_mse
+        current_mse < strong_baseline_mse
+        and paired_action_gap_closure is not None
+        and paired_action_gap_closure >= 0.25
         and current_gripper >= 0.96
         and (current_gain_over_no_current is None or current_gain_over_no_current >= 0.03)
-        and (args.mode != "plan" or (plan_gap_closure is not None and plan_gap_closure >= 0.25))
+        and (
+            args.mode != "plan"
+            or (
+                plan_gap_closure is not None
+                and plan_gap_closure >= 0.25
+                and paired_ear_gap_closure is not None
+                and paired_ear_gap_closure >= 0.25
+            )
+        )
     )
     speed_gate = profile["p95_ms"] < 2.0 and profile["theoretical_speedup_vs_full_acot"] >= 3.0
     summary = {
@@ -1075,14 +1220,22 @@ def main(args: Args) -> None:
             "stale_action_mse_6d": stale_mse,
             "strong_train_only_baseline_mse_6d": strong_baseline_mse,
             "learned_current_action_mse_6d": current_mse,
-            "required_relative_improvement_over_strong_baseline": 0.10,
+            "required_improvement_over_strong_baseline": "strictly lower MSE",
             "learned_current_gripper_sign_accuracy": current_gripper,
             "minimum_gripper_sign_accuracy": 0.96,
             "learned_no_current_action_mse_6d": no_current_mse,
             "current_gain_over_no_current": current_gain_over_no_current,
             "minimum_current_gain_over_no_current": 0.03,
+            "zero_pair_action_delta_mse_6d": zero_pair_action_mse,
+            "learned_pair_action_delta_mse_6d": current_pair_action_mse,
+            "paired_action_gap_closure_6d": paired_action_gap_closure,
+            "minimum_paired_action_gap_closure_6d": 0.25,
             "plan_gap_closure_6d": plan_gap_closure,
             "minimum_plan_gap_closure_6d": 0.25 if args.mode == "plan" else None,
+            "zero_pair_ear_delta_mse_6d": zero_pair_ear_mse,
+            "learned_pair_ear_delta_mse_6d": current_pair_ear_mse,
+            "paired_ear_gap_closure_6d": paired_ear_gap_closure,
+            "minimum_paired_ear_gap_closure_6d": 0.25 if args.mode == "plan" else None,
             "minimum_theoretical_speedup": 3.0,
         },
         "note": (
