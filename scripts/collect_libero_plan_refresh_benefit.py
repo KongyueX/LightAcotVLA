@@ -162,7 +162,7 @@ def _anchor_request(
         ),
         "run_execution_horizon_predictor": np.ones((), dtype=np.bool_),
         "execution_horizon_previous_actions": np.zeros((10, ACTION_DIM), dtype=np.float32),
-        "execution_horizon_previous_h": np.zeros((), dtype=np.int32),
+        "execution_horizon_previous_h": np.asarray(10, dtype=np.int32),
         "execution_horizon_budget_balance": np.zeros((), dtype=np.float32),
         "execution_horizon_episode_progress": np.zeros((), dtype=np.float32),
         "execution_horizon_previous_valid": np.zeros((), dtype=np.bool_),
