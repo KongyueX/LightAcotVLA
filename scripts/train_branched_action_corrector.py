@@ -730,14 +730,20 @@ def _dual_loss_normalizers(
     args: Args,
 ) -> dict[str, float]:
     group_size = len(branched_dataset.BRANCH_NAMES)
-    action_error = train_flat["base_actions"][..., :6] - train_flat["target_actions"][..., :6]
-    plan_error = train_flat["transported_ear"][..., :6] - train_flat["target_ear"][..., :6]
+    grouped_base_actions = train_flat["base_actions"].reshape(
+        (-1, group_size, *train_flat["base_actions"].shape[1:])
+    )
+    grouped_transported_ear = train_flat["transported_ear"].reshape(
+        (-1, group_size, *train_flat["transported_ear"].shape[1:])
+    )
     grouped_actions = train_flat["target_actions"].reshape(
         (-1, group_size, *train_flat["target_actions"].shape[1:])
     )
     grouped_ear = train_flat["target_ear"].reshape(
         (-1, group_size, *train_flat["target_ear"].shape[1:])
     )
+    action_error = grouped_base_actions[:, 0, ..., :6] - grouped_actions[:, 0, ..., :6]
+    plan_error = grouped_transported_ear[:, 0, ..., :6] - grouped_ear[:, 0, ..., :6]
     action_pair = grouped_actions[:, 1:, ..., :6] - grouped_actions[:, :1, ..., :6]
     plan_pair = grouped_ear[:, 1:, ..., :6] - grouped_ear[:, :1, ..., :6]
     return {
@@ -793,6 +799,7 @@ def _loss(
     mode: str,
     args: Args,
     normalizers: dict[str, float] | None = None,
+    prior_output: CorrectorOutput | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     action_continuous = jnp.mean(
         _huber(output.actions[..., :6] - batch["target_actions"][..., :6], args.action_huber_delta)
@@ -819,6 +826,12 @@ def _loss(
     plan_gripper = jnp.asarray(0.0, dtype=jnp.float32)
     plan_velocity = jnp.asarray(0.0, dtype=jnp.float32)
     paired_plan = jnp.asarray(0.0, dtype=jnp.float32)
+    prior_action = jnp.asarray(0.0, dtype=jnp.float32)
+    feedback_action = jnp.asarray(0.0, dtype=jnp.float32)
+    prior_plan = jnp.asarray(0.0, dtype=jnp.float32)
+    feedback_plan = jnp.asarray(0.0, dtype=jnp.float32)
+    prior_action_gripper = jnp.asarray(0.0, dtype=jnp.float32)
+    prior_plan_gripper = jnp.asarray(0.0, dtype=jnp.float32)
     if mode in {"plan", "dual_plan"}:
         plan_continuous = jnp.mean(
             _huber(output.revised_ear[..., :6] - batch["target_ear"][..., :6], args.plan_huber_delta)
@@ -846,16 +859,75 @@ def _loss(
             _huber(predicted_ear_delta - target_ear_delta, args.plan_huber_delta)
         )
     if mode == "dual_plan":
-        if normalizers is None:
-            raise ValueError("dual_plan requires train-only loss normalizers.")
+        if normalizers is None or prior_output is None:
+            raise ValueError("dual_plan requires train-only loss normalizers and prior output.")
+        grouped_prior_actions = prior_output.actions.reshape(
+            (-1, group_size, *prior_output.actions.shape[1:])
+        )
+        prior_action = jnp.mean(
+            _huber(
+                grouped_prior_actions[:, 0, ..., :6]
+                - grouped_action_targets[:, 0, ..., :6],
+                args.action_huber_delta,
+            )
+        )
+        feedback_action = jnp.mean(
+            _huber(
+                (grouped_actions[..., :6] - grouped_prior_actions[:, :1, ..., :6])
+                - (grouped_action_targets[..., :6] - grouped_action_targets[:, :1, ..., :6]),
+                args.action_huber_delta,
+            )
+        )
+        grouped_prior_action_logits = prior_output.action_gripper_logits.reshape(
+            (-1, group_size, *prior_output.action_gripper_logits.shape[1:])
+        )
+        prior_action_gripper_target = (
+            grouped_action_targets[:, 0, ..., 6] >= 0
+        ).astype(jnp.float32)
+        prior_action_gripper = jnp.mean(
+            _binary_cross_entropy(
+                grouped_prior_action_logits[:, 0],
+                prior_action_gripper_target,
+            )
+        )
+        grouped_prior_ear = prior_output.revised_ear.reshape(
+            (-1, group_size, *prior_output.revised_ear.shape[1:])
+        )
+        prior_plan = jnp.mean(
+            _huber(
+                grouped_prior_ear[:, 0, ..., :6]
+                - grouped_ear_targets[:, 0, ..., :6],
+                args.plan_huber_delta,
+            )
+        )
+        feedback_plan = jnp.mean(
+            _huber(
+                (grouped_ear[..., :6] - grouped_prior_ear[:, :1, ..., :6])
+                - (grouped_ear_targets[..., :6] - grouped_ear_targets[:, :1, ..., :6]),
+                args.plan_huber_delta,
+            )
+        )
+        grouped_prior_plan_logits = prior_output.plan_gripper_logits.reshape(
+            (-1, group_size, *prior_output.plan_gripper_logits.shape[1:])
+        )
+        prior_plan_gripper_target = (
+            grouped_ear_targets[:, 0, ..., 6] >= 0
+        ).astype(jnp.float32)
+        prior_plan_gripper = jnp.mean(
+            _binary_cross_entropy(
+                grouped_prior_plan_logits[:, 0],
+                prior_plan_gripper_target,
+            )
+        )
         total = (
-            action_continuous / normalizers["action"]
-            + paired_action / normalizers["paired_action"]
-            + plan_continuous / normalizers["plan"]
-            + paired_plan / normalizers["paired_plan"]
+            prior_action / normalizers["action"]
+            + feedback_action / normalizers["paired_action"]
+            + prior_plan / normalizers["plan"]
+            + feedback_plan / normalizers["paired_plan"]
             + 0.25 * action_gripper
             + 0.25 * plan_gripper
-            + args.plan_velocity_weight * plan_velocity / normalizers["plan"]
+            + 0.25 * prior_action_gripper
+            + 0.25 * prior_plan_gripper
         )
     else:
         total = (
@@ -876,6 +948,12 @@ def _loss(
         "plan_gripper_bce": plan_gripper,
         "plan_velocity_huber": plan_velocity,
         "paired_plan_huber": paired_plan,
+        "prior_action_huber": prior_action,
+        "feedback_action_huber": feedback_action,
+        "prior_plan_huber": prior_plan,
+        "feedback_plan_huber": feedback_plan,
+        "prior_action_gripper_bce": prior_action_gripper,
+        "prior_plan_gripper_bce": prior_plan_gripper,
     }
 
 
@@ -1102,12 +1180,27 @@ def _train_one(
                 batch["transported_ear"],
                 batch["base_actions"],
             )
+            prior_output = None
+            if args.mode == "dual_plan":
+                prior_output = candidate(
+                    batch["anchor_images"],
+                    batch["anchor_images"],
+                    batch["anchor_state"],
+                    batch["anchor_state"],
+                    batch["cached_plan_tokens"],
+                    batch["cached_iar"],
+                    batch["intended_prefix"],
+                    batch["intended_valid"],
+                    batch["transported_ear"],
+                    batch["base_actions"],
+                )
             return _loss(
                 output,
                 batch,
                 mode=args.mode,
                 args=args,
                 normalizers=loss_normalizers,
+                prior_output=prior_output,
             )
 
         (_, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(current_model)
