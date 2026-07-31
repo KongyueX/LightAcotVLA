@@ -471,8 +471,9 @@ def _scored_outcome(
         candidates = by_episode.get(episode_id, [])
         if not candidates:
             continue
-        selected = max(candidates, key=lambda index: (scores[index], -examples[index].root_index))
-        if scores[selected] < threshold:
+        ordered = sorted(candidates, key=lambda index: examples[index].root_index)
+        selected = next((index for index in ordered if scores[index] >= threshold), None)
+        if selected is None:
             continue
         example = examples[selected]
         roots[output_index] = example.root_index
@@ -567,13 +568,15 @@ def _reported_metrics(
 
 def _selection_rank(metrics: dict[str, Any]) -> tuple[Any, ...]:
     useful = metrics["wins"] > 0 and metrics["mean_benefit"] > 0.0
+    balanced = metrics["wins"] >= 2 * metrics["losses"]
     return (
         metrics["predicate_regressions"] != 0,
         metrics["predicate_regressions"],
         not useful,
-        metrics["losses"],
-        -metrics["wins"],
+        not balanced,
         -metrics["mean_benefit"],
+        -metrics["net_wins"],
+        metrics["losses"],
         metrics["refreshes"],
     )
 
@@ -926,8 +929,8 @@ def main() -> None:
         "model_selection": {
             "threshold_source": "validation episodes only",
             "priority": (
-                "zero predicate regressions, positive useful selection, fewer losses, then more wins "
-                "and larger mean benefit"
+                "online first-threshold-crossing; zero predicate regressions, positive mean, "
+                "wins at least twice losses, then largest mean benefit"
             ),
             "temporal_lambda_grid": temporal_grid,
             "temporal_state_plan_diagnostic_lambda_grid": combined_grid,
