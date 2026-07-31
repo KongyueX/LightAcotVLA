@@ -313,6 +313,19 @@ class BranchedActionCorrector(nnx.Module):
                 kernel_init=jax.nn.initializers.zeros,
                 bias_init=jax.nn.initializers.zeros,
             )
+            self.plan_decoder = nnx.Linear(
+                ear_horizon * env_action_dim,
+                hidden_dim,
+                rngs=rngs,
+            )
+            self.plan_decoder_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
+            self.action_out = nnx.Linear(
+                hidden_dim,
+                rollout_horizon * env_action_dim,
+                rngs=rngs,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
         else:
             if prior_temporal_basis is None or feedback_temporal_basis is None:
                 raise ValueError("dual_plan requires train-derived prior and feedback bases.")
@@ -322,6 +335,23 @@ class BranchedActionCorrector(nnx.Module):
                 raise ValueError("dual_plan bases must match plan_rank.")
             self.prior_temporal_basis = prior_temporal_basis
             self.feedback_temporal_basis = feedback_temporal_basis
+            feedback_image_convs = []
+            feedback_in_channels = image_channels
+            for out_channels, kernel_size in zip(cnn_channels, (5, 3, 3), strict=True):
+                feedback_image_convs.append(
+                    progress_probe._Conv2D(
+                        feedback_in_channels,
+                        out_channels,
+                        kernel_size,
+                        rngs=rngs,
+                    )
+                )
+                feedback_in_channels = out_channels
+            self.feedback_image_convs = feedback_image_convs
+            self.feedback_image_proj = nnx.Linear(2 * image_summary, hidden_dim, rngs=rngs)
+            self.feedback_state_proj = nnx.Linear(2 * state_dim, hidden_dim, rngs=rngs)
+            self.feedback_root_gain = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
+            self.feedback_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
             self.prior_coeff_out = nnx.Linear(
                 hidden_dim,
                 plan_rank * 6,
@@ -363,19 +393,6 @@ class BranchedActionCorrector(nnx.Module):
                 kernel_init=jax.nn.initializers.zeros,
                 bias_init=jax.nn.initializers.zeros,
             )
-            self.plan_decoder = nnx.Linear(
-                ear_horizon * env_action_dim,
-                hidden_dim,
-                rngs=rngs,
-            )
-            self.plan_decoder_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
-            self.action_out = nnx.Linear(
-                hidden_dim,
-                rollout_horizon * env_action_dim,
-                rngs=rngs,
-                kernel_init=jax.nn.initializers.zeros,
-                bias_init=jax.nn.initializers.zeros,
-            )
 
     @staticmethod
     def _normalize_images(images: jax.Array) -> jax.Array:
@@ -393,6 +410,43 @@ class BranchedActionCorrector(nnx.Module):
             encoded = jax.nn.silu(convolution(encoded))
         encoded = jnp.mean(encoded, axis=(1, 2))
         return encoded.reshape((batch_size, -1))
+
+    def _encode_feedback_images(self, images: jax.Array) -> jax.Array:
+        batch_size, views, height, width, channels = images.shape
+        encoded = images.reshape((batch_size * views, height, width, channels))
+        encoded = self._normalize_images(encoded)
+        for convolution in self.feedback_image_convs:
+            encoded = jax.nn.silu(convolution(encoded))
+        encoded = jnp.mean(encoded, axis=(1, 2))
+        return encoded.reshape((batch_size, -1))
+
+    def _encode_feedback_context(
+        self,
+        anchor_images: jax.Array,
+        current_images: jax.Array,
+        anchor_state: jax.Array,
+        current_state: jax.Array,
+        prior_context: jax.Array,
+    ) -> jax.Array:
+        anchor_visual = self._encode_feedback_images(anchor_images)
+        current_visual = self._encode_feedback_images(current_images)
+        visual_delta = current_visual - anchor_visual
+        visual_input = jnp.concatenate([visual_delta, jnp.abs(visual_delta)], axis=-1)
+        image_feature = jax.nn.silu(self.feedback_image_proj(visual_input)) - jax.nn.silu(
+            self.feedback_image_proj(jnp.zeros_like(visual_input))
+        )
+        state_delta = current_state - anchor_state
+        state_input = jnp.concatenate([state_delta, jnp.abs(state_delta)], axis=-1)
+        state_feature = jax.nn.silu(self.feedback_state_proj(state_input)) - jax.nn.silu(
+            self.feedback_state_proj(jnp.zeros_like(state_input))
+        )
+        root_gain = 1.0 + jnp.tanh(
+            self.feedback_root_gain(jax.lax.stop_gradient(prior_context))
+        )
+        feedback = (image_feature + state_feature) * root_gain
+        return feedback + jax.nn.silu(self.feedback_hidden(feedback)) - jax.nn.silu(
+            self.feedback_hidden(jnp.zeros_like(feedback))
+        )
 
     def _encode_context(
         self,
@@ -487,18 +541,23 @@ class BranchedActionCorrector(nnx.Module):
         transported_ear: jax.Array,
         base_actions: jax.Array,
     ) -> CorrectorOutput:
-        context = self._encode_context(
-            anchor_images,
-            current_images,
-            anchor_state,
-            current_state,
-            cached_plan_tokens,
-            cached_iar,
-            intended_prefix,
-            intended_valid,
+        context = (
+            None
+            if self.mode == "dual_plan"
+            else self._encode_context(
+                anchor_images,
+                current_images,
+                anchor_state,
+                current_state,
+                cached_plan_tokens,
+                cached_iar,
+                intended_prefix,
+                intended_valid,
+            )
         )
-        batch_size = context.shape[0]
+        batch_size = anchor_images.shape[0]
         if self.mode == "direct":
+            assert context is not None
             revised_ear = transported_ear
             plan_sign = jnp.where(revised_ear[..., 6] >= 0, 1.0, -1.0)
             plan_gripper_logits = 4.0 * plan_sign
@@ -536,6 +595,7 @@ class BranchedActionCorrector(nnx.Module):
                     tokens = token_mixer(tokens)
                 action_raw = self.action_out(_rms_norm(tokens))
         elif self.mode == "plan":
+            assert context is not None
             plan_raw = self.plan_out(context).reshape((batch_size, self.ear_horizon, 7))
             plan_residual_scale = jnp.asarray(self.plan_residual_scale, dtype=plan_raw.dtype)
             continuous_plan = transported_ear[..., :6] + (
@@ -564,22 +624,32 @@ class BranchedActionCorrector(nnx.Module):
             prior_coefficients = self.prior_coeff_out(prior_context).reshape(
                 (batch_size, self.plan_rank, 6)
             )
+            feedback_context = self._encode_feedback_context(
+                anchor_images,
+                current_images,
+                anchor_state,
+                current_state,
+                prior_context,
+            )
+            zero_feedback = jnp.zeros_like(feedback_context)
             feedback_coefficients = (
-                self.feedback_coeff_out(context) - self.feedback_coeff_out(prior_context)
+                self.feedback_coeff_out(feedback_context)
+                - self.feedback_coeff_out(zero_feedback)
             ).reshape((batch_size, self.plan_rank, 6))
-            prior_basis = jnp.asarray(self.prior_temporal_basis, dtype=context.dtype)
-            feedback_basis = jnp.asarray(self.feedback_temporal_basis, dtype=context.dtype)
+            prior_basis = jnp.asarray(self.prior_temporal_basis, dtype=prior_context.dtype)
+            feedback_basis = jnp.asarray(self.feedback_temporal_basis, dtype=prior_context.dtype)
             normalized_plan_residual = jnp.einsum(
                 "tr,brd->btd", prior_basis, prior_coefficients
             ) + jnp.einsum("tr,brd->btd", feedback_basis, feedback_coefficients)
-            plan_residual_scale = jnp.asarray(self.plan_residual_scale, dtype=context.dtype)
+            plan_residual_scale = jnp.asarray(self.plan_residual_scale, dtype=prior_context.dtype)
             continuous_plan = transported_ear[..., :6] + (
                 plan_residual_scale[None, None, :6] * jnp.tanh(normalized_plan_residual)
             )
             plan_sign = jnp.where(transported_ear[..., 6] >= 0, 1.0, -1.0)
             prior_gripper = self.prior_gripper_out(prior_context)
             feedback_gripper = (
-                self.feedback_gripper_out(context) - self.feedback_gripper_out(prior_context)
+                self.feedback_gripper_out(feedback_context)
+                - self.feedback_gripper_out(zero_feedback)
             )
             plan_gripper_logits = 4.0 * plan_sign + self.gripper_logit_scale * jnp.tanh(
                 prior_gripper + feedback_gripper
@@ -1653,7 +1723,10 @@ def main(args: Args) -> None:
                 "prior_basis": dual_bases["prior"],
                 "feedback_basis": dual_bases["feedback"],
                 "prior_input": "cached plan/history with current observation replaced by anchor",
-                "feedback_input": "difference between full-current and prior encoder/head outputs",
+                "feedback_input": (
+                    "independent current-minus-anchor image/state innovation encoder "
+                    "FiLM-conditioned by stopped-gradient prior context"
+                ),
             }
             if dual_bases is not None
             else None
