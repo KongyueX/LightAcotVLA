@@ -51,6 +51,7 @@ Mode = Literal["direct", "plan", "dual_plan"]
 class Args:
     dataset: tuple[str, ...]
     output_dir: str
+    feedback_feature_cache: str | None = None
     mode: str = "direct"
     direct_head: str = "global"
     token_layers: int = 4
@@ -162,6 +163,26 @@ def _linear_parameters(input_dim: int, output_dim: int) -> int:
     return input_dim * output_dim + output_dim
 
 
+def _attach_feedback_features(
+    arrays: dict[str, np.ndarray],
+    cache_path: str,
+) -> dict[str, np.ndarray]:
+    with np.load(cache_path, allow_pickle=False) as cache:
+        cache_root_ids = np.asarray(cache["root_id"])
+        locations = {int(root_id): index for index, root_id in enumerate(cache_root_ids)}
+        indices = np.asarray([locations[int(root_id)] for root_id in arrays["root_id"]])
+        enriched = dict(arrays)
+        enriched["anchor_feedback_features"] = np.asarray(
+            cache["anchor_features"][indices],
+            dtype=np.float32,
+        )
+        enriched["current_feedback_features"] = np.asarray(
+            cache["current_features"][indices],
+            dtype=np.float32,
+        )
+    return enriched
+
+
 class CorrectorOutput(NamedTuple):
     actions: jax.Array
     action_gripper_logits: jax.Array
@@ -236,6 +257,7 @@ class BranchedActionCorrector(nnx.Module):
         token_layers: int = 4,
         token_heads: int = 4,
         plan_rank: int = 4,
+        feedback_feature_dim: int = 0,
         prior_temporal_basis: tuple[tuple[float, ...], ...] | None = None,
         feedback_temporal_basis: tuple[tuple[float, ...], ...] | None = None,
         cnn_channels: tuple[int, ...] = (16, 32, 48),
@@ -254,6 +276,7 @@ class BranchedActionCorrector(nnx.Module):
         self.rollout_horizon = rollout_horizon
         self.hidden_dim = hidden_dim
         self.plan_rank = plan_rank
+        self.feedback_feature_dim = feedback_feature_dim
         self.action_residual_scale = tuple(float(value) for value in action_residual_scale)
         self.plan_residual_scale = tuple(float(value) for value in plan_residual_scale)
         self.gripper_logit_scale = gripper_logit_scale
@@ -335,20 +358,31 @@ class BranchedActionCorrector(nnx.Module):
                 raise ValueError("dual_plan bases must match plan_rank.")
             self.prior_temporal_basis = prior_temporal_basis
             self.feedback_temporal_basis = feedback_temporal_basis
-            feedback_image_convs = []
-            feedback_in_channels = image_channels
-            for out_channels, kernel_size in zip(cnn_channels, (5, 3, 3), strict=True):
-                feedback_image_convs.append(
-                    progress_probe._Conv2D(
-                        feedback_in_channels,
-                        out_channels,
-                        kernel_size,
-                        rngs=rngs,
-                    )
+            if feedback_feature_dim:
+                self.feedback_image_proj = nnx.Linear(
+                    2 * feedback_feature_dim,
+                    hidden_dim,
+                    rngs=rngs,
                 )
-                feedback_in_channels = out_channels
-            self.feedback_image_convs = feedback_image_convs
-            self.feedback_image_proj = nnx.Linear(2 * image_summary, hidden_dim, rngs=rngs)
+            else:
+                feedback_image_convs = []
+                feedback_in_channels = image_channels
+                for out_channels, kernel_size in zip(cnn_channels, (5, 3, 3), strict=True):
+                    feedback_image_convs.append(
+                        progress_probe._Conv2D(
+                            feedback_in_channels,
+                            out_channels,
+                            kernel_size,
+                            rngs=rngs,
+                        )
+                    )
+                    feedback_in_channels = out_channels
+                self.feedback_image_convs = feedback_image_convs
+                self.feedback_image_proj = nnx.Linear(
+                    2 * image_summary,
+                    hidden_dim,
+                    rngs=rngs,
+                )
             self.feedback_state_proj = nnx.Linear(2 * state_dim, hidden_dim, rngs=rngs)
             self.feedback_root_gain = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
             self.feedback_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
@@ -427,9 +461,21 @@ class BranchedActionCorrector(nnx.Module):
         anchor_state: jax.Array,
         current_state: jax.Array,
         prior_context: jax.Array,
+        anchor_feedback_features: jax.Array | None,
+        current_feedback_features: jax.Array | None,
     ) -> jax.Array:
-        anchor_visual = self._encode_feedback_images(anchor_images)
-        current_visual = self._encode_feedback_images(current_images)
+        if self.feedback_feature_dim:
+            if anchor_feedback_features is None or current_feedback_features is None:
+                raise ValueError("Frozen feedback features are required by this checkpoint.")
+            anchor_visual = anchor_feedback_features.reshape(
+                (anchor_feedback_features.shape[0], -1)
+            )
+            current_visual = current_feedback_features.reshape(
+                (current_feedback_features.shape[0], -1)
+            )
+        else:
+            anchor_visual = self._encode_feedback_images(anchor_images)
+            current_visual = self._encode_feedback_images(current_images)
         visual_delta = current_visual - anchor_visual
         visual_input = jnp.concatenate([visual_delta, jnp.abs(visual_delta)], axis=-1)
         image_feature = jax.nn.silu(self.feedback_image_proj(visual_input)) - jax.nn.silu(
@@ -540,6 +586,8 @@ class BranchedActionCorrector(nnx.Module):
         intended_valid: jax.Array,
         transported_ear: jax.Array,
         base_actions: jax.Array,
+        anchor_feedback_features: jax.Array | None = None,
+        current_feedback_features: jax.Array | None = None,
     ) -> CorrectorOutput:
         context = (
             None
@@ -630,6 +678,8 @@ class BranchedActionCorrector(nnx.Module):
                 anchor_state,
                 current_state,
                 prior_context,
+                anchor_feedback_features,
+                current_feedback_features,
             )
             zero_feedback = jnp.zeros_like(feedback_context)
             feedback_coefficients = (
@@ -706,7 +756,7 @@ def _flat_arrays(
     )
     padded_actions[..., : cached_actions_env.shape[-1]] = cached_actions_env
     intended_prefix = cached_actions_env[:, :age]
-    return {
+    flat = {
         "root_id": np.asarray(arrays["root_id"])[roots],
         "task_id": np.asarray(arrays["task_id"])[roots],
         "episode_id": np.asarray(arrays["episode_id"])[roots],
@@ -726,6 +776,16 @@ def _flat_arrays(
             roots, branches, :rollout_horizon, :7
         ],
     }
+    if "anchor_feedback_features" in arrays:
+        flat["anchor_feedback_features"] = np.asarray(
+            arrays["anchor_feedback_features"],
+            dtype=np.float32,
+        )[roots]
+        flat["current_feedback_features"] = np.asarray(
+            arrays["current_feedback_features"],
+            dtype=np.float32,
+        )[roots, branches]
+    return flat
 
 
 def _calibrate_ranges(
@@ -836,6 +896,20 @@ def _batch(
         anchor_images if current_equals_anchor else flat["current_images"][indices].astype(np.float32) / 255.0
     )
     current_state = anchor_state if current_equals_anchor else flat["current_state"][indices].astype(np.float32)
+    anchor_feedback_features = (
+        flat["anchor_feedback_features"][indices].astype(np.float32)
+        if "anchor_feedback_features" in flat
+        else np.zeros((len(indices), 0), dtype=np.float32)
+    )
+    current_feedback_features = (
+        anchor_feedback_features
+        if current_equals_anchor
+        else (
+            flat["current_feedback_features"][indices].astype(np.float32)
+            if "current_feedback_features" in flat
+            else np.zeros((len(indices), 0), dtype=np.float32)
+        )
+    )
     return {
         "anchor_images": jnp.asarray(anchor_images),
         "current_images": jnp.asarray(current_images),
@@ -847,6 +921,8 @@ def _batch(
         "intended_valid": jnp.asarray(flat["intended_valid"][indices], dtype=jnp.bool_),
         "transported_ear": jnp.asarray(flat["transported_ear"][indices], dtype=jnp.float32),
         "base_actions": jnp.asarray(flat["base_actions"][indices], dtype=jnp.float32),
+        "anchor_feedback_features": jnp.asarray(anchor_feedback_features),
+        "current_feedback_features": jnp.asarray(current_feedback_features),
         "target_ear": jnp.asarray(flat["target_ear"][indices], dtype=jnp.float32),
         "target_actions": jnp.asarray(flat["target_actions"][indices], dtype=jnp.float32),
     }
@@ -1188,6 +1264,11 @@ def _make_model(
         token_layers=args.token_layers,
         token_heads=args.token_heads,
         plan_rank=args.plan_rank,
+        feedback_feature_dim=(
+            int(np.prod(flat["anchor_feedback_features"].shape[1:]))
+            if "anchor_feedback_features" in flat
+            else 0
+        ),
         prior_temporal_basis=dual_bases["prior"] if dual_bases is not None else None,
         feedback_temporal_basis=dual_bases["feedback"] if dual_bases is not None else None,
     )
@@ -1249,6 +1330,8 @@ def _train_one(
                 batch["intended_valid"],
                 batch["transported_ear"],
                 batch["base_actions"],
+                batch["anchor_feedback_features"],
+                batch["current_feedback_features"],
             )
             prior_output = None
             if args.mode == "dual_plan":
@@ -1263,6 +1346,8 @@ def _train_one(
                     batch["intended_valid"],
                     batch["transported_ear"],
                     batch["base_actions"],
+                    batch["anchor_feedback_features"],
+                    batch["anchor_feedback_features"],
                 )
             return _loss(
                 output,
@@ -1299,6 +1384,8 @@ def _train_one(
             batch["intended_valid"],
             batch["transported_ear"],
             batch["base_actions"],
+            batch["anchor_feedback_features"],
+            batch["current_feedback_features"],
         )
 
     rng = np.random.default_rng(args.seed)
@@ -1517,6 +1604,8 @@ def main(args: Args) -> None:
             "fresh_actions_env",
         ),
     )
+    if args.feedback_feature_cache is not None:
+        arrays = _attach_feedback_features(arrays, args.feedback_feature_cache)
     train_roots, validation_roots, test_roots = progress_probe._split_roots(
         arrays,
         validation_fraction=args.validation_fraction,
@@ -1724,8 +1813,15 @@ def main(args: Args) -> None:
                 "feedback_basis": dual_bases["feedback"],
                 "prior_input": "cached plan/history with current observation replaced by anchor",
                 "feedback_input": (
-                    "independent current-minus-anchor image/state innovation encoder "
-                    "FiLM-conditioned by stopped-gradient prior context"
+                    (
+                        "frozen ResNet-18 current-minus-anchor features plus state innovation, "
+                        "FiLM-conditioned by stopped-gradient prior context"
+                    )
+                    if args.feedback_feature_cache is not None
+                    else (
+                        "independent current-minus-anchor image/state innovation encoder "
+                        "FiLM-conditioned by stopped-gradient prior context"
+                    )
                 ),
             }
             if dual_bases is not None
