@@ -48,6 +48,7 @@ MODES = (
     "event_refresh_h10",
     "gripper_event_refresh_h10",
     "predicted_gripper_event_refresh_h10",
+    "plan_refresh_h10",
 )
 ACTION_DIM = 7
 MODEL_ACTION_DIM = 32
@@ -62,6 +63,7 @@ QUALITY_MODES = (
     "event_refresh_h10",
     "gripper_event_refresh_h10",
     "predicted_gripper_event_refresh_h10",
+    "plan_refresh_h10",
 )
 
 
@@ -130,10 +132,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=110,
         help="Exclusive end of the one-shot exact fresh-refresh window.",
     )
-    parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
+    parser.add_argument(
+        "--modes",
+        nargs="+",
+        choices=MODES,
+        default=[mode for mode in MODES if mode != "plan_refresh_h10"],
+    )
     parser.add_argument("--corrector-summary", default=None)
     parser.add_argument("--corrector-params", default=None)
     parser.add_argument("--norm-stats-dir", default=None)
+    parser.add_argument(
+        "--plan-refresh-head",
+        default=None,
+        help="Frozen refresh-benefit linear head produced by train_plan_refresh_head.py.",
+    )
+    parser.add_argument(
+        "--plan-refresh-min-root-index",
+        type=int,
+        default=6,
+        help="First stale-H10 macro root eligible for the learned refresh gate.",
+    )
+    parser.add_argument(
+        "--plan-refresh-max-root-index",
+        type=int,
+        default=15,
+        help="Exclusive end of stale-H10 macro roots eligible for the learned refresh gate.",
+    )
     parser.add_argument("--output-dir", required=True)
     return parser
 
@@ -175,6 +199,13 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise ValueError("Corrector modes require --corrector-summary.")
         if args.norm_stats_dir is None:
             raise ValueError("Corrector modes require --norm-stats-dir.")
+    if "plan_refresh_h10" in args.modes and args.plan_refresh_head is None:
+        raise ValueError("plan_refresh_h10 requires --plan-refresh-head.")
+    if (
+        args.plan_refresh_min_root_index < 0
+        or args.plan_refresh_max_root_index <= args.plan_refresh_min_root_index
+    ):
+        raise ValueError("plan-refresh root-index window must be non-negative and non-empty.")
 
 
 def _small_images(element: dict[str, Any]) -> np.ndarray:
@@ -318,6 +349,56 @@ class DirectCorrector:
         return actions, elapsed_ms
 
 
+class PlanRefreshHead:
+    """Frozen client-side probe over the V2-P temporal feature."""
+
+    def __init__(self, checkpoint_path: str) -> None:
+        checkpoint = pathlib.Path(checkpoint_path)
+        with np.load(checkpoint, allow_pickle=False) as payload:
+            variant = str(np.asarray(payload["feature_variant"]).reshape(()).item())
+            if variant != "temporal":
+                raise ValueError(
+                    "The closed-loop runner currently requires feature_variant='temporal'; "
+                    f"got {variant!r}."
+                )
+            self.mean = np.asarray(payload["mean"], dtype=np.float32).reshape(-1)
+            self.scale = np.asarray(payload["scale"], dtype=np.float32).reshape(-1)
+            self.coef = np.asarray(payload["coef"], dtype=np.float32).reshape(-1)
+            self.intercept = float(np.asarray(payload["intercept"]).reshape(()))
+            self.threshold = float(np.asarray(payload["threshold"]).reshape(()))
+        if not (self.mean.shape == self.scale.shape == self.coef.shape == (256,)):
+            raise ValueError(
+                "Plan-refresh head arrays must all have shape [256], got "
+                f"mean={self.mean.shape}, scale={self.scale.shape}, coef={self.coef.shape}."
+            )
+        if np.any(~np.isfinite(self.mean)) or np.any(~np.isfinite(self.coef)):
+            raise ValueError("Plan-refresh head contains non-finite parameters.")
+        if np.any(~np.isfinite(self.scale)) or np.any(self.scale <= 0):
+            raise ValueError("Plan-refresh feature scale must be finite and positive.")
+        if not np.isfinite(self.intercept) or not np.isfinite(self.threshold):
+            raise ValueError("Plan-refresh intercept and threshold must be finite.")
+        self.checkpoint_path = str(checkpoint.resolve())
+
+    def __call__(self, result: dict[str, Any]) -> tuple[float, float]:
+        if "execution_horizon_temporal_feature" not in result:
+            raise KeyError(
+                "Policy response is missing execution_horizon_temporal_feature; "
+                "start the server with the frozen V2-P sidecar."
+            )
+        feature = np.asarray(
+            result["execution_horizon_temporal_feature"],
+            dtype=np.float32,
+        ).reshape(-1)
+        if feature.shape != self.mean.shape:
+            raise ValueError(
+                f"Expected temporal feature {self.mean.shape}, got {feature.shape}."
+            )
+        started = time.perf_counter()
+        score = float(np.dot((feature - self.mean) / self.scale, self.coef) + self.intercept)
+        elapsed_ms = (time.perf_counter() - started) * 1_000.0
+        return score, elapsed_ms
+
+
 class MatchedDifferenceCorrector:
     """Conservative stale-anchored response from matched direct checkpoints."""
 
@@ -394,11 +475,18 @@ def _full_request(
     seed: int,
     denoising_steps: int,
     export_cache: bool,
+    run_execution_horizon_predictor: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     request = dict(element)
     request["action_cot_denoising_steps"] = np.asarray(denoising_steps, dtype=np.int32)
     if export_cache:
         request["export_acot_cache"] = np.ones((), dtype=np.bool_)
+    if run_execution_horizon_predictor:
+        request["run_execution_horizon_predictor"] = np.ones((), dtype=np.bool_)
+        request["execution_horizon_previous_h"] = np.asarray(10, dtype=np.int32)
+        request["execution_horizon_budget_balance"] = np.asarray(0.0, dtype=np.float32)
+        request["execution_horizon_episode_progress"] = np.asarray(0.0, dtype=np.float32)
+        request["execution_horizon_previous_valid"] = np.zeros((), dtype=np.bool_)
     result, wall_ms, policy_ms, server_ms, stage_timing = base_eval._infer(
         client,
         request,
@@ -503,6 +591,7 @@ def _run_episode(
     client: Any,
     corrector: DirectCorrector | None,
     matched_diff_corrector: MatchedDifferenceCorrector | None,
+    plan_refresh_head: PlanRefreshHead | None,
     norm_stats: dict[str, Any] | None,
 ) -> dict[str, Any]:
     env, task_description = base_eval._get_libero_env(
@@ -549,6 +638,13 @@ def _run_episode(
         predicted_gripper_event_refresh_pending = False
         predicted_gripper_event_fired = False
         predicted_gripper_event_trigger_control_step: int | None = None
+        plan_refresh_pending = False
+        plan_refresh_fired = False
+        plan_refresh_calls = 0
+        plan_refresh_trigger_control_step: int | None = None
+        plan_refresh_scores: list[float] = []
+        plan_refresh_head_ms: list[float] = []
+        plan_refresh_root_index = 0
         correction_l2: list[float] = []
         correction_boundary_l2: list[float] = []
         correction_gripper_changes: list[float] = []
@@ -574,7 +670,37 @@ def _run_episode(
                 continue
 
             if not action_queue:
-                if (
+                if mode == "plan_refresh_h10" and plan_refresh_pending:
+                    element = base_eval._observation_to_policy_input(
+                        observation,
+                        task_description,
+                        args.resize_size,
+                    )
+                    policy_seed = (
+                        args.seed
+                        + task_id * 1_000_000
+                        + episode_idx * 10_000
+                        + step
+                    )
+                    result, timing = _full_request(
+                        client,
+                        element,
+                        seed=policy_seed,
+                        denoising_steps=args.action_cot_denoising_steps,
+                        export_cache=False,
+                    )
+                    policy_wall_ms.append(float(timing["wall_ms"]))
+                    policy_infer_ms.append(float(timing["policy_ms"]))
+                    policy_server_ms.append(float(timing["server_ms"]))
+                    action_chunk = np.asarray(result["actions"], dtype=np.float32)
+                    if action_chunk.shape[0] < CORRECTED_STEPS:
+                        raise ValueError(
+                            f"Policy returned too few plan-refresh actions: {action_chunk.shape}."
+                        )
+                    action_queue.extend(action_chunk[:CORRECTED_STEPS, :ACTION_DIM])
+                    plan_refresh_pending = False
+                    plan_refresh_calls += 1
+                elif (
                     mode == "predicted_gripper_event_refresh_h10"
                     and predicted_gripper_event_refresh_pending
                 ):
@@ -804,12 +930,20 @@ def _run_episode(
                     export_cache = (
                         mode == "corrector_h10" or matched_diff_in_window
                     )
+                    plan_refresh_in_window = (
+                        mode == "plan_refresh_h10"
+                        and not plan_refresh_fired
+                        and args.plan_refresh_min_root_index
+                        <= plan_refresh_root_index
+                        < args.plan_refresh_max_root_index
+                    )
                     result, timing = _full_request(
                         client,
                         element,
                         seed=policy_seed,
                         denoising_steps=args.action_cot_denoising_steps,
                         export_cache=export_cache,
+                        run_execution_horizon_predictor=plan_refresh_in_window,
                     )
                     policy_wall_ms.append(float(timing["wall_ms"]))
                     policy_infer_ms.append(float(timing["policy_ms"]))
@@ -819,6 +953,29 @@ def _run_episode(
                         if action_chunk.shape[0] < ANCHOR_STEPS:
                             raise ValueError(f"Policy returned too few actions: {action_chunk.shape}.")
                         action_queue.extend(action_chunk[:ANCHOR_STEPS, :ACTION_DIM])
+                    elif mode == "plan_refresh_h10":
+                        required = ANCHOR_STEPS + CORRECTED_STEPS
+                        if action_chunk.shape[0] < required:
+                            raise ValueError(
+                                f"Policy returned too few actions: {action_chunk.shape}."
+                            )
+                        if plan_refresh_head is None:
+                            raise RuntimeError("plan_refresh_h10 head was not initialised.")
+                        score = float("nan")
+                        if plan_refresh_in_window:
+                            score, head_ms = plan_refresh_head(result)
+                            plan_refresh_scores.append(score)
+                            plan_refresh_head_ms.append(head_ms)
+                        if plan_refresh_in_window and score >= plan_refresh_head.threshold:
+                            action_queue.extend(action_chunk[:ANCHOR_STEPS, :ACTION_DIM])
+                            plan_refresh_pending = True
+                            plan_refresh_fired = True
+                            plan_refresh_trigger_control_step = (
+                                step - args.num_steps_wait + ANCHOR_STEPS
+                            )
+                        else:
+                            action_queue.extend(action_chunk[:required, :ACTION_DIM])
+                        plan_refresh_root_index += 1
                     elif mode == "event_refresh_h10":
                         required = ANCHOR_STEPS + CORRECTED_STEPS
                         if action_chunk.shape[0] < required:
@@ -1051,6 +1208,28 @@ def _run_episode(
                 if predicted_gripper_event_trigger_control_step is not None
                 else float("nan")
             ),
+            "plan_refresh_calls": plan_refresh_calls,
+            "plan_refresh_trigger_control_step": (
+                float(plan_refresh_trigger_control_step)
+                if plan_refresh_trigger_control_step is not None
+                else float("nan")
+            ),
+            "plan_refresh_score_mean": (
+                float(np.mean(plan_refresh_scores))
+                if plan_refresh_scores
+                else float("nan")
+            ),
+            "plan_refresh_score_max": (
+                float(np.max(plan_refresh_scores))
+                if plan_refresh_scores
+                else float("nan")
+            ),
+            "plan_refresh_head_ms_total": float(np.sum(plan_refresh_head_ms)),
+            "plan_refresh_head_ms_mean": (
+                float(np.mean(plan_refresh_head_ms))
+                if plan_refresh_head_ms
+                else float("nan")
+            ),
             "correction_l2_mean": float(np.mean(correction_l2)) if correction_l2 else float("nan"),
             "correction_boundary_l2_mean": (
                 float(np.mean(correction_boundary_l2)) if correction_boundary_l2 else float("nan")
@@ -1163,6 +1342,26 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 selected,
                 "predicted_gripper_event_trigger_control_step",
             ),
+            "mean_plan_refresh_calls": _finite_mean(
+                selected,
+                "plan_refresh_calls",
+            ),
+            "mean_plan_refresh_trigger_control_step": _finite_mean(
+                selected,
+                "plan_refresh_trigger_control_step",
+            ),
+            "mean_plan_refresh_score_mean": _finite_mean(
+                selected,
+                "plan_refresh_score_mean",
+            ),
+            "mean_plan_refresh_score_max": _finite_mean(
+                selected,
+                "plan_refresh_score_max",
+            ),
+            "mean_plan_refresh_head_ms_total": _finite_mean(
+                selected,
+                "plan_refresh_head_ms_total",
+            ),
             "mean_action_delta_l2": _finite_mean(selected, "action_delta_l2"),
             "mean_action_jerk_l2": _finite_mean(selected, "action_jerk_l2"),
             "mean_gripper_flip_count": _finite_mean(selected, "gripper_flip_count"),
@@ -1251,6 +1450,17 @@ def _corrector_metadata(
     }
 
 
+def _plan_refresh_metadata(head: PlanRefreshHead | None) -> dict[str, Any] | None:
+    if head is None:
+        return None
+    return {
+        "checkpoint_path": head.checkpoint_path,
+        "feature_variant": "temporal",
+        "threshold": head.threshold,
+        "schedule": "anchor H4 then exact fresh H6, at most once per episode",
+    }
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
     _validate_args(args)
@@ -1282,6 +1492,11 @@ def main() -> None:
             args.corrector_params,
         )
         if "matched_diff_h10" in args.modes
+        else None
+    )
+    plan_refresh_head = (
+        PlanRefreshHead(args.plan_refresh_head)
+        if "plan_refresh_h10" in args.modes
         else None
     )
     client = _websocket_client_policy.WebsocketClientPolicy(
@@ -1321,6 +1536,7 @@ def main() -> None:
                         client=client,
                         corrector=corrector,
                         matched_diff_corrector=matched_diff_corrector,
+                        plan_refresh_head=plan_refresh_head,
                         norm_stats=norm_stats,
                     )
                     output_file.write(json.dumps(row, sort_keys=True, allow_nan=True) + "\n")
@@ -1352,6 +1568,10 @@ def main() -> None:
                                 args.event_refresh_min_control_step,
                                 args.event_refresh_max_control_step,
                             ],
+                            "plan_refresh_root_index_window": [
+                                args.plan_refresh_min_root_index,
+                                args.plan_refresh_max_root_index,
+                            ],
                             "corrector_schedule": (
                                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                                 "matched-difference mode retains stale and adds the clipped "
@@ -1366,6 +1586,7 @@ def main() -> None:
                             corrector,
                             matched_diff_corrector,
                         ),
+                        "plan_refresh": _plan_refresh_metadata(plan_refresh_head),
                         "completed_episode_rows": len(rows),
                         **_aggregate(rows),
                     }
@@ -1394,6 +1615,10 @@ def main() -> None:
                 args.event_refresh_min_control_step,
                 args.event_refresh_max_control_step,
             ],
+            "plan_refresh_root_index_window": [
+                args.plan_refresh_min_root_index,
+                args.plan_refresh_max_root_index,
+            ],
             "corrector_schedule": (
                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                 "matched-difference mode retains stale and adds the clipped "
@@ -1408,6 +1633,7 @@ def main() -> None:
             corrector,
             matched_diff_corrector,
         ),
+        "plan_refresh": _plan_refresh_metadata(plan_refresh_head),
         "completed_episode_rows": len(rows),
         **_aggregate(rows),
     }
