@@ -86,6 +86,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "control steps and enable the matched-difference correction afterwards."
         ),
     )
+    parser.add_argument(
+        "--matched-diff-max-response-l2",
+        type=float,
+        default=None,
+        help=(
+            "If set, retain stale H6 when the matched current-minus-no-current "
+            "mean response L2 exceeds this deployable confidence threshold."
+        ),
+    )
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
     parser.add_argument("--corrector-summary", default=None)
     parser.add_argument("--corrector-params", default=None)
@@ -105,6 +114,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("action-cot-denoising-steps must be positive.")
     if args.matched_diff_min_control_step < 0:
         raise ValueError("matched-diff-min-control-step must be non-negative.")
+    if (
+        args.matched_diff_max_response_l2 is not None
+        and args.matched_diff_max_response_l2 <= 0
+    ):
+        raise ValueError("matched-diff-max-response-l2 must be positive when set.")
     if any(mode in args.modes for mode in CORRECTOR_MODES):
         if args.corrector_summary is None:
             raise ValueError("Corrector modes require --corrector-summary.")
@@ -469,6 +483,7 @@ def _run_episode(
         matched_diff_clip_fraction: list[float] = []
         matched_diff_gate_applied_calls = 0
         matched_diff_gate_skipped_calls = 0
+        matched_diff_gate_response_rejected_calls = 0
         correction_l2: list[float] = []
         correction_boundary_l2: list[float] = []
         correction_gripper_changes: list[float] = []
@@ -516,7 +531,6 @@ def _run_episode(
                     if mode == "matched_diff_h10":
                         if matched_diff_corrector is None:
                             raise RuntimeError("Matched-difference runtime was not initialised.")
-                        matched_diff_gate_applied_calls += 1
                         corrected_actions, matched_metrics = matched_diff_corrector(
                             cache,
                             current_images,
@@ -541,6 +555,19 @@ def _run_episode(
                         matched_diff_clip_fraction.append(
                             matched_metrics["clip_fraction"]
                         )
+                        if (
+                            args.matched_diff_max_response_l2 is not None
+                            and matched_metrics["response_l2_mean"]
+                            > args.matched_diff_max_response_l2
+                        ):
+                            corrected_actions = np.array(
+                                cache.base_actions,
+                                dtype=np.float32,
+                                copy=True,
+                            )
+                            matched_diff_gate_response_rejected_calls += 1
+                        else:
+                            matched_diff_gate_applied_calls += 1
                     else:
                         if corrector is None:
                             raise RuntimeError("Direct corrector runtime was not initialised.")
@@ -706,14 +733,19 @@ def _run_episode(
             ),
             "matched_diff_gate_applied_calls": matched_diff_gate_applied_calls,
             "matched_diff_gate_skipped_calls": matched_diff_gate_skipped_calls,
+            "matched_diff_gate_response_rejected_calls": (
+                matched_diff_gate_response_rejected_calls
+            ),
             "matched_diff_gate_coverage": (
                 matched_diff_gate_applied_calls
                 / (
                     matched_diff_gate_applied_calls
                     + matched_diff_gate_skipped_calls
+                    + matched_diff_gate_response_rejected_calls
                 )
                 if matched_diff_gate_applied_calls
                 + matched_diff_gate_skipped_calls
+                + matched_diff_gate_response_rejected_calls
                 else float("nan")
             ),
             "correction_l2_mean": float(np.mean(correction_l2)) if correction_l2 else float("nan"),
@@ -795,6 +827,10 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "mean_matched_diff_gate_skipped_calls": _finite_mean(
                 selected,
                 "matched_diff_gate_skipped_calls",
+            ),
+            "mean_matched_diff_gate_response_rejected_calls": _finite_mean(
+                selected,
+                "matched_diff_gate_response_rejected_calls",
             ),
             "mean_matched_diff_gate_coverage": _finite_mean(
                 selected,
@@ -979,6 +1015,9 @@ def main() -> None:
                             "matched_diff_min_control_step": (
                                 args.matched_diff_min_control_step
                             ),
+                            "matched_diff_max_response_l2": (
+                                args.matched_diff_max_response_l2
+                            ),
                             "corrector_schedule": (
                                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                                 "matched-difference mode retains stale and adds the clipped "
@@ -1015,6 +1054,7 @@ def main() -> None:
             "seed": args.seed,
             "denoising_steps": args.action_cot_denoising_steps,
             "matched_diff_min_control_step": args.matched_diff_min_control_step,
+            "matched_diff_max_response_l2": args.matched_diff_max_response_l2,
             "corrector_schedule": (
                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                 "matched-difference mode retains stale and adds the clipped "
