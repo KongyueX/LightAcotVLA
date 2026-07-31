@@ -40,7 +40,13 @@ from openpi.shared import normalize as _normalize
 import train_branched_action_corrector as corrector_lib
 
 
-MODES = ("full_h4", "stale_h10", "corrector_h10", "matched_diff_h10")
+MODES = (
+    "full_h4",
+    "stale_h10",
+    "corrector_h10",
+    "matched_diff_h10",
+    "event_refresh_h10",
+)
 ACTION_DIM = 7
 MODEL_ACTION_DIM = 32
 ANCHOR_STEPS = 4
@@ -49,6 +55,7 @@ SMALL_IMAGE_SIZE = 64
 MATCHED_DIFF_ALPHA = 1.0
 MATCHED_DIFF_TRUST_REGION_L2 = 0.025
 CORRECTOR_MODES = ("corrector_h10", "matched_diff_h10")
+QUALITY_MODES = (*CORRECTOR_MODES, "event_refresh_h10")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -104,6 +111,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Together with the minimum this can isolate a single recovery event."
         ),
     )
+    parser.add_argument(
+        "--event-refresh-min-control-step",
+        type=int,
+        default=100,
+        help="Start of the post-wait control-step window for one exact fresh refresh.",
+    )
+    parser.add_argument(
+        "--event-refresh-max-control-step",
+        type=int,
+        default=110,
+        help="Exclusive end of the one-shot exact fresh-refresh window.",
+    )
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
     parser.add_argument("--corrector-summary", default=None)
     parser.add_argument("--corrector-params", default=None)
@@ -135,6 +154,14 @@ def _validate_args(args: argparse.Namespace) -> None:
     ):
         raise ValueError(
             "matched-diff-max-control-step must exceed matched-diff-min-control-step."
+        )
+    if (
+        args.event_refresh_min_control_step < 0
+        or args.event_refresh_max_control_step
+        <= args.event_refresh_min_control_step
+    ):
+        raise ValueError(
+            "event-refresh control-step window must be non-negative and non-empty."
         )
     if any(mode in args.modes for mode in CORRECTOR_MODES):
         if args.corrector_summary is None:
@@ -501,6 +528,8 @@ def _run_episode(
         matched_diff_gate_applied_calls = 0
         matched_diff_gate_skipped_calls = 0
         matched_diff_gate_response_rejected_calls = 0
+        event_refresh_calls = 0
+        pending_event_refresh = False
         correction_l2: list[float] = []
         correction_boundary_l2: list[float] = []
         correction_gripper_changes: list[float] = []
@@ -526,7 +555,37 @@ def _run_episode(
                 continue
 
             if not action_queue:
-                if (
+                if mode == "event_refresh_h10" and pending_event_refresh:
+                    element = base_eval._observation_to_policy_input(
+                        observation,
+                        task_description,
+                        args.resize_size,
+                    )
+                    policy_seed = (
+                        args.seed
+                        + task_id * 1_000_000
+                        + episode_idx * 10_000
+                        + step
+                    )
+                    result, timing = _full_request(
+                        client,
+                        element,
+                        seed=policy_seed,
+                        denoising_steps=args.action_cot_denoising_steps,
+                        export_cache=False,
+                    )
+                    policy_wall_ms.append(float(timing["wall_ms"]))
+                    policy_infer_ms.append(float(timing["policy_ms"]))
+                    policy_server_ms.append(float(timing["server_ms"]))
+                    action_chunk = np.asarray(result["actions"], dtype=np.float32)
+                    if action_chunk.shape[0] < CORRECTED_STEPS:
+                        raise ValueError(
+                            f"Policy returned too few refresh actions: {action_chunk.shape}."
+                        )
+                    action_queue.extend(action_chunk[:CORRECTED_STEPS, :ACTION_DIM])
+                    pending_event_refresh = False
+                    event_refresh_calls += 1
+                elif (
                     mode == "matched_diff_h10"
                     and cache is not None
                     and (
@@ -671,6 +730,26 @@ def _run_episode(
                         if action_chunk.shape[0] < ANCHOR_STEPS:
                             raise ValueError(f"Policy returned too few actions: {action_chunk.shape}.")
                         action_queue.extend(action_chunk[:ANCHOR_STEPS, :ACTION_DIM])
+                    elif mode == "event_refresh_h10":
+                        required = ANCHOR_STEPS + CORRECTED_STEPS
+                        if action_chunk.shape[0] < required:
+                            raise ValueError(
+                                f"Policy returned too few actions: {action_chunk.shape}."
+                            )
+                        event_midpoint_control_step = (
+                            step - args.num_steps_wait + ANCHOR_STEPS
+                        )
+                        if (
+                            args.event_refresh_min_control_step
+                            <= event_midpoint_control_step
+                            < args.event_refresh_max_control_step
+                        ):
+                            action_queue.extend(
+                                action_chunk[:ANCHOR_STEPS, :ACTION_DIM]
+                            )
+                            pending_event_refresh = True
+                        else:
+                            action_queue.extend(action_chunk[:required, :ACTION_DIM])
                     elif mode == "stale_h10" or (
                         mode == "matched_diff_h10" and not export_cache
                     ):
@@ -796,6 +875,7 @@ def _run_episode(
                 + matched_diff_gate_response_rejected_calls
                 else float("nan")
             ),
+            "event_refresh_calls": event_refresh_calls,
             "correction_l2_mean": float(np.mean(correction_l2)) if correction_l2 else float("nan"),
             "correction_boundary_l2_mean": (
                 float(np.mean(correction_boundary_l2)) if correction_boundary_l2 else float("nan")
@@ -884,6 +964,10 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 selected,
                 "matched_diff_gate_coverage",
             ),
+            "mean_event_refresh_calls": _finite_mean(
+                selected,
+                "event_refresh_calls",
+            ),
             "mean_action_delta_l2": _finite_mean(selected, "action_delta_l2"),
             "mean_action_jerk_l2": _finite_mean(selected, "action_jerk_l2"),
             "mean_gripper_flip_count": _finite_mean(selected, "gripper_flip_count"),
@@ -903,7 +987,7 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         for row in rows
     }
     paired = {}
-    for candidate in CORRECTOR_MODES:
+    for candidate in QUALITY_MODES:
         for reference in ("full_h4", "stale_h10"):
             keys = sorted(
                 (task_id, episode_idx)
@@ -1069,6 +1153,10 @@ def main() -> None:
                             "matched_diff_max_control_step": (
                                 args.matched_diff_max_control_step
                             ),
+                            "event_refresh_control_step_window": [
+                                args.event_refresh_min_control_step,
+                                args.event_refresh_max_control_step,
+                            ],
                             "corrector_schedule": (
                                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                                 "matched-difference mode retains stale and adds the clipped "
@@ -1107,6 +1195,10 @@ def main() -> None:
             "matched_diff_min_control_step": args.matched_diff_min_control_step,
             "matched_diff_max_response_l2": args.matched_diff_max_response_l2,
             "matched_diff_max_control_step": args.matched_diff_max_control_step,
+            "event_refresh_control_step_window": [
+                args.event_refresh_min_control_step,
+                args.event_refresh_max_control_step,
+            ],
             "corrector_schedule": (
                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                 "matched-difference mode retains stale and adds the clipped "
