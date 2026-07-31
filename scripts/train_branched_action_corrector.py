@@ -62,6 +62,7 @@ class Args:
     seed: int = 7
     split_seed: int = 7
     train_steps: int = 700
+    decoder_pretrain_steps: int = 0
     batch_size: int = 64
     eval_batch_size: int = 256
     learning_rate: float = 3e-4
@@ -126,8 +127,14 @@ def _validate_args(args: Args) -> None:
         args.refresh_interval,
         args.max_parameters,
     )
-    if any(value <= 0 for value in positive_integers) or args.profile_warmup < 0:
+    if (
+        any(value <= 0 for value in positive_integers)
+        or args.profile_warmup < 0
+        or args.decoder_pretrain_steps < 0
+    ):
         raise ValueError("Training, shape, profiling, and parameter sizes must be positive.")
+    if args.decoder_pretrain_steps and args.mode == "direct":
+        raise ValueError("decoder_pretrain_steps only applies to plan modes.")
     if args.refresh_interval <= 1:
         raise ValueError("refresh_interval must exceed one.")
     positive_scales = (
@@ -1051,6 +1058,8 @@ def _loss(
     args: Args,
     normalizers: dict[str, float] | None = None,
     prior_output: CorrectorOutput | None = None,
+    compiler_actions: jax.Array | None = None,
+    compiler_gripper_logits: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     action_continuous = jnp.mean(
         _huber(output.actions[..., :6] - batch["target_actions"][..., :6], args.action_huber_delta)
@@ -1083,6 +1092,8 @@ def _loss(
     feedback_plan = jnp.asarray(0.0, dtype=jnp.float32)
     prior_action_gripper = jnp.asarray(0.0, dtype=jnp.float32)
     prior_plan_gripper = jnp.asarray(0.0, dtype=jnp.float32)
+    compiler_action = jnp.asarray(0.0, dtype=jnp.float32)
+    compiler_gripper = jnp.asarray(0.0, dtype=jnp.float32)
     if mode in {"plan", "dual_plan"}:
         plan_continuous = jnp.mean(
             _huber(output.revised_ear[..., :6] - batch["target_ear"][..., :6], args.plan_huber_delta)
@@ -1110,8 +1121,13 @@ def _loss(
             _huber(predicted_ear_delta - target_ear_delta, args.plan_huber_delta)
         )
     if mode == "dual_plan":
-        if normalizers is None or prior_output is None:
-            raise ValueError("dual_plan requires train-only loss normalizers and prior output.")
+        if (
+            normalizers is None
+            or prior_output is None
+            or compiler_actions is None
+            or compiler_gripper_logits is None
+        ):
+            raise ValueError("dual_plan requires factorized outputs and compiler supervision.")
         grouped_prior_actions = prior_output.actions.reshape(
             (-1, group_size, *prior_output.actions.shape[1:])
         )
@@ -1170,6 +1186,18 @@ def _loss(
                 prior_plan_gripper_target,
             )
         )
+        compiler_action = jnp.mean(
+            _huber(
+                compiler_actions[..., :6] - batch["target_actions"][..., :6],
+                args.action_huber_delta,
+            )
+        )
+        compiler_gripper = jnp.mean(
+            _binary_cross_entropy(
+                compiler_gripper_logits,
+                action_gripper_target,
+            )
+        )
         total = (
             prior_action / normalizers["action"]
             + feedback_action / normalizers["paired_action"]
@@ -1179,6 +1207,8 @@ def _loss(
             + 0.25 * plan_gripper
             + 0.25 * prior_action_gripper
             + 0.25 * prior_plan_gripper
+            + compiler_action / normalizers["action"]
+            + 0.25 * compiler_gripper
         )
     else:
         total = (
@@ -1205,6 +1235,8 @@ def _loss(
         "feedback_plan_huber": feedback_plan,
         "prior_action_gripper_bce": prior_action_gripper,
         "prior_plan_gripper_bce": prior_plan_gripper,
+        "compiler_action_huber": compiler_action,
+        "compiler_gripper_bce": compiler_gripper,
     }
 
 
@@ -1416,6 +1448,120 @@ def _train_one(
         root_groups.append(group)
     roots_per_batch = max(1, args.batch_size // group_size)
     loss_normalizers = _dual_loss_normalizers(train_flat, args=args) if args.mode == "dual_plan" else None
+    decoder_pretrain: dict[str, Any] | None = None
+    if args.decoder_pretrain_steps:
+        decoder_normalizers = (
+            loss_normalizers
+            if loss_normalizers is not None
+            else _dual_loss_normalizers(train_flat, args=args)
+        )
+        decoder_schedule = optax.cosine_decay_schedule(
+            args.learning_rate,
+            args.decoder_pretrain_steps,
+            alpha=0.1,
+        )
+        decoder_optimizer = optax.chain(
+            optax.clip_by_global_norm(args.gradient_clip_norm),
+            optax.adamw(decoder_schedule, weight_decay=args.weight_decay),
+        )
+        decoder_optimizer_state = decoder_optimizer.init(params)
+
+        @jax.jit
+        def decoder_step(
+            current_params: nnx.State,
+            current_optimizer_state: optax.OptState,
+            batch: dict[str, jax.Array],
+        ) -> tuple[nnx.State, optax.OptState, dict[str, jax.Array]]:
+            current_model = nnx.merge(graphdef, current_params)
+
+            def decoder_loss(candidate: BranchedActionCorrector):
+                action_raw = candidate._decode_plan(
+                    batch["target_ear"],
+                    batch["base_actions"],
+                )
+                actions, gripper_logits = candidate._actions_from_raw(
+                    batch["base_actions"],
+                    action_raw,
+                )
+                continuous = jnp.mean(
+                    _huber(
+                        actions[..., :6] - batch["target_actions"][..., :6],
+                        args.action_huber_delta,
+                    )
+                )
+                gripper_target = (
+                    batch["target_actions"][..., 6] >= 0
+                ).astype(jnp.float32)
+                gripper = jnp.mean(
+                    _binary_cross_entropy(gripper_logits, gripper_target)
+                )
+                loss = continuous / decoder_normalizers["action"] + 0.25 * gripper
+                return loss, {
+                    "loss": loss,
+                    "action_continuous_huber": continuous,
+                    "action_gripper_bce": gripper,
+                }
+
+            (_, metrics), gradients = nnx.value_and_grad(
+                decoder_loss,
+                has_aux=True,
+            )(current_model)
+            updates, next_optimizer_state = decoder_optimizer.update(
+                gradients,
+                current_optimizer_state,
+                current_params,
+            )
+            return (
+                optax.apply_updates(current_params, updates),
+                next_optimizer_state,
+                metrics,
+            )
+
+        decoder_rng = np.random.default_rng(args.seed + 10_000)
+        decoder_started = time.monotonic()
+        decoder_metrics_path = output_dir / f"metrics_{run_name}_decoder_pretrain.jsonl"
+        with decoder_metrics_path.open("w", encoding="utf-8") as decoder_metrics_file:
+            for decoder_index in range(1, args.decoder_pretrain_steps + 1):
+                sampled_roots = decoder_rng.choice(
+                    len(root_groups),
+                    size=roots_per_batch,
+                    replace=len(root_groups) < roots_per_batch,
+                )
+                sampled = np.concatenate(
+                    [root_groups[int(index)] for index in sampled_roots]
+                )
+                params, decoder_optimizer_state, metrics = decoder_step(
+                    params,
+                    decoder_optimizer_state,
+                    _batch(
+                        train_flat,
+                        sampled,
+                        current_equals_anchor=False,
+                    ),
+                )
+                if (
+                    decoder_index == 1
+                    or decoder_index % args.log_interval == 0
+                    or decoder_index == args.decoder_pretrain_steps
+                ):
+                    record = {
+                        "step": decoder_index,
+                        "elapsed_seconds": time.monotonic() - decoder_started,
+                        **{
+                            name: float(value)
+                            for name, value in jax.device_get(metrics).items()
+                        },
+                    }
+                    decoder_metrics_file.write(
+                        json.dumps(record, sort_keys=True, allow_nan=False) + "\n"
+                    )
+                    decoder_metrics_file.flush()
+        decoder_pretrain = {
+            "completed_steps": args.decoder_pretrain_steps,
+            "elapsed_seconds": time.monotonic() - decoder_started,
+            "metrics_path": str(decoder_metrics_path.resolve()),
+        }
+        optimizer_state = optimizer.init(params)
 
     @jax.jit
     def train_step(
@@ -1441,6 +1587,8 @@ def _train_one(
                 batch["current_feedback_features"],
             )
             prior_output = None
+            compiler_actions = None
+            compiler_gripper_logits = None
             if args.mode == "dual_plan":
                 prior_output = candidate(
                     batch["anchor_images"],
@@ -1456,6 +1604,14 @@ def _train_one(
                     batch["anchor_feedback_features"],
                     batch["anchor_feedback_features"],
                 )
+                compiler_raw = candidate._decode_plan(
+                    batch["target_ear"],
+                    batch["base_actions"],
+                )
+                compiler_actions, compiler_gripper_logits = candidate._actions_from_raw(
+                    batch["base_actions"],
+                    compiler_raw,
+                )
             return _loss(
                 output,
                 batch,
@@ -1463,6 +1619,8 @@ def _train_one(
                 args=args,
                 normalizers=loss_normalizers,
                 prior_output=prior_output,
+                compiler_actions=compiler_actions,
+                compiler_gripper_logits=compiler_gripper_logits,
             )
 
         (_, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(current_model)
@@ -1604,6 +1762,7 @@ def _train_one(
         ),
         "independently_trained": True,
         "loss_normalizers": loss_normalizers,
+        "decoder_pretrain": decoder_pretrain,
         "elapsed_seconds": time.monotonic() - started,
         "params_path": str(params_path.resolve()),
     }
