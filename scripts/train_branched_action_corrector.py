@@ -13,6 +13,9 @@ Two matched paths are supported:
   final-action sub-chunk.  It is an A2C2-style capacity upper bound.
 * ``plan`` first writes the observation-conditioned residual into the full
   explicit EAR and lets a plan-only decoder produce the action residual.
+* ``dual_plan`` separates a cache-only common-plan writeback from a
+  current-observation feedback writeback in two train-derived temporal
+  subspaces before the same plan-only decoder runs.
 
 Neither path receives the synthetic branch id nor the actually injected fault
 actions.  The only action history input is the controller-intended cached
@@ -41,7 +44,7 @@ import tyro
 from openpi.action_cot import branched_dataset
 from openpi.models import transported_action_cot
 
-Mode = Literal["direct", "plan"]
+Mode = Literal["direct", "plan", "dual_plan"]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -52,6 +55,7 @@ class Args:
     direct_head: str = "global"
     token_layers: int = 4
     token_heads: int = 4
+    plan_rank: int = 4
     seed: int = 7
     split_seed: int = 7
     train_steps: int = 700
@@ -91,8 +95,8 @@ class Args:
 def _validate_args(args: Args) -> None:
     if not args.dataset:
         raise ValueError("At least one --dataset path is required.")
-    if args.mode not in {"direct", "plan"}:
-        raise ValueError("mode must be either 'direct' or 'plan'.")
+    if args.mode not in {"direct", "plan", "dual_plan"}:
+        raise ValueError("mode must be 'direct', 'plan', or 'dual_plan'.")
     if args.direct_head not in {"global", "per_token"}:
         raise ValueError("direct_head must be either 'global' or 'per_token'.")
     if args.seed < 0 or args.split_seed < 0:
@@ -108,6 +112,7 @@ def _validate_args(args: Args) -> None:
         args.hidden_dim,
         args.token_layers,
         args.token_heads,
+        args.plan_rank,
         args.profile_iterations,
         args.refresh_interval,
         args.max_parameters,
@@ -147,6 +152,8 @@ def _validate_args(args: Args) -> None:
         raise ValueError("validation_fraction + test_fraction must be below one.")
     if args.hidden_dim % args.token_heads:
         raise ValueError("hidden_dim must be divisible by token_heads.")
+    if args.plan_rank > 15:
+        raise ValueError("plan_rank may not exceed the canonical EAR horizon.")
     if args.max_parameters > 5_000_000:
         raise ValueError("max_parameters may not exceed five million.")
 
@@ -228,9 +235,12 @@ class BranchedActionCorrector(nnx.Module):
         direct_head: str = "global",
         token_layers: int = 4,
         token_heads: int = 4,
+        plan_rank: int = 4,
+        prior_temporal_basis: tuple[tuple[float, ...], ...] | None = None,
+        feedback_temporal_basis: tuple[tuple[float, ...], ...] | None = None,
         cnn_channels: tuple[int, ...] = (16, 32, 48),
     ) -> None:
-        if mode not in {"direct", "plan"}:
+        if mode not in {"direct", "plan", "dual_plan"}:
             raise ValueError(f"Unsupported corrector mode: {mode!r}.")
         if env_action_dim != 7:
             raise ValueError("The canonical branched corrector currently requires seven environment action dims.")
@@ -243,6 +253,7 @@ class BranchedActionCorrector(nnx.Module):
         self.ear_horizon = ear_horizon
         self.rollout_horizon = rollout_horizon
         self.hidden_dim = hidden_dim
+        self.plan_rank = plan_rank
         self.action_residual_scale = tuple(float(value) for value in action_residual_scale)
         self.plan_residual_scale = tuple(float(value) for value in plan_residual_scale)
         self.gripper_logit_scale = gripper_logit_scale
@@ -294,10 +305,60 @@ class BranchedActionCorrector(nnx.Module):
                 )
             else:
                 raise ValueError(f"Unsupported direct_head: {direct_head!r}.")
-        else:
+        elif mode == "plan":
             self.plan_out = nnx.Linear(
                 hidden_dim,
                 ear_horizon * env_action_dim,
+                rngs=rngs,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+        else:
+            if prior_temporal_basis is None or feedback_temporal_basis is None:
+                raise ValueError("dual_plan requires train-derived prior and feedback bases.")
+            if len(prior_temporal_basis) != ear_horizon or len(feedback_temporal_basis) != ear_horizon:
+                raise ValueError("dual_plan bases must match the EAR horizon.")
+            if any(len(row) != plan_rank for row in prior_temporal_basis + feedback_temporal_basis):
+                raise ValueError("dual_plan bases must match plan_rank.")
+            self.prior_temporal_basis = prior_temporal_basis
+            self.feedback_temporal_basis = feedback_temporal_basis
+            self.prior_coeff_out = nnx.Linear(
+                hidden_dim,
+                plan_rank * 6,
+                rngs=rngs,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+            self.feedback_coeff_out = nnx.Linear(
+                hidden_dim,
+                plan_rank * 6,
+                rngs=rngs,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+            self.prior_gripper_out = nnx.Linear(
+                hidden_dim,
+                ear_horizon,
+                rngs=rngs,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+            self.feedback_gripper_out = nnx.Linear(
+                hidden_dim,
+                ear_horizon,
+                rngs=rngs,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+            )
+            self.plan_decoder = nnx.Linear(
+                ear_horizon * env_action_dim,
+                hidden_dim,
+                rngs=rngs,
+            )
+            self.plan_decoder_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
+            self.action_out = nnx.Linear(
+                hidden_dim,
+                rollout_horizon * env_action_dim,
                 rngs=rngs,
                 kernel_init=jax.nn.initializers.zeros,
                 bias_init=jax.nn.initializers.zeros,
@@ -474,7 +535,7 @@ class BranchedActionCorrector(nnx.Module):
                 for token_mixer in self.token_mixers:
                     tokens = token_mixer(tokens)
                 action_raw = self.action_out(_rms_norm(tokens))
-        else:
+        elif self.mode == "plan":
             plan_raw = self.plan_out(context).reshape((batch_size, self.ear_horizon, 7))
             plan_residual_scale = jnp.asarray(self.plan_residual_scale, dtype=plan_raw.dtype)
             continuous_plan = transported_ear[..., :6] + (
@@ -482,6 +543,47 @@ class BranchedActionCorrector(nnx.Module):
             )
             plan_sign = jnp.where(transported_ear[..., 6] >= 0, 1.0, -1.0)
             plan_gripper_logits = 4.0 * plan_sign + self.gripper_logit_scale * jnp.tanh(plan_raw[..., 6])
+            revised_ear = jnp.concatenate(
+                [continuous_plan, jnp.tanh(plan_gripper_logits)[..., None]],
+                axis=-1,
+            )
+            plan_feature = jax.nn.silu(self.plan_decoder(revised_ear.reshape((batch_size, -1))))
+            plan_feature = plan_feature + jax.nn.silu(self.plan_decoder_hidden(plan_feature))
+            action_raw = self.action_out(plan_feature).reshape((batch_size, self.rollout_horizon, 7))
+        else:
+            prior_context = self._encode_context(
+                anchor_images,
+                anchor_images,
+                anchor_state,
+                anchor_state,
+                cached_plan_tokens,
+                cached_iar,
+                intended_prefix,
+                intended_valid,
+            )
+            prior_coefficients = self.prior_coeff_out(prior_context).reshape(
+                (batch_size, self.plan_rank, 6)
+            )
+            feedback_coefficients = (
+                self.feedback_coeff_out(context) - self.feedback_coeff_out(prior_context)
+            ).reshape((batch_size, self.plan_rank, 6))
+            prior_basis = jnp.asarray(self.prior_temporal_basis, dtype=context.dtype)
+            feedback_basis = jnp.asarray(self.feedback_temporal_basis, dtype=context.dtype)
+            normalized_plan_residual = jnp.einsum(
+                "tr,brd->btd", prior_basis, prior_coefficients
+            ) + jnp.einsum("tr,brd->btd", feedback_basis, feedback_coefficients)
+            plan_residual_scale = jnp.asarray(self.plan_residual_scale, dtype=context.dtype)
+            continuous_plan = transported_ear[..., :6] + (
+                plan_residual_scale[None, None, :6] * jnp.tanh(normalized_plan_residual)
+            )
+            plan_sign = jnp.where(transported_ear[..., 6] >= 0, 1.0, -1.0)
+            prior_gripper = self.prior_gripper_out(prior_context)
+            feedback_gripper = (
+                self.feedback_gripper_out(context) - self.feedback_gripper_out(prior_context)
+            )
+            plan_gripper_logits = 4.0 * plan_sign + self.gripper_logit_scale * jnp.tanh(
+                prior_gripper + feedback_gripper
+            )
             revised_ear = jnp.concatenate(
                 [continuous_plan, jnp.tanh(plan_gripper_logits)[..., None]],
                 axis=-1,
@@ -585,6 +687,67 @@ def _calibrate_ranges(
     }
 
 
+def _temporal_basis(values: np.ndarray, rank: int) -> tuple[tuple[float, ...], ...]:
+    matrix = np.asarray(values, dtype=np.float64).transpose(0, 2, 1).reshape((-1, values.shape[1]))
+    _, _, right_vectors = np.linalg.svd(matrix, full_matrices=False)
+    basis = right_vectors[:rank].T
+    for column in range(basis.shape[1]):
+        pivot = int(np.argmax(np.abs(basis[:, column])))
+        if basis[pivot, column] < 0:
+            basis[:, column] *= -1
+    return tuple(tuple(float(value) for value in row) for row in basis)
+
+
+def _dual_temporal_bases(
+    train_flat: dict[str, np.ndarray],
+    *,
+    rank: int,
+) -> dict[str, tuple[tuple[float, ...], ...]]:
+    group_size = len(branched_dataset.BRANCH_NAMES)
+    target = np.asarray(train_flat["target_ear"][..., :6], dtype=np.float32)
+    transported = np.asarray(train_flat["transported_ear"][..., :6], dtype=np.float32)
+    grouped_target = target.reshape((-1, group_size, *target.shape[1:]))
+    grouped_transported = transported.reshape((-1, group_size, *transported.shape[1:]))
+    prior_residual = grouped_target[:, 0] - grouped_transported[:, 0]
+    feedback_residual = (grouped_target[:, 1:] - grouped_target[:, :1]).reshape(
+        (-1, target.shape[1], target.shape[2])
+    )
+    return {
+        "prior": _temporal_basis(prior_residual, rank),
+        "feedback": _temporal_basis(feedback_residual, rank),
+    }
+
+
+def _numpy_huber(values: np.ndarray, delta: float) -> float:
+    absolute = np.abs(np.asarray(values, dtype=np.float64))
+    quadratic = np.minimum(absolute, delta)
+    return float(np.mean(0.5 * np.square(quadratic) + delta * (absolute - quadratic)))
+
+
+def _dual_loss_normalizers(
+    train_flat: dict[str, np.ndarray],
+    *,
+    args: Args,
+) -> dict[str, float]:
+    group_size = len(branched_dataset.BRANCH_NAMES)
+    action_error = train_flat["base_actions"][..., :6] - train_flat["target_actions"][..., :6]
+    plan_error = train_flat["transported_ear"][..., :6] - train_flat["target_ear"][..., :6]
+    grouped_actions = train_flat["target_actions"].reshape(
+        (-1, group_size, *train_flat["target_actions"].shape[1:])
+    )
+    grouped_ear = train_flat["target_ear"].reshape(
+        (-1, group_size, *train_flat["target_ear"].shape[1:])
+    )
+    action_pair = grouped_actions[:, 1:, ..., :6] - grouped_actions[:, :1, ..., :6]
+    plan_pair = grouped_ear[:, 1:, ..., :6] - grouped_ear[:, :1, ..., :6]
+    return {
+        "action": max(_numpy_huber(action_error, args.action_huber_delta), 1e-8),
+        "paired_action": max(_numpy_huber(action_pair, args.action_huber_delta), 1e-8),
+        "plan": max(_numpy_huber(plan_error, args.plan_huber_delta), 1e-8),
+        "paired_plan": max(_numpy_huber(plan_pair, args.plan_huber_delta), 1e-8),
+    }
+
+
 def _batch(
     flat: dict[str, np.ndarray],
     indices: np.ndarray,
@@ -629,6 +792,7 @@ def _loss(
     *,
     mode: str,
     args: Args,
+    normalizers: dict[str, float] | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     action_continuous = jnp.mean(
         _huber(output.actions[..., :6] - batch["target_actions"][..., :6], args.action_huber_delta)
@@ -655,7 +819,7 @@ def _loss(
     plan_gripper = jnp.asarray(0.0, dtype=jnp.float32)
     plan_velocity = jnp.asarray(0.0, dtype=jnp.float32)
     paired_plan = jnp.asarray(0.0, dtype=jnp.float32)
-    if mode == "plan":
+    if mode in {"plan", "dual_plan"}:
         plan_continuous = jnp.mean(
             _huber(output.revised_ear[..., :6] - batch["target_ear"][..., :6], args.plan_huber_delta)
         )
@@ -681,15 +845,28 @@ def _loss(
         paired_plan = jnp.mean(
             _huber(predicted_ear_delta - target_ear_delta, args.plan_huber_delta)
         )
-    total = (
-        action_continuous
-        + args.action_gripper_weight * action_gripper
-        + args.paired_action_loss_weight * paired_action
-        + args.plan_loss_weight * plan_continuous
-        + args.plan_gripper_weight * plan_gripper
-        + args.plan_velocity_weight * plan_velocity
-        + args.paired_plan_loss_weight * paired_plan
-    )
+    if mode == "dual_plan":
+        if normalizers is None:
+            raise ValueError("dual_plan requires train-only loss normalizers.")
+        total = (
+            action_continuous / normalizers["action"]
+            + paired_action / normalizers["paired_action"]
+            + plan_continuous / normalizers["plan"]
+            + paired_plan / normalizers["paired_plan"]
+            + 0.25 * action_gripper
+            + 0.25 * plan_gripper
+            + args.plan_velocity_weight * plan_velocity / normalizers["plan"]
+        )
+    else:
+        total = (
+            action_continuous
+            + args.action_gripper_weight * action_gripper
+            + args.paired_action_loss_weight * paired_action
+            + args.plan_loss_weight * plan_continuous
+            + args.plan_gripper_weight * plan_gripper
+            + args.plan_velocity_weight * plan_velocity
+            + args.paired_plan_loss_weight * paired_plan
+        )
     return total, {
         "loss": total,
         "action_continuous_huber": action_continuous,
@@ -841,6 +1018,7 @@ def _make_model(
     ranges: dict[str, tuple[float, ...] | float],
     *,
     args: Args,
+    dual_bases: dict[str, tuple[tuple[float, ...], ...]] | None,
 ) -> BranchedActionCorrector:
     return BranchedActionCorrector(
         mode=args.mode,  # type: ignore[arg-type]
@@ -861,6 +1039,9 @@ def _make_model(
         direct_head=args.direct_head,
         token_layers=args.token_layers,
         token_heads=args.token_heads,
+        plan_rank=args.plan_rank,
+        prior_temporal_basis=dual_bases["prior"] if dual_bases is not None else None,
+        feedback_temporal_basis=dual_bases["feedback"] if dual_bases is not None else None,
     )
 
 
@@ -873,8 +1054,9 @@ def _train_one(
     run_name: str,
     args: Args,
     output_dir: pathlib.Path,
+    dual_bases: dict[str, tuple[tuple[float, ...], ...]] | None,
 ) -> tuple[Any, nnx.State, dict[str, Any]]:
-    model = _make_model(train_flat, ranges, args=args)
+    model = _make_model(train_flat, ranges, args=args, dual_bases=dual_bases)
     parameter_count = _estimate_parameter_count(model)
     if parameter_count >= args.max_parameters:
         raise ValueError(f"Corrector has {parameter_count:,} parameters; limit={args.max_parameters:,}.")
@@ -897,6 +1079,7 @@ def _train_one(
             raise ValueError(f"Root {int(root_id)} does not contain one complete canonical branch group.")
         root_groups.append(group)
     roots_per_batch = max(1, args.batch_size // group_size)
+    loss_normalizers = _dual_loss_normalizers(train_flat, args=args) if args.mode == "dual_plan" else None
 
     @jax.jit
     def train_step(
@@ -919,7 +1102,13 @@ def _train_one(
                 batch["transported_ear"],
                 batch["base_actions"],
             )
-            return _loss(output, batch, mode=args.mode, args=args)
+            return _loss(
+                output,
+                batch,
+                mode=args.mode,
+                args=args,
+                normalizers=loss_normalizers,
+            )
 
         (_, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(current_model)
         updates, next_optimizer_state = optimizer.update(
@@ -964,6 +1153,8 @@ def _train_one(
     )
     validation_stale_disturbed = validation_stale["nominal_disturbed"]["disturbed"]["actions"]["mse_6d"]
     validation_zero_pair = validation_stale["paired"]["action_delta_mse_6d"]
+    validation_stale_ear = validation_stale["overall"]["ear"]["mse_6d"]
+    validation_zero_pair_ear = validation_stale["paired"]["ear_delta_mse_6d"]
     with metrics_path.open("w", encoding="utf-8") as metrics_file:
         for step in range(1, args.train_steps + 1):
             sampled_roots = rng.choice(
@@ -993,10 +1184,20 @@ def _train_one(
                 validation_action = validation_metrics["overall"]["actions"]
                 disturbed_mse = validation_metrics["nominal_disturbed"]["disturbed"]["actions"]["mse_6d"]
                 paired_mse = validation_metrics["paired"]["action_delta_mse_6d"]
-                score = float(
-                    0.5 * disturbed_mse / validation_stale_disturbed
-                    + 0.5 * paired_mse / validation_zero_pair
-                )
+                ear_mse = validation_metrics["overall"]["ear"]["mse_6d"]
+                paired_ear_mse = validation_metrics["paired"]["ear_delta_mse_6d"]
+                if args.mode == "dual_plan":
+                    score = float(
+                        0.25 * disturbed_mse / validation_stale_disturbed
+                        + 0.25 * paired_mse / validation_zero_pair
+                        + 0.25 * ear_mse / validation_stale_ear
+                        + 0.25 * paired_ear_mse / validation_zero_pair_ear
+                    )
+                else:
+                    score = float(
+                        0.5 * disturbed_mse / validation_stale_disturbed
+                        + 0.5 * paired_mse / validation_zero_pair
+                    )
                 record = {
                     "run": run_name,
                     "step": step,
@@ -1005,6 +1206,8 @@ def _train_one(
                     **{f"validation/{name}": value for name, value in validation_action.items()},
                     "validation/disturbed_action_mse_6d": disturbed_mse,
                     "validation/paired_action_delta_mse_6d": paired_mse,
+                    "validation/ear_mse_6d": ear_mse,
+                    "validation/paired_ear_delta_mse_6d": paired_ear_mse,
                     "validation/selection_score": score,
                 }
                 if not all(isinstance(value, (str, int)) or np.isfinite(value) for value in record.values()):
@@ -1030,8 +1233,12 @@ def _train_one(
         "best_validation_step": best_step,
         "best_validation_score": best_score,
         "selection_criterion": (
-            "0.5 * validation disturbed action6 MSE / stale + "
-            "0.5 * validation paired action-delta6 MSE / zero-pair"
+            "equal normalized validation disturbed-action, paired-action, EAR, and paired-EAR risk"
+            if args.mode == "dual_plan"
+            else (
+                "0.5 * validation disturbed action6 MSE / stale + "
+                "0.5 * validation paired action-delta6 MSE / zero-pair"
+            )
         ),
         "training_input": (
             "anchor and latest current observation"
@@ -1039,6 +1246,7 @@ def _train_one(
             else "anchor substituted for current observation throughout training and evaluation"
         ),
         "independently_trained": True,
+        "loss_normalizers": loss_normalizers,
         "elapsed_seconds": time.monotonic() - started,
         "params_path": str(params_path.resolve()),
     }
@@ -1178,6 +1386,11 @@ def main(args: Args) -> None:
         minimum_action=args.minimum_action_residual_scale,
         minimum_plan=args.minimum_plan_residual_scale,
     )
+    dual_bases = (
+        _dual_temporal_bases(train_flat, rank=args.plan_rank)
+        if args.mode == "dual_plan"
+        else None
+    )
     residual_baselines = _train_residual_baselines(train_flat)
 
     current_predict, current_params, current_train = _train_one(
@@ -1188,6 +1401,7 @@ def main(args: Args) -> None:
         run_name="current",
         args=args,
         output_dir=output_dir,
+        dual_bases=dual_bases,
     )
     no_current_predict = None
     no_current_params = None
@@ -1201,6 +1415,7 @@ def main(args: Args) -> None:
             run_name="no_current",
             args=args,
             output_dir=output_dir,
+            dual_bases=dual_bases,
         )
 
     current_prediction = _predict_all(
@@ -1216,6 +1431,19 @@ def main(args: Args) -> None:
         current_prediction["ear"],
         test_flat,
     )
+    if args.mode == "dual_plan":
+        prior_only_prediction = _predict_all(
+            current_predict,
+            current_params,
+            test_flat,
+            batch_size=args.eval_batch_size,
+            current_equals_anchor=True,
+        )
+        evaluations["learned_prior_only_same_checkpoint"] = _stratified_metrics(
+            prior_only_prediction["actions"],
+            prior_only_prediction["ear"],
+            test_flat,
+        )
     if no_current_predict is not None and no_current_params is not None:
         no_current_prediction = _predict_all(
             no_current_predict,
@@ -1246,9 +1474,14 @@ def main(args: Args) -> None:
         if zero_pair_action_mse > 0
         else None
     )
+    comparison_key = (
+        "learned_prior_only_same_checkpoint"
+        if "learned_prior_only_same_checkpoint" in evaluations
+        else "learned_no_current_independent"
+    )
     no_current_mse = (
-        evaluations["learned_no_current_independent"]["overall"]["actions"]["mse_6d"]
-        if "learned_no_current_independent" in evaluations
+        evaluations[comparison_key]["overall"]["actions"]["mse_6d"]
+        if comparison_key in evaluations
         else None
     )
     current_gain_over_no_current = (
@@ -1277,7 +1510,7 @@ def main(args: Args) -> None:
         and current_gripper >= 0.96
         and (current_gain_over_no_current is None or current_gain_over_no_current >= 0.03)
         and (
-            args.mode != "plan"
+            args.mode not in {"plan", "dual_plan"}
             or (
                 plan_gap_closure is not None
                 and plan_gap_closure >= 0.25
@@ -1297,7 +1530,12 @@ def main(args: Args) -> None:
             "current_observation_path": (
                 "direct residual around cached actions"
                 if args.mode == "direct"
-                else "full EAR update followed by a plan-only action decoder"
+                else (
+                    "cache-only prior plus observation-only feedback subspace EAR writeback "
+                    "followed by a plan-only action decoder"
+                    if args.mode == "dual_plan"
+                    else "full EAR update followed by a plan-only action decoder"
+                )
             ),
             "deployment_safe_history": "controller-intended cached action prefix only",
             "forbidden_inputs": "no branch id and no actually injected synthetic fault actions",
@@ -1315,6 +1553,18 @@ def main(args: Args) -> None:
             "source": "training partition only",
             **ranges,
         },
+        "dual_subspace": (
+            {
+                "source": "training partition only",
+                "rank": args.plan_rank,
+                "prior_basis": dual_bases["prior"],
+                "feedback_basis": dual_bases["feedback"],
+                "prior_input": "cached plan/history with current observation replaced by anchor",
+                "feedback_input": "difference between full-current and prior encoder/head outputs",
+            }
+            if dual_bases is not None
+            else None
+        ),
         "train": {
             "current": current_train,
             "no_current": no_current_train,
@@ -1332,6 +1582,7 @@ def main(args: Args) -> None:
             "learned_current_gripper_sign_accuracy": current_gripper,
             "minimum_gripper_sign_accuracy": 0.96,
             "learned_no_current_action_mse_6d": no_current_mse,
+            "current_comparison": comparison_key if no_current_mse is not None else None,
             "current_gain_over_no_current": current_gain_over_no_current,
             "minimum_current_gain_over_no_current": 0.03,
             "zero_pair_action_delta_mse_6d": zero_pair_action_mse,
@@ -1339,11 +1590,15 @@ def main(args: Args) -> None:
             "paired_action_gap_closure_6d": paired_action_gap_closure,
             "minimum_paired_action_gap_closure_6d": 0.25,
             "plan_gap_closure_6d": plan_gap_closure,
-            "minimum_plan_gap_closure_6d": 0.25 if args.mode == "plan" else None,
+            "minimum_plan_gap_closure_6d": (
+                0.25 if args.mode in {"plan", "dual_plan"} else None
+            ),
             "zero_pair_ear_delta_mse_6d": zero_pair_ear_mse,
             "learned_pair_ear_delta_mse_6d": current_pair_ear_mse,
             "paired_ear_gap_closure_6d": paired_ear_gap_closure,
-            "minimum_paired_ear_gap_closure_6d": 0.25 if args.mode == "plan" else None,
+            "minimum_paired_ear_gap_closure_6d": (
+                0.25 if args.mode in {"plan", "dual_plan"} else None
+            ),
             "minimum_theoretical_speedup": 3.0,
         },
         "note": (
