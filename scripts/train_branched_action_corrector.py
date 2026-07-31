@@ -54,6 +54,8 @@ class Args:
     feedback_feature_cache: str | None = None
     mode: str = "direct"
     direct_head: str = "global"
+    plan_decoder_head: str = "global"
+    feedback_encoder: str = "shared_delta"
     token_layers: int = 4
     token_heads: int = 4
     plan_rank: int = 4
@@ -100,6 +102,12 @@ def _validate_args(args: Args) -> None:
         raise ValueError("mode must be 'direct', 'plan', or 'dual_plan'.")
     if args.direct_head not in {"global", "per_token"}:
         raise ValueError("direct_head must be either 'global' or 'per_token'.")
+    if args.plan_decoder_head not in {"global", "per_token"}:
+        raise ValueError("plan_decoder_head must be either 'global' or 'per_token'.")
+    if args.feedback_encoder not in {"shared_delta", "innovation"}:
+        raise ValueError("feedback_encoder must be either 'shared_delta' or 'innovation'.")
+    if args.feedback_feature_cache is not None and args.feedback_encoder != "innovation":
+        raise ValueError("Frozen feedback features require feedback_encoder='innovation'.")
     if args.seed < 0 or args.split_seed < 0:
         raise ValueError("seed and split_seed must be non-negative.")
     positive_integers = (
@@ -254,6 +262,8 @@ class BranchedActionCorrector(nnx.Module):
         gripper_logit_scale: float,
         rngs: nnx.Rngs,
         direct_head: str = "global",
+        plan_decoder_head: str = "global",
+        feedback_encoder: str = "shared_delta",
         token_layers: int = 4,
         token_heads: int = 4,
         plan_rank: int = 4,
@@ -270,6 +280,8 @@ class BranchedActionCorrector(nnx.Module):
             raise ValueError("Residual scales must match env_action_dim.")
         self.mode = mode
         self.direct_head = direct_head
+        self.plan_decoder_head = plan_decoder_head
+        self.feedback_encoder = feedback_encoder
         self.image_views = image_views
         self.max_executed_steps = max_executed_steps
         self.ear_horizon = ear_horizon
@@ -336,19 +348,36 @@ class BranchedActionCorrector(nnx.Module):
                 kernel_init=jax.nn.initializers.zeros,
                 bias_init=jax.nn.initializers.zeros,
             )
-            self.plan_decoder = nnx.Linear(
-                ear_horizon * env_action_dim,
-                hidden_dim,
-                rngs=rngs,
-            )
-            self.plan_decoder_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
-            self.action_out = nnx.Linear(
-                hidden_dim,
-                rollout_horizon * env_action_dim,
-                rngs=rngs,
-                kernel_init=jax.nn.initializers.zeros,
-                bias_init=jax.nn.initializers.zeros,
-            )
+            if plan_decoder_head == "global":
+                self.plan_decoder = nnx.Linear(
+                    ear_horizon * env_action_dim,
+                    hidden_dim,
+                    rngs=rngs,
+                )
+                self.plan_decoder_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
+                self.action_out = nnx.Linear(
+                    hidden_dim,
+                    rollout_horizon * env_action_dim,
+                    rngs=rngs,
+                    kernel_init=jax.nn.initializers.zeros,
+                    bias_init=jax.nn.initializers.zeros,
+                )
+            else:
+                self.ear_decoder_proj = nnx.Linear(env_action_dim, hidden_dim, rngs=rngs)
+                self.action_decoder_proj = nnx.Linear(env_action_dim, hidden_dim, rngs=rngs)
+                self.decoder_position_proj = nnx.Linear(3, hidden_dim, rngs=rngs)
+                self.decoder_type_proj = nnx.Linear(2, hidden_dim, rngs=rngs)
+                self.decoder_mixers = [
+                    _TokenMixer(hidden_dim, token_heads, rngs=rngs)
+                    for _ in range(token_layers)
+                ]
+                self.action_out = nnx.Linear(
+                    hidden_dim,
+                    env_action_dim,
+                    rngs=rngs,
+                    kernel_init=jax.nn.initializers.zeros,
+                    bias_init=jax.nn.initializers.zeros,
+                )
         else:
             if prior_temporal_basis is None or feedback_temporal_basis is None:
                 raise ValueError("dual_plan requires train-derived prior and feedback bases.")
@@ -358,13 +387,13 @@ class BranchedActionCorrector(nnx.Module):
                 raise ValueError("dual_plan bases must match plan_rank.")
             self.prior_temporal_basis = prior_temporal_basis
             self.feedback_temporal_basis = feedback_temporal_basis
-            if feedback_feature_dim:
+            if feedback_encoder == "innovation" and feedback_feature_dim:
                 self.feedback_image_proj = nnx.Linear(
                     2 * feedback_feature_dim,
                     hidden_dim,
                     rngs=rngs,
                 )
-            else:
+            elif feedback_encoder == "innovation":
                 feedback_image_convs = []
                 feedback_in_channels = image_channels
                 for out_channels, kernel_size in zip(cnn_channels, (5, 3, 3), strict=True):
@@ -414,19 +443,36 @@ class BranchedActionCorrector(nnx.Module):
                 kernel_init=jax.nn.initializers.zeros,
                 bias_init=jax.nn.initializers.zeros,
             )
-            self.plan_decoder = nnx.Linear(
-                ear_horizon * env_action_dim,
-                hidden_dim,
-                rngs=rngs,
-            )
-            self.plan_decoder_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
-            self.action_out = nnx.Linear(
-                hidden_dim,
-                rollout_horizon * env_action_dim,
-                rngs=rngs,
-                kernel_init=jax.nn.initializers.zeros,
-                bias_init=jax.nn.initializers.zeros,
-            )
+            if plan_decoder_head == "global":
+                self.plan_decoder = nnx.Linear(
+                    ear_horizon * env_action_dim,
+                    hidden_dim,
+                    rngs=rngs,
+                )
+                self.plan_decoder_hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
+                self.action_out = nnx.Linear(
+                    hidden_dim,
+                    rollout_horizon * env_action_dim,
+                    rngs=rngs,
+                    kernel_init=jax.nn.initializers.zeros,
+                    bias_init=jax.nn.initializers.zeros,
+                )
+            else:
+                self.ear_decoder_proj = nnx.Linear(env_action_dim, hidden_dim, rngs=rngs)
+                self.action_decoder_proj = nnx.Linear(env_action_dim, hidden_dim, rngs=rngs)
+                self.decoder_position_proj = nnx.Linear(3, hidden_dim, rngs=rngs)
+                self.decoder_type_proj = nnx.Linear(2, hidden_dim, rngs=rngs)
+                self.decoder_mixers = [
+                    _TokenMixer(hidden_dim, token_heads, rngs=rngs)
+                    for _ in range(token_layers)
+                ]
+                self.action_out = nnx.Linear(
+                    hidden_dim,
+                    env_action_dim,
+                    rngs=rngs,
+                    kernel_init=jax.nn.initializers.zeros,
+                    bias_init=jax.nn.initializers.zeros,
+                )
 
     @staticmethod
     def _normalize_images(images: jax.Array) -> jax.Array:
@@ -574,6 +620,64 @@ class BranchedActionCorrector(nnx.Module):
         gripper_logits = base_logits + self.gripper_logit_scale * jnp.tanh(raw[..., 6])
         return jnp.concatenate([continuous, jnp.tanh(gripper_logits)[..., None]], axis=-1), gripper_logits
 
+    def _decode_plan(
+        self,
+        revised_ear: jax.Array,
+        base_actions: jax.Array,
+    ) -> jax.Array:
+        batch_size = revised_ear.shape[0]
+        if self.plan_decoder_head == "global":
+            plan_feature = jax.nn.silu(
+                self.plan_decoder(revised_ear.reshape((batch_size, -1)))
+            )
+            plan_feature = plan_feature + jax.nn.silu(
+                self.plan_decoder_hidden(plan_feature)
+            )
+            return self.action_out(plan_feature).reshape(
+                (batch_size, self.rollout_horizon, 7)
+            )
+        ear_positions = jnp.linspace(
+            0.0,
+            1.0,
+            self.ear_horizon,
+            dtype=revised_ear.dtype,
+        )
+        action_positions = jnp.linspace(
+            0.0,
+            1.0,
+            self.rollout_horizon,
+            dtype=revised_ear.dtype,
+        )
+
+        def position_features(positions: jax.Array) -> jax.Array:
+            return jnp.stack(
+                [
+                    positions,
+                    jnp.sin(2.0 * jnp.pi * positions),
+                    jnp.cos(2.0 * jnp.pi * positions),
+                ],
+                axis=-1,
+            )
+
+        ear_tokens = (
+            self.ear_decoder_proj(revised_ear)
+            + self.decoder_position_proj(position_features(ear_positions))[None]
+            + self.decoder_type_proj(
+                jnp.asarray([[1.0, 0.0]], dtype=revised_ear.dtype)
+            )[:, None]
+        )
+        action_tokens = (
+            self.action_decoder_proj(base_actions)
+            + self.decoder_position_proj(position_features(action_positions))[None]
+            + self.decoder_type_proj(
+                jnp.asarray([[0.0, 1.0]], dtype=revised_ear.dtype)
+            )[:, None]
+        )
+        tokens = jax.nn.silu(jnp.concatenate([ear_tokens, action_tokens], axis=1))
+        for token_mixer in self.decoder_mixers:
+            tokens = token_mixer(tokens)
+        return self.action_out(_rms_norm(tokens[:, -self.rollout_horizon :]))
+
     def __call__(
         self,
         anchor_images: jax.Array,
@@ -591,7 +695,7 @@ class BranchedActionCorrector(nnx.Module):
     ) -> CorrectorOutput:
         context = (
             None
-            if self.mode == "dual_plan"
+            if self.mode == "dual_plan" and self.feedback_encoder == "innovation"
             else self._encode_context(
                 anchor_images,
                 current_images,
@@ -655,9 +759,7 @@ class BranchedActionCorrector(nnx.Module):
                 [continuous_plan, jnp.tanh(plan_gripper_logits)[..., None]],
                 axis=-1,
             )
-            plan_feature = jax.nn.silu(self.plan_decoder(revised_ear.reshape((batch_size, -1))))
-            plan_feature = plan_feature + jax.nn.silu(self.plan_decoder_hidden(plan_feature))
-            action_raw = self.action_out(plan_feature).reshape((batch_size, self.rollout_horizon, 7))
+            action_raw = self._decode_plan(revised_ear, base_actions)
         else:
             prior_context = self._encode_context(
                 anchor_images,
@@ -672,19 +774,24 @@ class BranchedActionCorrector(nnx.Module):
             prior_coefficients = self.prior_coeff_out(prior_context).reshape(
                 (batch_size, self.plan_rank, 6)
             )
-            feedback_context = self._encode_feedback_context(
-                anchor_images,
-                current_images,
-                anchor_state,
-                current_state,
-                prior_context,
-                anchor_feedback_features,
-                current_feedback_features,
-            )
-            zero_feedback = jnp.zeros_like(feedback_context)
+            if self.feedback_encoder == "shared_delta":
+                assert context is not None
+                feedback_context = context
+                feedback_reference = prior_context
+            else:
+                feedback_context = self._encode_feedback_context(
+                    anchor_images,
+                    current_images,
+                    anchor_state,
+                    current_state,
+                    prior_context,
+                    anchor_feedback_features,
+                    current_feedback_features,
+                )
+                feedback_reference = jnp.zeros_like(feedback_context)
             feedback_coefficients = (
                 self.feedback_coeff_out(feedback_context)
-                - self.feedback_coeff_out(zero_feedback)
+                - self.feedback_coeff_out(feedback_reference)
             ).reshape((batch_size, self.plan_rank, 6))
             prior_basis = jnp.asarray(self.prior_temporal_basis, dtype=prior_context.dtype)
             feedback_basis = jnp.asarray(self.feedback_temporal_basis, dtype=prior_context.dtype)
@@ -699,7 +806,7 @@ class BranchedActionCorrector(nnx.Module):
             prior_gripper = self.prior_gripper_out(prior_context)
             feedback_gripper = (
                 self.feedback_gripper_out(feedback_context)
-                - self.feedback_gripper_out(zero_feedback)
+                - self.feedback_gripper_out(feedback_reference)
             )
             plan_gripper_logits = 4.0 * plan_sign + self.gripper_logit_scale * jnp.tanh(
                 prior_gripper + feedback_gripper
@@ -708,9 +815,7 @@ class BranchedActionCorrector(nnx.Module):
                 [continuous_plan, jnp.tanh(plan_gripper_logits)[..., None]],
                 axis=-1,
             )
-            plan_feature = jax.nn.silu(self.plan_decoder(revised_ear.reshape((batch_size, -1))))
-            plan_feature = plan_feature + jax.nn.silu(self.plan_decoder_hidden(plan_feature))
-            action_raw = self.action_out(plan_feature).reshape((batch_size, self.rollout_horizon, 7))
+            action_raw = self._decode_plan(revised_ear, base_actions)
         actions, action_gripper_logits = self._actions_from_raw(base_actions, action_raw)
         return CorrectorOutput(
             actions=actions,
@@ -1261,6 +1366,8 @@ def _make_model(
         gripper_logit_scale=args.gripper_logit_scale,
         rngs=nnx.Rngs(args.seed),
         direct_head=args.direct_head,
+        plan_decoder_head=args.plan_decoder_head,
+        feedback_encoder=args.feedback_encoder,
         token_layers=args.token_layers,
         token_heads=args.token_heads,
         plan_rank=args.plan_rank,
@@ -1779,6 +1886,8 @@ def main(args: Args) -> None:
             "name": f"branched_action_cot_corrector_{args.mode}",
             "mode": args.mode,
             "direct_head": args.direct_head,
+            "plan_decoder_head": args.plan_decoder_head,
+            "feedback_encoder": args.feedback_encoder,
             "current_observation_path": (
                 "direct residual around cached actions"
                 if args.mode == "direct"
@@ -1813,14 +1922,16 @@ def main(args: Args) -> None:
                 "feedback_basis": dual_bases["feedback"],
                 "prior_input": "cached plan/history with current observation replaced by anchor",
                 "feedback_input": (
-                    (
+                    "shared full-current minus cache-only prior context"
+                    if args.feedback_encoder == "shared_delta"
+                    else (
                         "frozen ResNet-18 current-minus-anchor features plus state innovation, "
                         "FiLM-conditioned by stopped-gradient prior context"
-                    )
-                    if args.feedback_feature_cache is not None
-                    else (
+                        if args.feedback_feature_cache is not None
+                        else (
                         "independent current-minus-anchor image/state innovation encoder "
                         "FiLM-conditioned by stopped-gradient prior context"
+                        )
                     )
                 ),
             }
