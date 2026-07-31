@@ -46,6 +46,7 @@ MODES = (
     "corrector_h10",
     "matched_diff_h10",
     "event_refresh_h10",
+    "gripper_event_refresh_h10",
 )
 ACTION_DIM = 7
 MODEL_ACTION_DIM = 32
@@ -55,7 +56,11 @@ SMALL_IMAGE_SIZE = 64
 MATCHED_DIFF_ALPHA = 1.0
 MATCHED_DIFF_TRUST_REGION_L2 = 0.025
 CORRECTOR_MODES = ("corrector_h10", "matched_diff_h10")
-QUALITY_MODES = (*CORRECTOR_MODES, "event_refresh_h10")
+QUALITY_MODES = (
+    *CORRECTOR_MODES,
+    "event_refresh_h10",
+    "gripper_event_refresh_h10",
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -530,6 +535,14 @@ def _run_episode(
         matched_diff_gate_response_rejected_calls = 0
         event_refresh_calls = 0
         pending_event_refresh = False
+        gripper_event_refresh_calls = 0
+        gripper_event_refresh_pending = False
+        gripper_event_refresh_horizon = 0
+        gripper_event_trigger_control_step: int | None = None
+        gripper_open_sign_votes: list[int] = []
+        gripper_open_sign: int | None = None
+        gripper_close_run = 0
+        gripper_event_fired = False
         correction_l2: list[float] = []
         correction_boundary_l2: list[float] = []
         correction_gripper_changes: list[float] = []
@@ -555,7 +568,43 @@ def _run_episode(
                 continue
 
             if not action_queue:
-                if mode == "event_refresh_h10" and pending_event_refresh:
+                if (
+                    mode == "gripper_event_refresh_h10"
+                    and gripper_event_refresh_pending
+                ):
+                    element = base_eval._observation_to_policy_input(
+                        observation,
+                        task_description,
+                        args.resize_size,
+                    )
+                    policy_seed = (
+                        args.seed
+                        + task_id * 1_000_000
+                        + episode_idx * 10_000
+                        + step
+                    )
+                    result, timing = _full_request(
+                        client,
+                        element,
+                        seed=policy_seed,
+                        denoising_steps=args.action_cot_denoising_steps,
+                        export_cache=False,
+                    )
+                    policy_wall_ms.append(float(timing["wall_ms"]))
+                    policy_infer_ms.append(float(timing["policy_ms"]))
+                    policy_server_ms.append(float(timing["server_ms"]))
+                    action_chunk = np.asarray(result["actions"], dtype=np.float32)
+                    if action_chunk.shape[0] < gripper_event_refresh_horizon:
+                        raise ValueError(
+                            "Policy returned too few semantic-event refresh actions: "
+                            f"{action_chunk.shape}, need {gripper_event_refresh_horizon}."
+                        )
+                    action_queue.extend(
+                        action_chunk[:gripper_event_refresh_horizon, :ACTION_DIM]
+                    )
+                    gripper_event_refresh_pending = False
+                    gripper_event_refresh_calls += 1
+                elif mode == "event_refresh_h10" and pending_event_refresh:
                     element = base_eval._observation_to_policy_input(
                         observation,
                         task_description,
@@ -750,7 +799,7 @@ def _run_episode(
                             pending_event_refresh = True
                         else:
                             action_queue.extend(action_chunk[:required, :ACTION_DIM])
-                    elif mode == "stale_h10" or (
+                    elif mode in ("stale_h10", "gripper_event_refresh_h10") or (
                         mode == "matched_diff_h10" and not export_cache
                     ):
                         required = ANCHOR_STEPS + CORRECTED_STEPS
@@ -777,6 +826,32 @@ def _run_episode(
                 break
             total_return += float(reward)
             step += 1
+            if mode == "gripper_event_refresh_h10":
+                gripper_value = float(action[6])
+                gripper_sign = (
+                    1 if gripper_value > 0.5 else -1 if gripper_value < -0.5 else 0
+                )
+                if gripper_sign:
+                    if gripper_open_sign is None:
+                        gripper_open_sign_votes.append(gripper_sign)
+                        if len(gripper_open_sign_votes) >= 5:
+                            gripper_open_sign = (
+                                1 if sum(gripper_open_sign_votes[:5]) >= 0 else -1
+                            )
+                    elif not gripper_event_fired:
+                        if gripper_sign == -gripper_open_sign:
+                            gripper_close_run += 1
+                        else:
+                            gripper_close_run = 0
+                        if gripper_close_run >= 2:
+                            gripper_event_fired = True
+                            gripper_event_trigger_control_step = (
+                                step - args.num_steps_wait
+                            )
+                            gripper_event_refresh_horizon = len(action_queue)
+                            if gripper_event_refresh_horizon > 0 and not done:
+                                action_queue.clear()
+                                gripper_event_refresh_pending = True
             if done:
                 termination_reason = "success"
                 break
@@ -876,6 +951,14 @@ def _run_episode(
                 else float("nan")
             ),
             "event_refresh_calls": event_refresh_calls,
+            "gripper_event_refresh_calls": gripper_event_refresh_calls,
+            "gripper_event_trigger_control_step": (
+                float(gripper_event_trigger_control_step)
+                if gripper_event_trigger_control_step is not None
+                else float("nan")
+            ),
+            "gripper_event_refresh_horizon": gripper_event_refresh_horizon,
+            "gripper_event_open_sign": gripper_open_sign,
             "correction_l2_mean": float(np.mean(correction_l2)) if correction_l2 else float("nan"),
             "correction_boundary_l2_mean": (
                 float(np.mean(correction_boundary_l2)) if correction_boundary_l2 else float("nan")
@@ -967,6 +1050,18 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "mean_event_refresh_calls": _finite_mean(
                 selected,
                 "event_refresh_calls",
+            ),
+            "mean_gripper_event_refresh_calls": _finite_mean(
+                selected,
+                "gripper_event_refresh_calls",
+            ),
+            "mean_gripper_event_trigger_control_step": _finite_mean(
+                selected,
+                "gripper_event_trigger_control_step",
+            ),
+            "mean_gripper_event_refresh_horizon": _finite_mean(
+                selected,
+                "gripper_event_refresh_horizon",
             ),
             "mean_action_delta_l2": _finite_mean(selected, "action_delta_l2"),
             "mean_action_jerk_l2": _finite_mean(selected, "action_jerk_l2"),
