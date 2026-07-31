@@ -185,8 +185,8 @@ class BranchedActionCorrector(nnx.Module):
         self.ear_horizon = ear_horizon
         self.rollout_horizon = rollout_horizon
         self.hidden_dim = hidden_dim
-        self.action_residual_scale = jnp.asarray(action_residual_scale, dtype=jnp.float32)
-        self.plan_residual_scale = jnp.asarray(plan_residual_scale, dtype=jnp.float32)
+        self.action_residual_scale = tuple(float(value) for value in action_residual_scale)
+        self.plan_residual_scale = tuple(float(value) for value in plan_residual_scale)
         self.gripper_logit_scale = gripper_logit_scale
 
         image_convs = []
@@ -329,7 +329,8 @@ class BranchedActionCorrector(nnx.Module):
         base_actions: jax.Array,
         raw: jax.Array,
     ) -> tuple[jax.Array, jax.Array]:
-        residual = self.action_residual_scale[None, None, :6] * jnp.tanh(raw[..., :6])
+        action_residual_scale = jnp.asarray(self.action_residual_scale, dtype=raw.dtype)
+        residual = action_residual_scale[None, None, :6] * jnp.tanh(raw[..., :6])
         continuous = base_actions[..., :6] + residual
         base_sign = jnp.where(base_actions[..., 6] >= 0, 1.0, -1.0)
         base_logits = 4.0 * base_sign
@@ -367,8 +368,9 @@ class BranchedActionCorrector(nnx.Module):
             action_raw = self.action_out(context).reshape((batch_size, self.rollout_horizon, 7))
         else:
             plan_raw = self.plan_out(context).reshape((batch_size, self.ear_horizon, 7))
+            plan_residual_scale = jnp.asarray(self.plan_residual_scale, dtype=plan_raw.dtype)
             continuous_plan = transported_ear[..., :6] + (
-                self.plan_residual_scale[None, None, :6] * jnp.tanh(plan_raw[..., :6])
+                plan_residual_scale[None, None, :6] * jnp.tanh(plan_raw[..., :6])
             )
             plan_sign = jnp.where(transported_ear[..., 6] >= 0, 1.0, -1.0)
             plan_gripper_logits = 4.0 * plan_sign + self.gripper_logit_scale * jnp.tanh(plan_raw[..., 6])
