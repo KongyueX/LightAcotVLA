@@ -172,6 +172,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--go-min-control-margin", type=float, default=0.05)
     parser.add_argument("--go-min-selections", type=int, default=5)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--diagnostic-partial",
+        action="store_true",
+        help=(
+            "Mark an incomplete collection run as diagnostic-only; metrics and raw "
+            "checks are emitted, but go is null and the output is not decision-eligible."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true")
     return parser
 
@@ -1412,8 +1420,14 @@ def main() -> None:
     )
     summary = {
         "schema_version": 1,
-        "status": "complete",
+        "status": (
+            "diagnostic_partial_complete"
+            if args.diagnostic_partial
+            else "complete"
+        ),
         "probe_only": True,
+        "diagnostic_partial": bool(args.diagnostic_partial),
+        "decision_eligible": not args.diagnostic_partial,
         "deployable_checkpoint_saved": False,
         "next_stage_if_go": (
             "fit and serialize the complete preprocessing and head on episodes "
@@ -1481,7 +1495,8 @@ def main() -> None:
             "min_selections": args.go_min_selections,
         },
         "go_checks": go_checks,
-        "go": go,
+        "go_checks_all_pass": go,
+        "go": None if args.diagnostic_partial else go,
     }
 
     np.savez_compressed(
