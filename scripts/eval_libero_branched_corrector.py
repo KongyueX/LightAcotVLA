@@ -77,6 +77,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
+    parser.add_argument(
+        "--matched-diff-min-control-step",
+        type=int,
+        default=0,
+        help=(
+            "For matched_diff_h10, retain stale H6 before this many post-wait "
+            "control steps and enable the matched-difference correction afterwards."
+        ),
+    )
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(MODES))
     parser.add_argument("--corrector-summary", default=None)
     parser.add_argument("--corrector-params", default=None)
@@ -94,6 +103,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("num-steps-wait must be non-negative and resize-size must be positive.")
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action-cot-denoising-steps must be positive.")
+    if args.matched_diff_min_control_step < 0:
+        raise ValueError("matched-diff-min-control-step must be non-negative.")
     if any(mode in args.modes for mode in CORRECTOR_MODES):
         if args.corrector_summary is None:
             raise ValueError("Corrector modes require --corrector-summary.")
@@ -456,6 +467,8 @@ def _run_episode(
         matched_diff_response_l2_max: list[float] = []
         matched_diff_applied_l2: list[float] = []
         matched_diff_clip_fraction: list[float] = []
+        matched_diff_gate_applied_calls = 0
+        matched_diff_gate_skipped_calls = 0
         correction_l2: list[float] = []
         correction_boundary_l2: list[float] = []
         correction_gripper_changes: list[float] = []
@@ -486,7 +499,16 @@ def _run_episode(
                     task_description,
                     args.resize_size,
                 )
-                if mode in CORRECTOR_MODES and cache is not None:
+                if (
+                    mode == "matched_diff_h10"
+                    and cache is not None
+                    and step - args.num_steps_wait
+                    < args.matched_diff_min_control_step
+                ):
+                    action_queue.extend(cache.base_actions)
+                    cache = None
+                    matched_diff_gate_skipped_calls += 1
+                elif mode in CORRECTOR_MODES and cache is not None:
                     if norm_stats is None:
                         raise RuntimeError("Corrector runtime was not initialised.")
                     current_images = _small_images(element)
@@ -494,6 +516,7 @@ def _run_episode(
                     if mode == "matched_diff_h10":
                         if matched_diff_corrector is None:
                             raise RuntimeError("Matched-difference runtime was not initialised.")
+                        matched_diff_gate_applied_calls += 1
                         corrected_actions, matched_metrics = matched_diff_corrector(
                             cache,
                             current_images,
@@ -681,6 +704,18 @@ def _run_episode(
                 if matched_diff_clip_fraction
                 else float("nan")
             ),
+            "matched_diff_gate_applied_calls": matched_diff_gate_applied_calls,
+            "matched_diff_gate_skipped_calls": matched_diff_gate_skipped_calls,
+            "matched_diff_gate_coverage": (
+                matched_diff_gate_applied_calls
+                / (
+                    matched_diff_gate_applied_calls
+                    + matched_diff_gate_skipped_calls
+                )
+                if matched_diff_gate_applied_calls
+                + matched_diff_gate_skipped_calls
+                else float("nan")
+            ),
             "correction_l2_mean": float(np.mean(correction_l2)) if correction_l2 else float("nan"),
             "correction_boundary_l2_mean": (
                 float(np.mean(correction_boundary_l2)) if correction_boundary_l2 else float("nan")
@@ -752,6 +787,18 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "mean_matched_diff_clip_fraction": _finite_mean(
                 selected,
                 "matched_diff_clip_fraction_mean",
+            ),
+            "mean_matched_diff_gate_applied_calls": _finite_mean(
+                selected,
+                "matched_diff_gate_applied_calls",
+            ),
+            "mean_matched_diff_gate_skipped_calls": _finite_mean(
+                selected,
+                "matched_diff_gate_skipped_calls",
+            ),
+            "mean_matched_diff_gate_coverage": _finite_mean(
+                selected,
+                "matched_diff_gate_coverage",
             ),
             "mean_action_delta_l2": _finite_mean(selected, "action_delta_l2"),
             "mean_action_jerk_l2": _finite_mean(selected, "action_jerk_l2"),
@@ -929,6 +976,9 @@ def main() -> None:
                             "num_trials": args.num_trials,
                             "seed": args.seed,
                             "denoising_steps": args.action_cot_denoising_steps,
+                            "matched_diff_min_control_step": (
+                                args.matched_diff_min_control_step
+                            ),
                             "corrector_schedule": (
                                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                                 "matched-difference mode retains stale and adds the clipped "
@@ -964,6 +1014,7 @@ def main() -> None:
             "num_trials": args.num_trials,
             "seed": args.seed,
             "denoising_steps": args.action_cot_denoising_steps,
+            "matched_diff_min_control_step": args.matched_diff_min_control_step,
             "corrector_schedule": (
                 "fresh ACoT first 4 actions; direct mode replaces actions 4:10; "
                 "matched-difference mode retains stale and adds the clipped "
