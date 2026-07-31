@@ -49,6 +49,9 @@ class Args:
     dataset: tuple[str, ...]
     output_dir: str
     mode: str = "direct"
+    direct_head: str = "global"
+    token_layers: int = 4
+    token_heads: int = 4
     seed: int = 7
     split_seed: int = 7
     train_steps: int = 700
@@ -80,7 +83,7 @@ class Args:
     profile_iterations: int = 500
     refresh_interval: int = 4
     full_acot_reference_ms: float = 95.844
-    max_parameters: int = 1_000_000
+    max_parameters: int = 5_000_000
     train_no_current: bool = True
     overwrite: bool = False
 
@@ -90,6 +93,8 @@ def _validate_args(args: Args) -> None:
         raise ValueError("At least one --dataset path is required.")
     if args.mode not in {"direct", "plan"}:
         raise ValueError("mode must be either 'direct' or 'plan'.")
+    if args.direct_head not in {"global", "per_token"}:
+        raise ValueError("direct_head must be either 'global' or 'per_token'.")
     if args.seed < 0 or args.split_seed < 0:
         raise ValueError("seed and split_seed must be non-negative.")
     positive_integers = (
@@ -101,6 +106,8 @@ def _validate_args(args: Args) -> None:
         args.rollout_horizon,
         args.coarse_time_stride,
         args.hidden_dim,
+        args.token_layers,
+        args.token_heads,
         args.profile_iterations,
         args.refresh_interval,
         args.max_parameters,
@@ -138,8 +145,10 @@ def _validate_args(args: Args) -> None:
         raise ValueError("validation_fraction and test_fraction must lie in (0, 0.5).")
     if args.validation_fraction + args.test_fraction >= 1.0:
         raise ValueError("validation_fraction + test_fraction must be below one.")
-    if args.max_parameters > 1_000_000:
-        raise ValueError("max_parameters may not exceed one million.")
+    if args.hidden_dim % args.token_heads:
+        raise ValueError("hidden_dim must be divisible by token_heads.")
+    if args.max_parameters > 5_000_000:
+        raise ValueError("max_parameters may not exceed five million.")
 
 
 def _linear_parameters(input_dim: int, output_dim: int) -> int:
@@ -152,6 +161,47 @@ class CorrectorOutput(NamedTuple):
     transported_ear: jax.Array
     revised_ear: jax.Array
     plan_gripper_logits: jax.Array
+
+
+def _rms_norm(values: jax.Array) -> jax.Array:
+    return values * jax.lax.rsqrt(jnp.mean(jnp.square(values), axis=-1, keepdims=True) + 1e-6)
+
+
+class _TokenMixer(nnx.Module):
+    """Small pre-norm self-attention block for aligned cached-action tokens."""
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        num_heads: int,
+        *,
+        rngs: nnx.Rngs,
+    ) -> None:
+        if hidden_dim % num_heads:
+            raise ValueError("hidden_dim must be divisible by num_heads.")
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.qkv = nnx.Linear(hidden_dim, 3 * hidden_dim, rngs=rngs)
+        self.attention_out = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
+        self.ff_in = nnx.Linear(hidden_dim, 4 * hidden_dim, rngs=rngs)
+        self.ff_out = nnx.Linear(4 * hidden_dim, hidden_dim, rngs=rngs)
+
+    def __call__(self, tokens: jax.Array) -> jax.Array:
+        batch_size, token_count, hidden_dim = tokens.shape
+        head_dim = hidden_dim // self.num_heads
+        qkv = self.qkv(_rms_norm(tokens)).reshape(
+            (batch_size, token_count, 3, self.num_heads, head_dim)
+        )
+        query, key, value = jnp.moveaxis(qkv, 2, 0)
+        logits = jnp.einsum("bthd,bshd->bhts", query, key) / jnp.sqrt(
+            jnp.asarray(head_dim, dtype=tokens.dtype)
+        )
+        weights = jax.nn.softmax(logits, axis=-1)
+        mixed = jnp.einsum("bhts,bshd->bthd", weights, value).reshape(
+            (batch_size, token_count, hidden_dim)
+        )
+        tokens = tokens + self.attention_out(mixed)
+        return tokens + self.ff_out(jax.nn.silu(self.ff_in(_rms_norm(tokens))))
 
 
 class BranchedActionCorrector(nnx.Module):
@@ -175,6 +225,9 @@ class BranchedActionCorrector(nnx.Module):
         plan_residual_scale: tuple[float, ...],
         gripper_logit_scale: float,
         rngs: nnx.Rngs,
+        direct_head: str = "global",
+        token_layers: int = 4,
+        token_heads: int = 4,
         cnn_channels: tuple[int, ...] = (16, 32, 48),
     ) -> None:
         if mode not in {"direct", "plan"}:
@@ -184,6 +237,7 @@ class BranchedActionCorrector(nnx.Module):
         if len(action_residual_scale) != env_action_dim or len(plan_residual_scale) != env_action_dim:
             raise ValueError("Residual scales must match env_action_dim.")
         self.mode = mode
+        self.direct_head = direct_head
         self.image_views = image_views
         self.max_executed_steps = max_executed_steps
         self.ear_horizon = ear_horizon
@@ -215,13 +269,31 @@ class BranchedActionCorrector(nnx.Module):
         self.hidden = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs)
 
         if mode == "direct":
-            self.action_out = nnx.Linear(
-                hidden_dim,
-                rollout_horizon * env_action_dim,
-                rngs=rngs,
-                kernel_init=jax.nn.initializers.zeros,
-                bias_init=jax.nn.initializers.zeros,
-            )
+            if direct_head == "global":
+                self.action_out = nnx.Linear(
+                    hidden_dim,
+                    rollout_horizon * env_action_dim,
+                    rngs=rngs,
+                    kernel_init=jax.nn.initializers.zeros,
+                    bias_init=jax.nn.initializers.zeros,
+                )
+            elif direct_head == "per_token":
+                self.base_action_proj = nnx.Linear(env_action_dim, hidden_dim, rngs=rngs)
+                self.position_proj = nnx.Linear(3, hidden_dim, rngs=rngs)
+                self.token_fusion = nnx.Linear(3 * hidden_dim, hidden_dim, rngs=rngs)
+                self.token_mixers = [
+                    _TokenMixer(hidden_dim, token_heads, rngs=rngs)
+                    for _ in range(token_layers)
+                ]
+                self.action_out = nnx.Linear(
+                    hidden_dim,
+                    env_action_dim,
+                    rngs=rngs,
+                    kernel_init=jax.nn.initializers.zeros,
+                    bias_init=jax.nn.initializers.zeros,
+                )
+            else:
+                raise ValueError(f"Unsupported direct_head: {direct_head!r}.")
         else:
             self.plan_out = nnx.Linear(
                 hidden_dim,
@@ -369,7 +441,39 @@ class BranchedActionCorrector(nnx.Module):
             revised_ear = transported_ear
             plan_sign = jnp.where(revised_ear[..., 6] >= 0, 1.0, -1.0)
             plan_gripper_logits = 4.0 * plan_sign
-            action_raw = self.action_out(context).reshape((batch_size, self.rollout_horizon, 7))
+            if self.direct_head == "global":
+                action_raw = self.action_out(context).reshape((batch_size, self.rollout_horizon, 7))
+            else:
+                positions = jnp.linspace(0.0, 1.0, self.rollout_horizon, dtype=context.dtype)
+                position_features = jnp.stack(
+                    [
+                        positions,
+                        jnp.sin(2.0 * jnp.pi * positions),
+                        jnp.cos(2.0 * jnp.pi * positions),
+                    ],
+                    axis=-1,
+                )
+                base_feature = jax.nn.silu(self.base_action_proj(base_actions))
+                position_feature = jax.nn.silu(self.position_proj(position_features))
+                position_feature = jnp.broadcast_to(
+                    position_feature[None],
+                    (batch_size, self.rollout_horizon, self.hidden_dim),
+                )
+                context_feature = jnp.broadcast_to(
+                    context[:, None],
+                    (batch_size, self.rollout_horizon, self.hidden_dim),
+                )
+                tokens = jax.nn.silu(
+                    self.token_fusion(
+                        jnp.concatenate(
+                            [context_feature, base_feature, position_feature],
+                            axis=-1,
+                        )
+                    )
+                )
+                for token_mixer in self.token_mixers:
+                    tokens = token_mixer(tokens)
+                action_raw = self.action_out(_rms_norm(tokens))
         else:
             plan_raw = self.plan_out(context).reshape((batch_size, self.ear_horizon, 7))
             plan_residual_scale = jnp.asarray(self.plan_residual_scale, dtype=plan_raw.dtype)
@@ -754,6 +858,9 @@ def _make_model(
         plan_residual_scale=ranges["plan_residual_scale"],  # type: ignore[arg-type]
         gripper_logit_scale=args.gripper_logit_scale,
         rngs=nnx.Rngs(args.seed),
+        direct_head=args.direct_head,
+        token_layers=args.token_layers,
+        token_heads=args.token_heads,
     )
 
 
@@ -1186,6 +1293,7 @@ def main(args: Args) -> None:
         "method": {
             "name": f"branched_action_cot_corrector_{args.mode}",
             "mode": args.mode,
+            "direct_head": args.direct_head,
             "current_observation_path": (
                 "direct residual around cached actions"
                 if args.mode == "direct"
