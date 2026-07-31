@@ -52,6 +52,7 @@ FORBIDDEN_PRIMARY_INPUTS = (
     "actual_prefix_env",
     "actual_prefix_executed_env",
     "actual_prefix_executed_valid",
+    "current_state (collector field is returned by the fresh endpoint RPC)",
     "fresh_ear",
     "fresh_iar",
     "fresh_final_actions",
@@ -199,6 +200,7 @@ def _load_example(
         if not valid or current_task != task_id or episode_id not in allowed_episodes:
             return None
         intended = base._array(data, ("intended_prefix_env",), dtype=np.float64)
+        anchor_state = base._array(data, ("anchor_state",), dtype=np.float64)
         branch_id = base._scalar(data, ("branch_id",), int)
         canonical_name = base._scalar(
             data, ("branch_canonical_name", "branch_name"), str
@@ -224,8 +226,11 @@ def _load_example(
             is_nominal=canonical_name == "nominal" or branch_id == 0,
             anchor_images=base._array(data, ("anchor_images",), dtype=np.uint8),
             current_images=base._array(data, ("current_images",), dtype=np.uint8),
-            anchor_state=base._array(data, ("anchor_state",), dtype=np.float64),
-            current_state=base._array(data, ("current_state",), dtype=np.float64),
+            anchor_state=anchor_state,
+            # The serialized current_state is returned by the fresh RPC.  A gate
+            # deciding whether to issue that RPC cannot use it, so the shared
+            # feature builder receives a non-informative anchor copy instead.
+            current_state=anchor_state.copy(),
             cached_ear=base._array(data, ("cached_ear",), dtype=np.float64),
             cached_iar=base._array(data, ("cached_iar",), dtype=np.float64),
             cached_final=base._array(
@@ -1139,7 +1144,6 @@ def main() -> None:
             "h6_difference_role": "auxiliary diagnostics only",
             "primary_inputs": [
                 "anchor/current visual innovation",
-                "anchor/current proprioceptive state innovation",
                 "cached EAR",
                 "cached IAR",
                 "cached final/environment action tail",
@@ -1147,9 +1151,18 @@ def main() -> None:
             ],
             "forbidden_primary_inputs": list(FORBIDDEN_PRIMARY_INPUTS),
             "actual_prefix_fields_loaded": False,
+            "serialized_current_state_loaded": False,
+            "current_state_reason": (
+                "collector current_state is returned by the fresh endpoint RPC and is "
+                "therefore unavailable before the refresh decision"
+            ),
             "fresh_action_cot_outputs_loaded": False,
             "privileged_progress_used_as_primary_feature": False,
             "controls_share_real_model_and_frozen_threshold": True,
+            "call_accounting_unit": (
+                "counterfactual-pair aggregate: each branch is treated as one possible "
+                "deployment encounter; common anchor calls are not collector physical RPC totals"
+            ),
         },
         "data": {
             **load_summary,

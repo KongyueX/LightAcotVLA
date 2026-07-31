@@ -575,6 +575,12 @@ def _scalar(arrays: Any, name: str) -> Any:
     return np.asarray(arrays[name]).reshape(()).item()
 
 
+def _scalar_or_default(arrays: Any, name: str, default: Any) -> Any:
+    if name not in arrays:
+        return default
+    return _scalar(arrays, name)
+
+
 def _index_row(path: pathlib.Path, output_dir: pathlib.Path) -> dict[str, Any]:
     with np.load(path, allow_pickle=False) as arrays:
         return {
@@ -596,7 +602,11 @@ def _index_row(path: pathlib.Path, output_dir: pathlib.Path) -> dict[str, Any]:
                 _scalar(arrays, "terminal_privileged_progress_difference")
             ),
             "fresh_minus_stale_h6_normalized_score": float(
-                _scalar(arrays, "fresh_minus_stale_h6_normalized_score")
+                _scalar_or_default(
+                    arrays,
+                    "fresh_minus_stale_h6_normalized_score",
+                    float("nan"),
+                )
             ),
             "fresh_minus_stale_terminal_normalized_score": float(
                 _scalar(arrays, "fresh_minus_stale_terminal_normalized_score")
