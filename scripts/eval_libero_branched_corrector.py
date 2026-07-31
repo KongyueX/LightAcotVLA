@@ -526,11 +526,6 @@ def _run_episode(
                 continue
 
             if not action_queue:
-                element = base_eval._observation_to_policy_input(
-                    observation,
-                    task_description,
-                    args.resize_size,
-                )
                 if (
                     mode == "matched_diff_h10"
                     and cache is not None
@@ -550,6 +545,11 @@ def _run_episode(
                 elif mode in CORRECTOR_MODES and cache is not None:
                     if norm_stats is None:
                         raise RuntimeError("Corrector runtime was not initialised.")
+                    element = base_eval._observation_to_policy_input(
+                        observation,
+                        task_description,
+                        args.resize_size,
+                    )
                     current_images = _small_images(element)
                     current_state = _normalise_state(element["observation/state"], norm_stats)
                     if mode == "matched_diff_h10":
@@ -634,8 +634,28 @@ def _run_episode(
                     action_queue.extend(corrected_actions)
                     cache = None
                 else:
+                    element = base_eval._observation_to_policy_input(
+                        observation,
+                        task_description,
+                        args.resize_size,
+                    )
                     policy_seed = args.seed + task_id * 1_000_000 + episode_idx * 10_000 + step
-                    export_cache = mode in CORRECTOR_MODES
+                    matched_diff_midpoint_control_step = (
+                        step - args.num_steps_wait + ANCHOR_STEPS
+                    )
+                    matched_diff_in_window = (
+                        mode == "matched_diff_h10"
+                        and matched_diff_midpoint_control_step
+                        >= args.matched_diff_min_control_step
+                        and (
+                            args.matched_diff_max_control_step is None
+                            or matched_diff_midpoint_control_step
+                            < args.matched_diff_max_control_step
+                        )
+                    )
+                    export_cache = (
+                        mode == "corrector_h10" or matched_diff_in_window
+                    )
                     result, timing = _full_request(
                         client,
                         element,
@@ -651,11 +671,15 @@ def _run_episode(
                         if action_chunk.shape[0] < ANCHOR_STEPS:
                             raise ValueError(f"Policy returned too few actions: {action_chunk.shape}.")
                         action_queue.extend(action_chunk[:ANCHOR_STEPS, :ACTION_DIM])
-                    elif mode == "stale_h10":
+                    elif mode == "stale_h10" or (
+                        mode == "matched_diff_h10" and not export_cache
+                    ):
                         required = ANCHOR_STEPS + CORRECTED_STEPS
                         if action_chunk.shape[0] < required:
                             raise ValueError(f"Policy returned too few actions: {action_chunk.shape}.")
                         action_queue.extend(action_chunk[:required, :ACTION_DIM])
+                        if mode == "matched_diff_h10":
+                            matched_diff_gate_skipped_calls += 1
                     else:
                         if norm_stats is None:
                             raise RuntimeError("Corrector mode requires norm stats.")
