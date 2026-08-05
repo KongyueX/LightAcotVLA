@@ -1037,6 +1037,74 @@ class ACOT_VLA(_model.BaseModel):
         velocity = self.action_out_proj(suffix_out[:, -self.action_horizon :])
         return action_noise - velocity
 
+    def _coarse_velocity_at_time(
+        self,
+        prefix_state: dict[str, Any],
+        coarse_x_t: jax.Array,
+        time: jax.Array,
+    ) -> jax.Array:
+        """Evaluate the coarse flow field at an explicit state and time."""
+
+        if not self.adopt_explicit_action_reasoner:
+            raise ValueError("Coarse flow evaluation requires the explicit action reasoner.")
+        observation = prefix_state["observation"]
+        prefix_mask = prefix_state["prefix_mask"]
+        kv_cache = prefix_state["kv_cache"]
+
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+            observation,
+            coarse_x_t,
+            time,
+            suf_type="reasoner",
+        )
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+        full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+        positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+        (_, suffix_out, _), _ = self.PaliGemma.llm(
+            [None, suffix_tokens, None],
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=kv_cache,
+            adarms_cond=[None, adarms_cond, None],
+        )
+        return self.coarse_action_out_proj(suffix_out[:, -self.coarse_action_horizon :])
+
+    def _action_velocity_at_time(
+        self,
+        prefix_state: dict[str, Any],
+        action_x_t: jax.Array,
+        time: jax.Array,
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+    ) -> jax.Array:
+        """Evaluate the final-action flow field at an explicit state and time."""
+
+        observation = prefix_state["observation"]
+        prefix_mask = prefix_state["prefix_mask"]
+        kv_cache = prefix_state["kv_cache"]
+
+        suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
+            observation,
+            action_x_t,
+            time,
+            explicit_action_reason=explicit_action_reason,
+            implicit_action_reason=implicit_action_reason,
+            suf_type="expert",
+        )
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_tokens.shape[1])
+        full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+        positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+        (_, _, suffix_out), _ = self.PaliGemma.llm(
+            [None, None, suffix_tokens],
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=kv_cache,
+            adarms_cond=[None, None, adarms_cond],
+        )
+        return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
     def compute_endpoint_distillation_loss(
         self,
         observation: _model.Observation,
@@ -1052,26 +1120,47 @@ class ACOT_VLA(_model.BaseModel):
         coarse_loss_weight: float = 1.0,
         final_loss_weight: float = 1.0,
         ir_loss_weight: float = 0.0,
+        multi_time_flow_loss_weight: float = 0.0,
+        multi_time_response_loss_weight: float = 0.0,
+        multi_time_timestep: float = 0.5,
         compute_ir_metrics: bool = False,
+        compute_multi_time_metrics: bool = False,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         """Distill ten-step teacher endpoints into the existing flow branches.
 
         B6-lite uses the clean coarse/final endpoint terms. IR-lite adds a
         response-alignment term: changing EAR while holding observation, IAR,
         and final-action noise fixed must induce the same final-action delta in
-        student and teacher.
+        student and teacher. Optional multi-time terms retain the endpoint loss
+        at t=1 and additionally supervise the flow and intervention response at
+        a fixed intermediate time; their default zero weights preserve the
+        original endpoint objective.
         """
 
         if stage not in {"coarse", "final", "dual"}:
             raise ValueError(f"stage must be coarse, final, or dual; got {stage!r}.")
         if ir_loss_weight < 0:
             raise ValueError("ir_loss_weight must be non-negative.")
+        if multi_time_flow_loss_weight < 0 or multi_time_response_loss_weight < 0:
+            raise ValueError("Multi-time loss weights must be non-negative.")
+        if not 0.0 < multi_time_timestep < 1.0:
+            raise ValueError("multi_time_timestep must be in (0, 1).")
+        if multi_time_response_loss_weight > 0 and multi_time_flow_loss_weight <= 0:
+            raise ValueError("Multi-time response loss requires a positive multi-time flow loss weight.")
+        if multi_time_response_loss_weight > 0 and stage == "coarse":
+            raise ValueError("Multi-time response alignment acts on final actions.")
         if not self.adopt_explicit_action_reasoner:
             raise ValueError("Endpoint distillation requires adopt_explicit_action_reasoner=True.")
         need_final = stage in {"final", "dual"}
         need_coarse_prediction = stage in {"coarse", "dual"} or use_student_coarse
         need_ir = need_final and (ir_loss_weight > 0 or compute_ir_metrics)
-        if need_ir and (intervention_coarse is None or teacher_intervention_actions is None):
+        need_multi_time_flow = multi_time_flow_loss_weight > 0 or compute_multi_time_metrics
+        need_multi_time_response = need_final and (
+            multi_time_response_loss_weight > 0 or compute_multi_time_metrics
+        )
+        if (need_ir or need_multi_time_response) and (
+            intervention_coarse is None or teacher_intervention_actions is None
+        ):
             raise ValueError("IR loss/metrics require intervention coarse and teacher action targets.")
 
         # Teacher endpoints were exported with inference preprocessing. Using
@@ -1095,6 +1184,32 @@ class ACOT_VLA(_model.BaseModel):
             metrics["coarse_mse"] = coarse_mse
             metrics["coarse_rmse"] = jnp.sqrt(coarse_mse)
 
+            if need_multi_time_flow:
+                teacher_coarse_float = teacher_coarse.astype(coarse_noise.dtype)
+                multi_time = jnp.full(
+                    (coarse_noise.shape[0],),
+                    multi_time_timestep,
+                    dtype=jnp.float32,
+                )
+                expanded_time = multi_time[:, None, None].astype(coarse_noise.dtype)
+                coarse_x_t = (
+                    expanded_time * coarse_noise
+                    + (1.0 - expanded_time) * teacher_coarse_float
+                )
+                coarse_velocity = self._coarse_velocity_at_time(
+                    prefix_state,
+                    coarse_x_t,
+                    multi_time,
+                )
+                target_coarse_velocity = coarse_noise - teacher_coarse_float
+                multi_time_coarse_mse = jnp.mean(
+                    jnp.square(coarse_velocity - target_coarse_velocity)
+                )
+                if multi_time_flow_loss_weight > 0:
+                    total_loss = total_loss + multi_time_flow_loss_weight * multi_time_coarse_mse
+                metrics["multi_time_coarse_mse"] = multi_time_coarse_mse
+                metrics["multi_time_coarse_rmse"] = jnp.sqrt(multi_time_coarse_mse)
+
         if need_final:
             explicit_action_reason = teacher_coarse
             if use_student_coarse:
@@ -1111,6 +1226,90 @@ class ACOT_VLA(_model.BaseModel):
             total_loss = total_loss + final_loss_weight * final_mse
             metrics["final_mse"] = final_mse
             metrics["final_rmse"] = jnp.sqrt(final_mse)
+
+            multi_time_action_velocity = None
+            multi_time_target_velocity = None
+            multi_time = None
+            if need_multi_time_flow or need_multi_time_response:
+                teacher_actions_float = teacher_actions.astype(action_noise.dtype)
+                multi_time = jnp.full(
+                    (action_noise.shape[0],),
+                    multi_time_timestep,
+                    dtype=jnp.float32,
+                )
+                expanded_time = multi_time[:, None, None].astype(action_noise.dtype)
+                action_x_t = (
+                    expanded_time * action_noise
+                    + (1.0 - expanded_time) * teacher_actions_float
+                )
+                multi_time_action_velocity = self._action_velocity_at_time(
+                    prefix_state,
+                    action_x_t,
+                    multi_time,
+                    explicit_action_reason,
+                    implicit_action_reason,
+                )
+                multi_time_target_velocity = action_noise - teacher_actions_float
+                multi_time_final_mse = jnp.mean(
+                    jnp.square(multi_time_action_velocity - multi_time_target_velocity)
+                )
+                if multi_time_flow_loss_weight > 0:
+                    total_loss = total_loss + multi_time_flow_loss_weight * multi_time_final_mse
+                metrics["multi_time_final_mse"] = multi_time_final_mse
+                metrics["multi_time_final_rmse"] = jnp.sqrt(multi_time_final_mse)
+
+            if need_multi_time_response:
+                assert intervention_coarse is not None
+                assert teacher_intervention_actions is not None
+                assert multi_time is not None
+                assert multi_time_action_velocity is not None
+                assert multi_time_target_velocity is not None
+                intervention_actions_float = teacher_intervention_actions.astype(action_noise.dtype)
+                expanded_time = multi_time[:, None, None].astype(action_noise.dtype)
+                intervention_x_t = (
+                    expanded_time * action_noise
+                    + (1.0 - expanded_time) * intervention_actions_float
+                )
+                intervention_velocity = self._action_velocity_at_time(
+                    prefix_state,
+                    intervention_x_t,
+                    multi_time,
+                    intervention_coarse,
+                    implicit_action_reason,
+                )
+                target_intervention_velocity = action_noise - intervention_actions_float
+                student_velocity_delta = intervention_velocity - multi_time_action_velocity
+                teacher_velocity_delta = target_intervention_velocity - multi_time_target_velocity
+                velocity_delta_error = student_velocity_delta - teacher_velocity_delta
+                multi_time_response_mse = jnp.mean(jnp.square(velocity_delta_error))
+                if multi_time_response_loss_weight > 0:
+                    total_loss = (
+                        total_loss
+                        + multi_time_response_loss_weight * multi_time_response_mse
+                    )
+
+                flattened_student_velocity = student_velocity_delta.reshape(
+                    (student_velocity_delta.shape[0], -1)
+                )
+                flattened_teacher_velocity = teacher_velocity_delta.reshape(
+                    (teacher_velocity_delta.shape[0], -1)
+                )
+                velocity_numerator = jnp.sum(
+                    flattened_student_velocity * flattened_teacher_velocity,
+                    axis=-1,
+                )
+                student_velocity_norm = jnp.sqrt(
+                    jnp.sum(jnp.square(flattened_student_velocity), axis=-1) + 1e-12
+                )
+                teacher_velocity_norm = jnp.sqrt(
+                    jnp.sum(jnp.square(flattened_teacher_velocity), axis=-1) + 1e-12
+                )
+                metrics["multi_time_response_mse"] = multi_time_response_mse
+                metrics["multi_time_response_rmse"] = jnp.sqrt(multi_time_response_mse)
+                metrics["multi_time_response_cosine"] = jnp.mean(
+                    velocity_numerator
+                    / jnp.maximum(student_velocity_norm * teacher_velocity_norm, 1e-8)
+                )
 
             if need_ir:
                 assert intervention_coarse is not None
@@ -1188,6 +1387,110 @@ class ACOT_VLA(_model.BaseModel):
                 )
             return result
         return expert_outputs
+
+    def sample_actions_joint_coupled(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        num_steps: int | at.Int[at.Array, ""] = 1,
+    ) -> dict[str, jax.Array]:
+        """Jointly update EAR and final actions with one suffix LLM call per round.
+
+        The suffix token order is ``[coarse, action]``.  A block-causal mask
+        lets action tokens attend to the current coarse-flow tokens while
+        preventing coarse tokens from attending to action tokens.  Both
+        branches are then advanced simultaneously from the velocities produced
+        by that single call.  This is an opt-in prototype; ``sample_actions``
+        keeps the original sequential sampler unchanged.
+        """
+
+        if not self.adopt_explicit_action_reasoner:
+            raise ValueError("Joint coupled sampling requires adopt_explicit_action_reasoner=True.")
+
+        prefix_state = self.sample_actions_profile_prefix(rng, observation)
+        implicit_action_reason = self.sample_actions_profile_implicit(prefix_state)[
+            "implicit_action_reason"
+        ]
+        observation = prefix_state["observation"]
+        prefix_tokens = prefix_state["prefix_tokens"]
+        prefix_mask = prefix_state["prefix_mask"]
+        kv_cache = prefix_state["kv_cache"]
+        batch_size = observation.state.shape[0]
+        coupled_steps = jnp.maximum(jnp.asarray(num_steps, dtype=jnp.float32), 1.0)
+        coupled_dt = -1.0 / coupled_steps
+
+        def step_coupled(carry):
+            coarse_x_t, action_x_t, time = carry
+            batch_time = jnp.broadcast_to(time, (batch_size,))
+            coarse_tokens, coarse_mask, coarse_ar_mask, coarse_adarms_cond = self.embed_suffix(
+                observation,
+                coarse_x_t,
+                batch_time,
+                suf_type="reasoner",
+            )
+            action_tokens, action_mask, action_ar_mask, action_adarms_cond = self.embed_suffix(
+                observation,
+                action_x_t,
+                batch_time,
+                explicit_action_reason=coarse_x_t,
+                implicit_action_reason=implicit_action_reason,
+                suf_type="expert",
+            )
+
+            # make_attn_mask interprets each True entry as a new causal block.
+            # With coarse before action, this is block triangular: C cannot see
+            # A, while A can see all current C tokens as well as its own block.
+            suffix_mask = jnp.concatenate([coarse_mask, action_mask], axis=1)
+            suffix_ar_mask = jnp.concatenate([coarse_ar_mask, action_ar_mask], axis=0)
+            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_mask.shape[1])
+            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+            assert full_attn_mask.shape == (
+                batch_size,
+                suffix_mask.shape[1],
+                prefix_tokens.shape[1] + suffix_mask.shape[1],
+            )
+            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
+
+            (_, coarse_out, action_out), _ = self.PaliGemma.llm(
+                [None, coarse_tokens, action_tokens],
+                mask=full_attn_mask,
+                positions=positions,
+                kv_cache=kv_cache,
+                adarms_cond=[None, coarse_adarms_cond, action_adarms_cond],
+            )
+            coarse_velocity = self.coarse_action_out_proj(
+                coarse_out[:, -self.coarse_action_horizon :]
+            )
+            action_velocity = self.action_out_proj(action_out[:, -self.action_horizon :])
+            return (
+                coarse_x_t + coupled_dt * coarse_velocity,
+                action_x_t + coupled_dt * action_velocity,
+                time + coupled_dt,
+            )
+
+        def cond_coupled(carry):
+            _, _, time = carry
+            return time >= -coupled_dt / 2
+
+        coarse_actions, actions, _ = jax.lax.while_loop(
+            cond_coupled,
+            step_coupled,
+            (prefix_state["ref_action_noise"], prefix_state["expert_action_noise"], 1.0),
+        )
+        result = {
+            "actions": actions,
+            "coarse_actions": coarse_actions,
+            "action_cot_denoising_steps": jnp.broadcast_to(coupled_steps, (batch_size,)),
+            "joint_coupled_sampler": jnp.ones((batch_size,), dtype=jnp.bool_),
+        }
+        if self.execution_horizon_predictor_enabled:
+            result["execution_horizon_prefix_feature"] = jnp.asarray(
+                self._pool_prefix(prefix_state["prefix_out"], prefix_mask),
+                dtype=jnp.float32,
+            )
+        return result
 
     def _compute_prefix_state(self, observation: _model.Observation) -> dict[str, Any]:
         """Run preprocessing and the VLM prefix exactly once."""

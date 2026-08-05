@@ -55,8 +55,11 @@ class Policy(BasePolicy):
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
         self._sample_actions_profile_expert = None
+        self._sample_actions_joint_coupled = None
         self._sample_actions_batched_mc = None
         self._predict_execution_horizon = None
+        if hasattr(model, "sample_actions_joint_coupled"):
+            self._sample_actions_joint_coupled = nnx_utils.module_jit(model.sample_actions_joint_coupled)
         if hasattr(model, "sample_actions_batched_mc"):
             self._sample_actions_batched_mc = nnx_utils.module_jit(model.sample_actions_batched_mc)
         if getattr(model, "execution_horizon_predictor_enabled", False):
@@ -86,6 +89,9 @@ class Policy(BasePolicy):
         export_acot_cache = _as_bool(inputs.pop("export_acot_cache", False))
         action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
+        joint_coupled_sampler = _as_bool(
+            inputs.pop("joint_coupled_sampler", self._sample_kwargs.get("joint_coupled_sampler", False))
+        )
         batched_mc_samples = int(np.asarray(inputs.pop("batched_mc_samples", 0)).item())
         run_execution_horizon_predictor = _as_bool(inputs.pop("run_execution_horizon_predictor", False))
         previous_actions = inputs.pop("execution_horizon_previous_actions", None)
@@ -103,6 +109,7 @@ class Policy(BasePolicy):
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
+            override_inputs.pop("joint_coupled_sampler", None)
             override_inputs.pop("batched_mc_samples", None)
             override_inputs.pop("run_execution_horizon_predictor", None)
             override_inputs.pop("execution_horizon_previous_actions", None)
@@ -149,7 +156,11 @@ class Policy(BasePolicy):
             # transforms preserve the exact normalized predictor input.
             "execution_horizon_state_normalized": inputs["state"],
         }
-        sample_kwargs = self._sample_kwargs
+        # joint_coupled_sampler selects a separate jitted entrypoint and must
+        # not be forwarded to the legacy sample_actions signature.
+        sample_kwargs = {
+            key: value for key, value in self._sample_kwargs.items() if key != "joint_coupled_sampler"
+        }
         if "coarse_actions_override" in inputs:
             sample_kwargs = {
                 **sample_kwargs,
@@ -172,6 +183,10 @@ class Policy(BasePolicy):
             }
         observation = _model.Observation.from_dict(inputs)
         detailed_timing = {}
+        if joint_coupled_sampler and batched_mc_samples:
+            raise ValueError("joint_coupled_sampler cannot be combined with batched_mc_samples.")
+        if joint_coupled_sampler and export_acot_cache:
+            raise ValueError("joint_coupled_sampler does not yet support export_acot_cache.")
         if batched_mc_samples:
             if self._sample_actions_batched_mc is None:
                 raise ValueError("The loaded policy does not implement a batched MC teacher.")
@@ -186,6 +201,32 @@ class Policy(BasePolicy):
             )
             _block_until_ready(result)
             detailed_timing["batched_mc_teacher_ms"] = (time.monotonic() - teacher_start) * 1000
+        elif joint_coupled_sampler:
+            if self._sample_actions_joint_coupled is None:
+                raise ValueError("The loaded policy does not implement joint coupled Action-CoT sampling.")
+            if "explicit_action_reason_override" in sample_kwargs:
+                raise ValueError("joint_coupled_sampler cannot use coarse_actions_override.")
+            if "explicit_action_skip_segment" in sample_kwargs:
+                raise ValueError("joint_coupled_sampler cannot use action_cot_skip_segment.")
+            if _as_bool(sample_kwargs.get("dynamic_denoising_steps", False)):
+                raise ValueError("joint_coupled_sampler does not support dynamic denoising steps.")
+            coupled_steps = int(np.asarray(sample_kwargs.get("num_steps", 10)).item())
+            coarse_steps = int(
+                np.asarray(sample_kwargs.get("action_cot_denoising_steps", coupled_steps)).item()
+            )
+            if coupled_steps <= 0 or coarse_steps != coupled_steps:
+                raise ValueError(
+                    "joint_coupled_sampler requires equal positive coarse and final denoising steps."
+                )
+            stage_start = time.monotonic()
+            result = self._sample_actions_joint_coupled(
+                sample_rng,
+                observation,
+                num_steps=coupled_steps,
+            )
+            if profile_policy_timing:
+                _block_until_ready(result)
+                detailed_timing["coupled_action_cot_ms"] = (time.monotonic() - stage_start) * 1000
         elif (profile_policy_timing or export_acot_cache) and self._can_profile_sample_actions():
             result, detailed_timing = self._profile_sample_actions(
                 sample_rng,
@@ -261,6 +302,7 @@ class Policy(BasePolicy):
                     "implicit_action_reasoner_ms",
                     "coarse_action_expert_ms",
                     "action_expert_ms",
+                    "coupled_action_cot_ms",
                     "batched_mc_teacher_ms",
                     "execution_horizon_predictor_ms",
                 )

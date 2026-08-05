@@ -95,6 +95,9 @@ class Args:
     coarse_loss_weight: float = 1.0
     final_loss_weight: float = 1.0
     ir_loss_weight: float = 0.5
+    multi_time_flow_loss_weight: float = 0.0
+    multi_time_response_loss_weight: float = 0.0
+    multi_time_timestep: float = 0.5
     use_student_coarse: bool = False
     fsdp_devices: int = 1
     overwrite: bool = False
@@ -165,14 +168,29 @@ def _validate_args(args: Args) -> None:
         raise ValueError("--validation-fraction must be in (0, 0.5).")
     if args.learning_rate <= 0 or args.decay_learning_rate < 0:
         raise ValueError("Learning rates must be non-negative and peak learning rate must be positive.")
-    if min(args.coarse_loss_weight, args.final_loss_weight, args.ir_loss_weight) < 0:
+    if min(
+        args.coarse_loss_weight,
+        args.final_loss_weight,
+        args.ir_loss_weight,
+        args.multi_time_flow_loss_weight,
+        args.multi_time_response_loss_weight,
+    ) < 0:
         raise ValueError("Loss weights must be non-negative.")
     if args.variant == "ir" and args.ir_loss_weight == 0:
         raise ValueError("IR variant requires a positive --ir-loss-weight.")
+    if not 0 < args.multi_time_timestep < 1:
+        raise ValueError("--multi-time-timestep must be in (0, 1).")
+    if args.multi_time_response_loss_weight > 0 and args.multi_time_flow_loss_weight <= 0:
+        raise ValueError(
+            "--multi-time-response-loss-weight requires a positive --multi-time-flow-loss-weight."
+        )
+    if args.multi_time_response_loss_weight > 0 and args.stage == "coarse":
+        raise ValueError("Multi-time response alignment acts on final actions; use final or dual stage.")
 
 
 def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
-    if args.variant != "ir" or args.allow_failed_audit:
+    needs_response_audit = args.variant == "ir" or args.multi_time_response_loss_weight > 0
+    if not needs_response_audit or args.allow_failed_audit:
         return
     summaries = []
     if args.causal_audit_summary is not None:
@@ -194,7 +212,8 @@ def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
         )
     if not summaries:
         raise ValueError(
-            "IR training requires a causal audit summary with ear_causal_audit_pass=true. "
+            "Interventional-response training requires a causal audit summary with "
+            "ear_causal_audit_pass=true. "
             "Pass --causal-audit-summary explicitly, or use --allow-failed-audit only for a diagnostic run."
         )
 
@@ -370,6 +389,9 @@ def _endpoint_train_step(
     coarse_loss_weight: float,
     final_loss_weight: float,
     ir_loss_weight: float,
+    multi_time_flow_loss_weight: float,
+    multi_time_response_loss_weight: float,
+    multi_time_timestep: float,
 ) -> tuple[training_utils.TrainState, dict[str, jax.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -388,7 +410,11 @@ def _endpoint_train_step(
             coarse_loss_weight=coarse_loss_weight,
             final_loss_weight=final_loss_weight,
             ir_loss_weight=ir_loss_weight,
+            multi_time_flow_loss_weight=multi_time_flow_loss_weight,
+            multi_time_response_loss_weight=multi_time_response_loss_weight,
+            multi_time_timestep=multi_time_timestep,
             compute_ir_metrics=False,
+            compute_multi_time_metrics=False,
         )
 
     diff_state = nnx.DiffState(0, trainable_filter)
@@ -419,6 +445,9 @@ def _endpoint_validation_step(
     coarse_loss_weight: float,
     final_loss_weight: float,
     ir_loss_weight: float,
+    multi_time_flow_loss_weight: float,
+    multi_time_response_loss_weight: float,
+    multi_time_timestep: float,
 ) -> dict[str, jax.Array]:
     model = nnx.merge(state.model_def, state.params)
     model.eval()
@@ -435,7 +464,13 @@ def _endpoint_validation_step(
         coarse_loss_weight=coarse_loss_weight,
         final_loss_weight=final_loss_weight,
         ir_loss_weight=ir_loss_weight,
+        multi_time_flow_loss_weight=multi_time_flow_loss_weight,
+        multi_time_response_loss_weight=multi_time_response_loss_weight,
+        multi_time_timestep=multi_time_timestep,
         compute_ir_metrics=stage in {"final", "dual"},
+        compute_multi_time_metrics=(
+            multi_time_flow_loss_weight > 0 or multi_time_response_loss_weight > 0
+        ),
     )
     return metrics
 
@@ -573,6 +608,9 @@ def main(args: Args) -> None:
             coarse_loss_weight=args.coarse_loss_weight,
             final_loss_weight=args.final_loss_weight,
             ir_loss_weight=ir_weight,
+            multi_time_flow_loss_weight=args.multi_time_flow_loss_weight,
+            multi_time_response_loss_weight=args.multi_time_response_loss_weight,
+            multi_time_timestep=args.multi_time_timestep,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=(state_sharding, replicated_sharding),
@@ -586,6 +624,9 @@ def main(args: Args) -> None:
             coarse_loss_weight=args.coarse_loss_weight,
             final_loss_weight=args.final_loss_weight,
             ir_loss_weight=ir_weight,
+            multi_time_flow_loss_weight=args.multi_time_flow_loss_weight,
+            multi_time_response_loss_weight=args.multi_time_response_loss_weight,
+            multi_time_timestep=args.multi_time_timestep,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=replicated_sharding,
@@ -683,6 +724,9 @@ def main(args: Args) -> None:
         "variant": args.variant,
         "resume_sidecar_params": args.resume_sidecar_params,
         "causal_audit_summary": args.causal_audit_summary,
+        "multi_time_flow_loss_weight": args.multi_time_flow_loss_weight,
+        "multi_time_response_loss_weight": args.multi_time_response_loss_weight,
+        "multi_time_timestep": args.multi_time_timestep,
         "train_records": int(train_indices.size),
         "validation_records": int(validation_indices.size),
         "completed_steps": args.train_steps,

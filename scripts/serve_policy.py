@@ -35,6 +35,8 @@ class Checkpoint:
     execution_horizon_predictor_params: str | None = None
     # Optional one-step EAR/final endpoint-student delta checkpoint.
     acot_endpoint_student_params: str | None = None
+    # Opt in to the joint coupled Action-CoT prototype sampler.
+    joint_coupled_sampler: bool = False
 
 
 @dataclasses.dataclass
@@ -118,6 +120,9 @@ def create_policy(args: Args) -> _policy.Policy:
                 default_prompt=args.default_prompt,
                 execution_horizon_predictor_params=args.policy.execution_horizon_predictor_params,
                 acot_endpoint_student_params=args.policy.acot_endpoint_student_params,
+                sample_kwargs={"joint_coupled_sampler": True}
+                if args.policy.joint_coupled_sampler
+                else None,
             )
         case Default():
             return create_default_policy(args.env, default_prompt=args.default_prompt)
