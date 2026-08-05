@@ -1092,17 +1092,20 @@ class Policy(BasePolicy):
                 batch_size = action_nfe1.shape[0]
                 expert_outputs.update(
                     {
-                        "selective_gripper_triggered": jnp.full(
-                            (batch_size,), trigger, dtype=jnp.bool_
+                        # Keep host-side branch diagnostics on the host. Four
+                        # tiny device arrays would otherwise cause four extra
+                        # synchronizations during the generic tree transfer.
+                        "selective_gripper_triggered": np.full(
+                            (batch_size,), trigger, dtype=np.bool_
                         ),
-                        "selective_gripper_trigger_min_abs": jnp.full(
-                            (batch_size,), trigger_min_abs, dtype=jnp.float32
+                        "selective_gripper_trigger_min_abs": np.full(
+                            (batch_size,), trigger_min_abs, dtype=np.float32
                         ),
-                        "selective_gripper_trigger_sign_transition": jnp.full(
-                            (batch_size,), trigger_sign_transition, dtype=jnp.bool_
+                        "selective_gripper_trigger_sign_transition": np.full(
+                            (batch_size,), trigger_sign_transition, dtype=np.bool_
                         ),
-                        "selective_gripper_tau": jnp.full(
-                            (batch_size,), selective_gripper_tau, dtype=jnp.float32
+                        "selective_gripper_tau": np.full(
+                            (batch_size,), selective_gripper_tau, dtype=np.float32
                         ),
                     }
                 )
