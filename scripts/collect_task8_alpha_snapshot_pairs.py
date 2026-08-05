@@ -18,6 +18,7 @@ labels without recollecting the trajectory.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import pathlib
@@ -44,12 +45,23 @@ ACTION_DIM = 7
 IMAGE_SIZE = 64
 
 
+@dataclasses.dataclass(frozen=True)
+class LiveRoot:
+    episode_id: int
+    decision_step: int
+    root_seed: int
+    call_index: int
+    snapshot: state_branches.CanonicalSimulatorSnapshot
+    router_score: float
+    router_alpha: float
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dataset",
         action="append",
-        required=True,
+        default=[],
         help="Counterfactual dataset root containing saved physics_state; repeat as needed.",
     )
     parser.add_argument("--output-dir", required=True)
@@ -64,6 +76,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=1)
     parser.add_argument("--alternative-alpha", type=float, default=0.05)
+    parser.add_argument(
+        "--live-on-policy",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Collect canonical roots from a live compact-router rollout instead of --dataset. "
+            "The candidate alpha=0/.05 first chunk is followed by that same compact router, "
+            "yielding Q^pi terminal labels without H1-H10 branch collection."
+        ),
+    )
+    parser.add_argument(
+        "--live-roots-per-episode",
+        type=int,
+        default=3,
+        help="Number of evenly-spaced early/middle/late roots retained per live episode.",
+    )
     parser.add_argument(
         "--terminal",
         action=argparse.BooleanOptionalAction,
@@ -91,6 +119,12 @@ def _validate_args(args: argparse.Namespace) -> None:
         )
     if args.max_roots < 0:
         raise ValueError("--max-roots must be non-negative; zero means all matching roots.")
+    if args.live_roots_per_episode <= 0:
+        raise ValueError("--live-roots-per-episode must be positive.")
+    if args.live_on_policy and args.dataset:
+        raise ValueError("--live-on-policy and --dataset are mutually exclusive.")
+    if not args.live_on_policy and not args.dataset:
+        raise ValueError("At least one --dataset is required unless --live-on-policy is enabled.")
     if args.seed < 0 or args.num_steps_wait < 0:
         raise ValueError("--seed and --num-steps-wait must be non-negative.")
     if args.resize_size <= 0 or args.action_cot_denoising_steps <= 0:
@@ -157,18 +191,38 @@ def _request(
     alpha: float,
     args: argparse.Namespace,
     export_cache: bool = False,
+    compact_router: bool = False,
+    absolute_step: int | None = None,
+    profile_policy_timing: bool = False,
+    force_final_one_step: bool = False,
 ) -> dict[str, Any]:
     request = {
         **element,
         "policy_seed": np.asarray(policy_seed, dtype=np.int64),
-        "profile_policy_timing": np.asarray(False, dtype=np.bool_),
+        "profile_policy_timing": np.asarray(profile_policy_timing, dtype=np.bool_),
         "action_cot_denoising_steps": np.asarray(
             args.action_cot_denoising_steps,
             dtype=np.int32,
         ),
     }
-    if alpha > 0.0:
+    if compact_router:
+        if absolute_step is None or absolute_step < 0:
+            raise ValueError("compact_router requests require a non-negative absolute_step.")
+        if alpha != 0.0:
+            raise ValueError("compact_router owns alpha; do not also pass a fixed alpha.")
+        request.update(
+            {
+                "action_cot_compact_alpha_router": np.asarray(True, dtype=np.bool_),
+                "action_cot_absolute_decision_step": np.asarray(
+                    absolute_step,
+                    dtype=np.int32,
+                ),
+            }
+        )
+    elif alpha > 0.0:
         request["action_cot_final_time_warp_alpha"] = np.asarray(alpha, dtype=np.float32)
+    if force_final_one_step:
+        request["action_cot_final_denoising_steps"] = np.asarray(1, dtype=np.int32)
     if export_cache:
         request["export_acot_cache"] = np.asarray(True, dtype=np.bool_)
     started = time.perf_counter()
@@ -200,9 +254,20 @@ def _padded_actions(actions: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
     return padded, valid
 
 
+def _restore_branch_snapshot(
+    env: Any,
+    snapshot: horizon_collector.SimulatorSnapshot
+    | state_branches.CanonicalSimulatorSnapshot,
+) -> dict[str, Any]:
+    if isinstance(snapshot, state_branches.CanonicalSimulatorSnapshot):
+        return state_branches._restore_canonical_snapshot(env, snapshot)
+    return horizon_collector._restore_snapshot(env, snapshot)
+
+
 def _run_arm(
     env: Any,
-    snapshot: horizon_collector.SimulatorSnapshot,
+    snapshot: horizon_collector.SimulatorSnapshot
+    | state_branches.CanonicalSimulatorSnapshot,
     initial_actions: np.ndarray,
     *,
     root_seed: int,
@@ -211,8 +276,12 @@ def _run_arm(
     task_description: str,
     args: argparse.Namespace,
     client: websocket_policy.WebsocketClientPolicy,
+    continuation_policy: str = "alpha0",
+    profile_policy_timing: bool = False,
 ) -> dict[str, Any]:
-    observation = horizon_collector._restore_snapshot(env, snapshot)
+    if continuation_policy not in {"alpha0", "current_router"}:
+        raise ValueError(f"Unsupported continuation_policy: {continuation_policy!r}.")
+    observation = _restore_branch_snapshot(env, snapshot)
     before = progress_collector._progress(env, observation)
     observation, done, executed = state_branches._step_actions(
         env,
@@ -248,6 +317,11 @@ def _run_arm(
             policy_seed=policy_seed,
             alpha=0.0,
             args=args,
+            compact_router=continuation_policy == "current_router",
+            absolute_step=(
+                absolute_step if continuation_policy == "current_router" else None
+            ),
+            profile_policy_timing=profile_policy_timing,
         )
         actions = np.asarray(result["actions"], dtype=np.float32)[:ACTION_HORIZON, :ACTION_DIM]
         if continuation_calls == 0:
@@ -625,6 +699,269 @@ def _collect_root(
         libero_eval._safe_close_env(env)
 
 
+def _collect_live_pair(
+    *,
+    client: websocket_policy.WebsocketClientPolicy,
+    env: Any,
+    task_description: str,
+    root: LiveRoot,
+    episode_step_limit: int,
+    behavior_success: bool,
+    behavior_calls: int,
+    args: argparse.Namespace,
+    output_path: pathlib.Path,
+    physics_key: str,
+) -> dict[str, Any]:
+    """Label one canonical live root with two first actions and shared pi continuation."""
+
+    observation = state_branches._restore_canonical_snapshot(env, root.snapshot)
+    element = _policy_input(observation, task_description, args)
+    alpha0_result = _request(
+        client,
+        element,
+        policy_seed=root.root_seed,
+        alpha=0.0,
+        args=args,
+        export_cache=True,
+        profile_policy_timing=True,
+        force_final_one_step=True,
+    )
+    alternative_result = _request(
+        client,
+        element,
+        policy_seed=root.root_seed,
+        alpha=args.alternative_alpha,
+        args=args,
+        profile_policy_timing=True,
+        force_final_one_step=True,
+    )
+    required_cache = ("acot_prefix_feature", "acot_iar_tokens", "coarse_actions")
+    missing = [name for name in required_cache if name not in alpha0_result]
+    if missing:
+        raise KeyError(f"Alpha=0 response is missing deployable gate inputs: {missing}.")
+    if "coarse_actions" not in alternative_result:
+        raise KeyError("Alternative-alpha response is missing coarse_actions.")
+
+    alpha0 = _run_arm(
+        env,
+        root.snapshot,
+        alpha0_result["actions"],
+        root_seed=root.root_seed,
+        root_step=root.decision_step,
+        episode_step_limit=episode_step_limit,
+        task_description=task_description,
+        args=args,
+        client=client,
+        continuation_policy="current_router",
+        profile_policy_timing=True,
+    )
+    alternative = _run_arm(
+        env,
+        root.snapshot,
+        alternative_result["actions"],
+        root_seed=root.root_seed,
+        root_step=root.decision_step,
+        episode_step_limit=episode_step_limit,
+        task_description=task_description,
+        args=args,
+        client=client,
+        continuation_policy="current_router",
+        profile_policy_timing=True,
+    )
+    preference_label, preference_reason = _preference(
+        alpha0,
+        alternative,
+        terminal=args.terminal,
+    )
+    arrays = {
+        "episode_id": np.asarray([root.episode_id], dtype=np.int32),
+        "decision_step": np.asarray([root.decision_step], dtype=np.int32),
+        "root_seed": np.asarray([root.root_seed], dtype=np.uint32),
+        "source_iteration": np.asarray([1], dtype=np.int16),
+        "physics_state": np.asarray(
+            [root.snapshot.simulator.physics_state],
+            dtype=np.float64,
+        ),
+    }
+    record = _record_arrays(
+        args=args,
+        arrays=arrays,
+        index=0,
+        physics_key=physics_key,
+        element=element,
+        alpha0_result=alpha0_result,
+        alternative_result=alternative_result,
+        alpha0=alpha0,
+        alternative=alternative,
+        preference_label=preference_label,
+        preference_reason=preference_reason,
+    )
+    record.update(
+        {
+            "behavior_policy": np.asarray("current_compact_alpha_router"),
+            "continuation_policy": np.asarray("current_compact_alpha_router"),
+            "behavior_call_index": np.asarray(root.call_index, dtype=np.int16),
+            "behavior_router_score": np.asarray(root.router_score, dtype=np.float32),
+            "behavior_router_selected_alpha": np.asarray(root.router_alpha, dtype=np.float32),
+            "behavior_rollout_success": np.asarray(behavior_success, dtype=np.bool_),
+            "behavior_rollout_calls": np.asarray(behavior_calls, dtype=np.int16),
+        }
+    )
+    progress_collector._write_npz_atomic(output_path, record)
+    return _index_row(output_path, output_path.parent.parent)
+
+
+def _live_root_indices(num_calls: int, roots_per_episode: int) -> list[int]:
+    if num_calls <= 0:
+        return []
+    count = min(num_calls, roots_per_episode)
+    return sorted(
+        set(
+            int(value)
+            for value in np.rint(np.linspace(0, num_calls - 1, num=count)).tolist()
+        )
+    )
+
+
+def _collect_live_episode(
+    *,
+    client: websocket_policy.WebsocketClientPolicy,
+    task_suite: Any,
+    episode_id: int,
+    args: argparse.Namespace,
+    root_dir: pathlib.Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    task = task_suite.get_task(TASK_ID)
+    initial_states = task_suite.get_task_init_states(TASK_ID)
+    env, task_description = libero_eval._get_libero_env(
+        task,
+        libero_eval.LIBERO_ENV_RESOLUTION,
+        args.seed,
+    )
+    try:
+        env.reset()
+        observation = env.set_init_state(initial_states[episode_id % len(initial_states)])
+        environment_horizon = libero_eval._env_horizon(env)
+        episode_step_limit = libero_eval._max_steps(args.task_suite_name) + args.num_steps_wait
+        if environment_horizon is not None:
+            episode_step_limit = min(episode_step_limit, environment_horizon)
+        step = 0
+        done = False
+        for _ in range(args.num_steps_wait):
+            observation, _, done, _ = env.step(libero_eval.LIBERO_DUMMY_ACTION)
+            step += 1
+            if done:
+                break
+
+        live_roots: list[LiveRoot] = []
+        while not done and not libero_eval._env_success(env) and step < episode_step_limit:
+            root_seed = state_branches.canonical_policy_seed(
+                args.seed,
+                TASK_ID,
+                episode_id,
+                step,
+            )
+            snapshot = state_branches._capture_canonical_snapshot(env)
+            element = _policy_input(observation, task_description, args)
+            result = _request(
+                client,
+                element,
+                policy_seed=root_seed,
+                alpha=0.0,
+                args=args,
+                compact_router=True,
+                absolute_step=step,
+                profile_policy_timing=True,
+            )
+            required = {
+                "compact_alpha_router_score",
+                "compact_alpha_router_selected_alpha",
+            }
+            missing = sorted(required.difference(result))
+            if missing:
+                raise KeyError(f"Compact-router behavior response is missing: {missing}.")
+            router_score = float(np.asarray(result["compact_alpha_router_score"]).item())
+            router_alpha = float(
+                np.asarray(result["compact_alpha_router_selected_alpha"]).item()
+            )
+            if not np.isfinite(router_score):
+                raise ValueError("Compact-router behavior score must be finite.")
+            if not (
+                np.isclose(router_alpha, 0.0)
+                or np.isclose(router_alpha, args.alternative_alpha)
+            ):
+                raise ValueError(f"Unexpected compact-router alpha: {router_alpha}.")
+            router_alpha = args.alternative_alpha if router_alpha > 0.0 else 0.0
+            live_roots.append(
+                LiveRoot(
+                    episode_id=episode_id,
+                    decision_step=step,
+                    root_seed=root_seed,
+                    call_index=len(live_roots),
+                    snapshot=snapshot,
+                    router_score=router_score,
+                    router_alpha=router_alpha,
+                )
+            )
+            actions = np.asarray(result["actions"], dtype=np.float32)[
+                :ACTION_HORIZON, :ACTION_DIM
+            ]
+            observation, done, executed = state_branches._step_actions(
+                env,
+                observation,
+                actions,
+            )
+            if not executed:
+                break
+            step += len(executed)
+
+        behavior_success = bool(libero_eval._env_success(env))
+        selected = [
+            live_roots[index]
+            for index in _live_root_indices(
+                len(live_roots),
+                args.live_roots_per_episode,
+            )
+        ]
+        rows: list[dict[str, Any]] = []
+        for root in selected:
+            physics_key = _physics_key(root.snapshot.simulator.physics_state)
+            output_path = _root_path(
+                root_dir,
+                episode_id,
+                root.decision_step,
+                physics_key,
+            )
+            row = _index_row(output_path, root_dir.parent) if output_path.exists() else None
+            if row is None or (args.terminal and not row["terminal_evaluated"]):
+                row = _collect_live_pair(
+                    client=client,
+                    env=env,
+                    task_description=task_description,
+                    root=root,
+                    episode_step_limit=episode_step_limit,
+                    behavior_success=behavior_success,
+                    behavior_calls=len(live_roots),
+                    args=args,
+                    output_path=output_path,
+                    physics_key=physics_key,
+                )
+            rows.append(row)
+        episode_row = {
+            "episode_id": episode_id,
+            "initial_state_id": episode_id % len(initial_states),
+            "success": behavior_success,
+            "behavior_calls": len(live_roots),
+            "final_environment_step": step,
+            "selected_root_steps": [root.decision_step for root in selected],
+            "selected_root_alphas": [root.router_alpha for root in selected],
+            "selected_root_scores": [root.router_score for root in selected],
+        }
+        return rows, episode_row
+    finally:
+        libero_eval._safe_close_env(env)
+
+
 def _summary(
     args: argparse.Namespace,
     records: Sequence[dict[str, Any]],
@@ -695,8 +1032,82 @@ def _summary(
     }
 
 
+def _main_live(args: argparse.Namespace) -> None:
+    output_dir = pathlib.Path(args.output_dir)
+    root_dir = output_dir / "roots"
+    root_dir.mkdir(parents=True, exist_ok=True)
+    records_path = output_dir / "records.jsonl"
+    episodes_path = output_dir / "behavior_episodes.jsonl"
+    summary_path = output_dir / "summary.json"
+    client = websocket_policy.WebsocketClientPolicy(
+        args.host,
+        args.port,
+        api_key=args.policy_api_key,
+        ping_interval=None,
+        ping_timeout=None,
+    )
+    task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
+    records: list[dict[str, Any]] = []
+    episodes: list[dict[str, Any]] = []
+    started = time.monotonic()
+    with (
+        records_path.open("w", encoding="utf-8") as records_writer,
+        episodes_path.open("w", encoding="utf-8") as episodes_writer,
+    ):
+        for episode_id in args.episode_ids:
+            episode_records, episode_row = _collect_live_episode(
+                client=client,
+                task_suite=task_suite,
+                episode_id=episode_id,
+                args=args,
+                root_dir=root_dir,
+            )
+            for row in episode_records:
+                records.append(row)
+                records_writer.write(json.dumps(row, sort_keys=True, allow_nan=False) + "\n")
+                records_writer.flush()
+                print(json.dumps(row, sort_keys=True, allow_nan=False), flush=True)
+            episodes.append(episode_row)
+            episodes_writer.write(
+                json.dumps(episode_row, sort_keys=True, allow_nan=False) + "\n"
+            )
+            episodes_writer.flush()
+            print(json.dumps(episode_row, sort_keys=True, allow_nan=False), flush=True)
+
+    summary = _summary(
+        args,
+        records,
+        elapsed_seconds=time.monotonic() - started,
+    )
+    summary["protocol"].update(
+        {
+            "root_source": "live current compact-router canonical simulator snapshots",
+            "behavior_policy": "current compact alpha router, H10",
+            "continuation": "shared current compact alpha router with absolute-step seeds",
+            "q_semantics": (
+                "candidate alpha=0/.05 first chunk followed by frozen current-router pi"
+            ),
+            "live_roots_per_episode": args.live_roots_per_episode,
+            "live_root_selection": "evenly-spaced early/middle/late behavior calls",
+            "profile_policy_timing": True,
+            "h1_h10_branch_collection": False,
+        }
+    )
+    summary["behavior"] = {
+        "episodes": episodes,
+        "successes": int(sum(bool(row["success"]) for row in episodes)),
+        "num_episodes": len(episodes),
+    }
+    payload = json.dumps(summary, indent=2, sort_keys=True, allow_nan=False)
+    summary_path.write_text(payload + "\n", encoding="utf-8")
+    print(payload, flush=True)
+
+
 def main(args: argparse.Namespace) -> None:
     _validate_args(args)
+    if args.live_on_policy:
+        _main_live(args)
+        return
     output_dir = pathlib.Path(args.output_dir)
     root_dir = output_dir / "roots"
     root_dir.mkdir(parents=True, exist_ok=True)
