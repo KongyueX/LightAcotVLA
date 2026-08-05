@@ -63,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--adaptive-final-time-warp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use the opt-in zero-init prefix/state-conditioned one-step final "
+            "time-warp gate from the endpoint sidecar."
+        ),
+    )
+    parser.add_argument(
         "--ofp-interval-flow",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -169,6 +178,11 @@ def _request(
         request["action_cot_final_time_warp_alpha"] = np.asarray(
             args.final_time_warp_alpha,
             dtype=np.float32,
+        )
+    if args.adaptive_final_time_warp:
+        request["action_cot_adaptive_final_time_warp"] = np.asarray(
+            True,
+            dtype=np.bool_,
         )
     if args.ofp_interval_flow:
         request.update(
@@ -724,6 +738,17 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("final_time_warp_alpha must be in [0, 1).")
     if args.final_time_warp_alpha > 0.0 and args.ofp_interval_flow:
         raise ValueError("final_time_warp_alpha and ofp_interval_flow are mutually exclusive.")
+    if args.adaptive_final_time_warp and (
+        args.final_time_warp_alpha > 0.0 or args.ofp_interval_flow
+    ):
+        raise ValueError(
+            "adaptive_final_time_warp is mutually exclusive with fixed time warp and OFP interval flow."
+        )
+    if args.adaptive_final_time_warp and "exact_batched_mc_v2" in args.modes:
+        raise ValueError(
+            "adaptive_final_time_warp cannot be evaluated with exact_batched_mc_v2; "
+            "pass --modes without that batched-teacher mode."
+        )
     if not 0.0 < args.ofp_warm_start_time <= 1.0:
         raise ValueError("ofp_warm_start_time must be in (0, 1].")
     if not 0.0 <= args.ofp_interval_condition_strength <= 1.0:

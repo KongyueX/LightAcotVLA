@@ -59,6 +59,7 @@ class Policy(BasePolicy):
         self._sample_actions_profile_coarse = None
         self._sample_actions_profile_expert = None
         self._sample_actions_profile_direct_one_step_expert = None
+        self._sample_actions_profile_adaptive_one_step_expert = None
         self._sample_actions_profile_ofp_expert = None
         self._sample_actions_joint_coupled = None
         self._sample_actions_batched_mc = None
@@ -88,6 +89,10 @@ class Policy(BasePolicy):
                 # module_jit prepends module state: alpha is argument four.
                 static_argnums=(4,),
             )
+        if getattr(model, "adaptive_final_time_warp", False):
+            self._sample_actions_profile_adaptive_one_step_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_adaptive_one_step_expert
+            )
         if hasattr(model, "sample_actions_profile_ofp_expert"):
             self._sample_actions_profile_ofp_expert = nnx_utils.module_jit(
                 model.sample_actions_profile_ofp_expert,
@@ -114,6 +119,9 @@ class Policy(BasePolicy):
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
         final_time_warp_alpha = float(
             np.asarray(inputs.pop("action_cot_final_time_warp_alpha", 0.0)).item()
+        )
+        adaptive_final_time_warp = _as_bool(
+            inputs.pop("action_cot_adaptive_final_time_warp", False)
         )
         ofp_interval_flow = _as_bool(inputs.pop("action_cot_ofp_interval_flow", False))
         ofp_warm_start_actions = inputs.pop("action_cot_ofp_warm_start_actions", None)
@@ -151,6 +159,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             override_inputs.pop("action_cot_final_time_warp_alpha", None)
+            override_inputs.pop("action_cot_adaptive_final_time_warp", None)
             override_inputs.pop("action_cot_ofp_interval_flow", None)
             override_inputs.pop("action_cot_ofp_warm_start_actions", None)
             override_inputs.pop("action_cot_ofp_warm_start_valid", None)
@@ -238,6 +247,11 @@ class Policy(BasePolicy):
                 # and constant-fold the effective time.
                 "final_time_warp_alpha": final_time_warp_alpha,
             }
+        if adaptive_final_time_warp:
+            sample_kwargs = {
+                **sample_kwargs,
+                "adaptive_final_time_warp": True,
+            }
         if ofp_interval_flow:
             if not 0.0 < ofp_warm_start_time <= 1.0:
                 raise ValueError("action_cot_ofp_warm_start_time must be in (0, 1].")
@@ -275,8 +289,20 @@ class Policy(BasePolicy):
             raise ValueError("OFP interval inference cannot be combined with a contextual Action-CoT compiler.")
         if final_time_warp_alpha > 0.0 and self._acot_contextual_compiler is not None:
             raise ValueError("Final time warp cannot be combined with a contextual Action-CoT compiler.")
+        if adaptive_final_time_warp and self._acot_contextual_compiler is not None:
+            raise ValueError("Adaptive final time warp cannot be combined with a contextual Action-CoT compiler.")
         if final_time_warp_alpha > 0.0 and ofp_interval_flow:
             raise ValueError("Final time warp and OFP interval inference are mutually exclusive.")
+        if adaptive_final_time_warp and (final_time_warp_alpha > 0.0 or ofp_interval_flow):
+            raise ValueError(
+                "Adaptive final time warp is mutually exclusive with fixed time warp and OFP inference."
+            )
+        if adaptive_final_time_warp and (joint_coupled_sampler or batched_mc_samples):
+            raise ValueError(
+                "Adaptive final time warp cannot be combined with coupled or batched-MC sampling."
+            )
+        if adaptive_final_time_warp and self._sample_actions_profile_adaptive_one_step_expert is None:
+            raise ValueError("The loaded policy does not contain an adaptive final time-warp gate.")
         if ofp_interval_flow and (joint_coupled_sampler or batched_mc_samples):
             raise ValueError("OFP interval inference cannot be combined with coupled or batched-MC sampling.")
         if ofp_interval_flow and self._sample_actions_profile_ofp_expert is None:
@@ -327,6 +353,7 @@ class Policy(BasePolicy):
             self._acot_contextual_compiler is not None
             or ofp_interval_flow
             or final_time_warp_alpha > 0.0
+            or adaptive_final_time_warp
             or profile_policy_timing
             or export_acot_cache
         ) and self._can_profile_sample_actions():
@@ -514,6 +541,14 @@ class Policy(BasePolicy):
                     sample_kwargs["ofp_warm_start_time"],
                     sample_kwargs["ofp_interval_condition_strength"],
                     sample_kwargs["ofp_interval_condition_mode"],
+                )
+            elif _as_bool(sample_kwargs.get("adaptive_final_time_warp", False)):
+                if self._sample_actions_profile_adaptive_one_step_expert is None:
+                    raise ValueError("The loaded policy does not contain an adaptive final time-warp gate.")
+                expert_outputs = self._sample_actions_profile_adaptive_one_step_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
                 )
             elif float(sample_kwargs.get("final_time_warp_alpha", 0.0)) > 0.0:
                 if self._sample_actions_profile_direct_one_step_expert is None:

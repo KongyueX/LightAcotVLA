@@ -31,7 +31,8 @@ _ACOT_ENDPOINT_STUDENT_PATH = re.compile(
     r"time_mlp_out/.*|"
     r"action_time_mlp_in/.*|"
     r"action_time_mlp_out/.*|"
-    r"action_out_proj/.*"
+    r"action_out_proj/.*|"
+    r"adaptive_final_time_warp_gate/.*"
     r")$"
 )
 
@@ -169,13 +170,58 @@ def create_trained_policy(
         flat_sidecar_paths = [
             _path_string(path) for path in traverse_util.flatten_dict(sidecar_params)
         ]
+        has_adaptive_final_time_warp = any(
+            path.startswith("adaptive_final_time_warp_gate/")
+            for path in flat_sidecar_paths
+        )
+        if has_adaptive_final_time_warp:
+            if not hasattr(model_config, "adaptive_final_time_warp"):
+                raise ValueError("Adaptive final time-warp sidecars require ACOTConfig.")
+            model_config = dataclasses.replace(
+                model_config,
+                adaptive_final_time_warp=True,
+            )
+            expected_model = nnx.eval_shape(model_config.create, jax.random.key(0))
+            expected_params = nnx.state(expected_model).to_pure_dict()
+            flat_base = traverse_util.flatten_dict(base_params)
+            flat_expected = traverse_util.flatten_dict(expected_params)
+            expected_gate_paths = {
+                path
+                for path in flat_expected
+                if path and path[0] == "adaptive_final_time_warp_gate"
+            }
+            sidecar_gate_paths = {
+                path
+                for path in traverse_util.flatten_dict(sidecar_params)
+                if path and path[0] == "adaptive_final_time_warp_gate"
+            }
+            missing_gate_paths = expected_gate_paths.difference(sidecar_gate_paths)
+            if missing_gate_paths:
+                raise ValueError(
+                    "Adaptive final time-warp sidecar is incomplete: "
+                    f"{sorted(_path_string(path) for path in missing_gate_paths)[:5]}"
+                )
+            missing = set(flat_expected).difference(flat_base)
+            invalid_missing = sorted(
+                _path_string(path)
+                for path in missing
+                if not path or path[0] != "adaptive_final_time_warp_gate"
+            )
+            if invalid_missing:
+                raise ValueError(
+                    "Base checkpoint is missing non-calibrator parameters: "
+                    f"{invalid_missing[:5]}"
+                )
+            for path in missing:
+                flat_base[path] = flat_expected[path]
+            base_params = traverse_util.unflatten_dict(flat_base)
         base_params = merge_acot_endpoint_student_params(base_params, sidecar_params)
         has_coarse_student = any(
             path.startswith("coarse_") or re.match(r"^PaliGemma/llm/.*_1(?:/|$)", path)
             for path in flat_sidecar_paths
         )
         has_final_student = any(
-            path.startswith(("action_", "time_mlp_"))
+            path.startswith(("action_", "time_mlp_", "adaptive_final_time_warp_gate/"))
             or re.match(r"^PaliGemma/llm/.*_2(?:/|$)", path)
             for path in flat_sidecar_paths
         )

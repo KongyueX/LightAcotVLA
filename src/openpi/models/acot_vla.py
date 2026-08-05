@@ -20,6 +20,9 @@ import openpi.shared.nnx_utils as nnx_utils
 
 logger = logging.getLogger("ACoT_VLA")
 
+_ADAPTIVE_FINAL_TIME_WARP_CENTER = 0.05
+_ADAPTIVE_FINAL_TIME_WARP_RADIUS = 0.05
+
 
 class MLP(nnx.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, activate: bool = True, rngs: nnx.Rngs, param_dtype=jnp.float32):
@@ -300,6 +303,9 @@ class ACOTConfig(_model.BaseModelConfig):
     execution_horizon_predictor: bool = False
     execution_horizon_hidden_dim: int = 256
     execution_horizon_temporal_layers: int = 3
+    # Opt-in scalar calibration around the verified direct alpha=.05 path.
+    # The gate is checkpointed separately in endpoint-student sidecars.
+    adaptive_final_time_warp: bool = False
 
     def __post_init__(self):
         if self.max_token_len is None:
@@ -441,6 +447,20 @@ class ACOT_VLA(_model.BaseModel):
 
         self.coarse_action_out_proj = nnx.Linear(coarse_action_expert_config.width, config.action_dim, rngs=rngs)
         self.action_out_proj = nnx.Linear(action_expert_config.width, config.action_dim, rngs=rngs)
+        self.adaptive_final_time_warp = config.adaptive_final_time_warp
+        if self.adaptive_final_time_warp:
+            # Prefix output is the frozen 2B VLM representation; observation
+            # state is already normalized and padded to action_dim by the
+            # canonical policy transforms.  A zero kernel and bias make every
+            # input exactly reproduce the fixed alpha=.05 path at init.
+            self.adaptive_final_time_warp_gate = nnx.Linear(
+                paligemma_config.width + config.action_dim,
+                1,
+                kernel_init=jax.nn.initializers.zeros,
+                bias_init=jax.nn.initializers.zeros,
+                rngs=rngs,
+                param_dtype=jnp.float32,
+            )
         self.action_cot_max_segments = config.action_cot_max_segments
         self.action_cot_skip_loss_weight = config.action_cot_skip_loss_weight
         self.action_cot_step_values = tuple(config.action_cot_step_values)
@@ -798,6 +818,37 @@ class ACOT_VLA(_model.BaseModel):
             1.0,
         )
 
+    def _adaptive_final_time_warp(
+        self,
+        prefix_state: dict[str, Any],
+    ) -> tuple[jax.Array, jax.Array]:
+        """Return bounded per-observation alpha and its zero-init logit."""
+
+        if not self.adaptive_final_time_warp:
+            raise ValueError("Adaptive final time warp is not enabled in the model config.")
+        pooled_prefix = self._pool_prefix(
+            prefix_state["prefix_out"],
+            prefix_state["prefix_mask"],
+        )
+        normalized_state = prefix_state["observation"].state[..., : self.action_dim]
+        gate_input = jnp.concatenate(
+            [
+                jnp.asarray(pooled_prefix, dtype=jnp.float32),
+                jnp.asarray(normalized_state, dtype=jnp.float32),
+            ],
+            axis=-1,
+        )
+        # The backbone and normalized inputs are a fixed feature extractor for
+        # this adapter-only objective.
+        gate_input = jax.lax.stop_gradient(gate_input)
+        logit = self.adaptive_final_time_warp_gate(gate_input)[..., 0]
+        alpha = (
+            jnp.asarray(_ADAPTIVE_FINAL_TIME_WARP_CENTER, dtype=jnp.float32)
+            + jnp.asarray(_ADAPTIVE_FINAL_TIME_WARP_RADIUS, dtype=jnp.float32)
+            * jnp.tanh(logit)
+        )
+        return alpha, logit
+
     def _action_cot_skip_logits(
         self,
         prefix_out: jax.Array,
@@ -1048,6 +1099,8 @@ class ACOT_VLA(_model.BaseModel):
         action_noise: jax.Array,
         explicit_action_reason: _model.CoarseActions | None,
         implicit_action_reason: jax.Array | None,
+        *,
+        time: jax.Array | None = None,
     ) -> jax.Array:
         """Predict x(0) directly from x(1) for the final action expert."""
 
@@ -1055,7 +1108,8 @@ class ACOT_VLA(_model.BaseModel):
         prefix_mask = prefix_state["prefix_mask"]
         kv_cache = prefix_state["kv_cache"]
         batch_size = observation.state.shape[0]
-        time = jnp.ones((batch_size,), dtype=jnp.float32)
+        if time is None:
+            time = jnp.ones((batch_size,), dtype=jnp.float32)
 
         suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
             observation,
@@ -1515,6 +1569,7 @@ class ACOT_VLA(_model.BaseModel):
         multi_time_response_loss_weight: float = 0.0,
         multi_time_timestep: float = 0.5,
         joint_coupled_training: bool = False,
+        adaptive_final_time_warp: bool = False,
         compute_ir_metrics: bool = False,
         compute_multi_time_metrics: bool = False,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
@@ -1543,6 +1598,18 @@ class ACOT_VLA(_model.BaseModel):
             raise ValueError("Multi-time response alignment acts on final actions.")
         if joint_coupled_training and stage == "coarse":
             raise ValueError("Joint coupled training requires a final-action branch; use final or dual stage.")
+        if adaptive_final_time_warp and not self.adaptive_final_time_warp:
+            raise ValueError("Adaptive final time warp is not enabled in the model config.")
+        if adaptive_final_time_warp and (
+            stage != "final"
+            or joint_coupled_training
+            or multi_time_flow_loss_weight > 0
+            or multi_time_response_loss_weight > 0
+        ):
+            raise ValueError(
+                "Adaptive final time warp requires final-only endpoint/IR training "
+                "without coupled or multi-time objectives."
+            )
         if not self.adopt_explicit_action_reasoner:
             raise ValueError("Endpoint distillation requires adopt_explicit_action_reasoner=True.")
         need_final = stage in {"final", "dual"}
@@ -1563,6 +1630,10 @@ class ACOT_VLA(_model.BaseModel):
         implicit_action_reason = self.sample_actions_profile_implicit(prefix_state)[
             "implicit_action_reason"
         ]
+        adaptive_alpha = None
+        adaptive_logit = None
+        if adaptive_final_time_warp:
+            adaptive_alpha, adaptive_logit = self._adaptive_final_time_warp(prefix_state)
 
         zero = jnp.asarray(0.0, dtype=jnp.float32)
         total_loss = zero
@@ -1623,11 +1694,15 @@ class ACOT_VLA(_model.BaseModel):
                 assert predicted_coarse is not None
                 explicit_action_reason = jax.lax.stop_gradient(predicted_coarse)
             if not joint_coupled_training:
+                endpoint_time = None
+                if adaptive_alpha is not None:
+                    endpoint_time = jnp.ones_like(adaptive_alpha) - adaptive_alpha
                 predicted_actions = self._one_step_action_endpoint(
                     prefix_state,
                     action_noise,
                     explicit_action_reason,
                     implicit_action_reason,
+                    time=endpoint_time,
                 )
             assert predicted_actions is not None
             final_error = predicted_actions - teacher_actions.astype(predicted_actions.dtype)
@@ -1770,11 +1845,15 @@ class ACOT_VLA(_model.BaseModel):
                     )
                     predicted_intervention_actions = action_noise - intervention_endpoint_velocity
                 else:
+                    intervention_time = None
+                    if adaptive_alpha is not None:
+                        intervention_time = jnp.ones_like(adaptive_alpha) - adaptive_alpha
                     predicted_intervention_actions = self._one_step_action_endpoint(
                         prefix_state,
                         action_noise,
                         intervention_coarse,
                         implicit_action_reason,
+                        time=intervention_time,
                     )
                 student_delta = predicted_intervention_actions - predicted_actions
                 teacher_delta = teacher_intervention_actions.astype(predicted_actions.dtype)
@@ -1797,6 +1876,16 @@ class ACOT_VLA(_model.BaseModel):
                 )
                 metrics["teacher_response_l2"] = jnp.mean(
                     jnp.linalg.norm(flattened_teacher, axis=-1)
+                )
+
+            if adaptive_alpha is not None:
+                assert adaptive_logit is not None
+                metrics["adaptive_final_time_warp_alpha_mean"] = jnp.mean(adaptive_alpha)
+                metrics["adaptive_final_time_warp_alpha_std"] = jnp.std(adaptive_alpha)
+                metrics["adaptive_final_time_warp_alpha_min"] = jnp.min(adaptive_alpha)
+                metrics["adaptive_final_time_warp_alpha_max"] = jnp.max(adaptive_alpha)
+                metrics["adaptive_final_time_warp_logit_rms"] = jnp.sqrt(
+                    jnp.mean(jnp.square(adaptive_logit))
                 )
 
         metrics["loss"] = total_loss
@@ -2269,6 +2358,30 @@ class ACOT_VLA(_model.BaseModel):
             implicit_action_reason,
         )
         return {"actions": expert_action_noise - velocity}
+
+    def sample_actions_profile_adaptive_one_step_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+    ) -> dict[str, Any]:
+        """Run one final-LLM call with a learned bounded time calibration."""
+
+        expert_action_noise = prefix_state["expert_action_noise"]
+        alpha, logit = self._adaptive_final_time_warp(prefix_state)
+        conditioned_time = jnp.ones_like(alpha) - alpha
+        velocity = self._action_velocity_at_time(
+            prefix_state,
+            expert_action_noise,
+            conditioned_time,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        return {
+            "actions": expert_action_noise - velocity,
+            "adaptive_final_time_warp_alpha": alpha,
+            "adaptive_final_time_warp_logit": logit,
+        }
 
     def sample_actions_profile_ofp_expert(
         self,

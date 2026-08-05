@@ -66,7 +66,8 @@ _FINAL_PATH = re.compile(
     r"time_mlp_out/.*|"
     r"action_time_mlp_in/.*|"
     r"action_time_mlp_out/.*|"
-    r"action_out_proj/.*"
+    r"action_out_proj/.*|"
+    r"adaptive_final_time_warp_gate/.*"
     r")$"
 )
 _FINAL_ADAPTER_PATH = re.compile(
@@ -77,6 +78,9 @@ _FINAL_ADAPTER_PATH = re.compile(
     r"action_time_mlp_out/.*|"
     r"action_out_proj/.*"
     r")$"
+)
+_ADAPTIVE_FINAL_TIME_WARP_PATH = re.compile(
+    r"^adaptive_final_time_warp_gate/.*$"
 )
 
 
@@ -122,6 +126,7 @@ class Args:
     ofp_interval_condition_strength: float = 1.0
     ofp_interval_condition_mode: str = "half_concat"
     ofp_adapter_only: bool = False
+    adaptive_final_time_warp: bool = False
     fsdp_devices: int = 1
     overwrite: bool = False
     allow_failed_audit: bool = False
@@ -136,8 +141,11 @@ def _matches_stage(
     stage: str,
     *,
     ofp_adapter_only: bool = False,
+    adaptive_final_time_warp: bool = False,
 ) -> bool:
     text = _path_text(path)
+    if adaptive_final_time_warp:
+        return stage == "final" and _ADAPTIVE_FINAL_TIME_WARP_PATH.fullmatch(text) is not None
     if ofp_adapter_only:
         return stage == "final" and _FINAL_ADAPTER_PATH.fullmatch(text) is not None
     return (
@@ -146,7 +154,16 @@ def _matches_stage(
     )
 
 
-def _train_filter(stage: str, *, ofp_adapter_only: bool = False) -> nnx.filterlib.Filter:
+def _train_filter(
+    stage: str,
+    *,
+    ofp_adapter_only: bool = False,
+    adaptive_final_time_warp: bool = False,
+) -> nnx.filterlib.Filter:
+    if adaptive_final_time_warp:
+        if stage != "final":
+            raise ValueError("Adaptive final time warp training requires stage='final'.")
+        return nnx_utils.PathRegex(r"adaptive_final_time_warp_gate/.*")
     if ofp_adapter_only:
         if stage != "final":
             raise ValueError("OFP adapter-only training requires stage='final'.")
@@ -279,6 +296,27 @@ def _validate_args(args: Args) -> None:
         raise ValueError("--ofp-interval-condition-mode requires --ofp-sc.")
     if args.ofp_adapter_only and (not args.ofp_sc or args.stage != "final"):
         raise ValueError("--ofp-adapter-only requires --ofp-sc with --stage final.")
+    if args.adaptive_final_time_warp:
+        if args.stage != "final" or args.variant != "ir":
+            raise ValueError(
+                "--adaptive-final-time-warp requires --stage final --variant ir."
+            )
+        if args.resume_sidecar_params is None:
+            raise ValueError(
+                "--adaptive-final-time-warp requires --resume-sidecar-params for the final_ir anchor."
+            )
+        if args.ofp_sc or args.ofp_adapter_only:
+            raise ValueError(
+                "--adaptive-final-time-warp cannot be combined with OFP training."
+            )
+        if args.joint_coupled_training or args.use_student_coarse:
+            raise ValueError(
+                "--adaptive-final-time-warp uses exported teacher EAR and cannot use coupled/student coarse training."
+            )
+        if args.multi_time_flow_loss_weight > 0 or args.multi_time_response_loss_weight > 0:
+            raise ValueError(
+                "--adaptive-final-time-warp supports endpoint and IR losses only; leave multi-time weights at zero."
+            )
 
 
 def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
@@ -403,9 +441,37 @@ def _load_resume_params(path: str | None) -> tuple[dict[str, Any] | None, set[tu
 class _BaseAndSidecarLoader:
     base_params_path: str
     sidecar_params: dict[str, Any] | None
+    adaptive_final_time_warp: bool = False
 
     def load(self, params: Any) -> Any:
-        loaded = weight_loaders.CheckpointWeightLoader(self.base_params_path).load(params)
+        if self.adaptive_final_time_warp:
+            flat_reference = traverse_util.flatten_dict(params)
+            gate_reference = {
+                path: value
+                for path, value in flat_reference.items()
+                if _ADAPTIVE_FINAL_TIME_WARP_PATH.fullmatch(_path_text(path)) is not None
+            }
+            if not gate_reference:
+                raise ValueError("Adaptive final time-warp gate is missing from the model config.")
+            base_reference = traverse_util.unflatten_dict(
+                {
+                    path: value
+                    for path, value in flat_reference.items()
+                    if path not in gate_reference
+                }
+            )
+            loaded = weight_loaders.CheckpointWeightLoader(self.base_params_path).load(
+                base_reference
+            )
+            flat_loaded = traverse_util.flatten_dict(loaded)
+            # init_train_state supplies ShapeDtypeStruct leaves here.  Materialize
+            # only this exact new subtree as zeros; never broaden the global
+            # checkpoint loader's missing-parameter policy.
+            for path, expected in gate_reference.items():
+                flat_loaded[path] = jax.numpy.zeros(expected.shape, dtype=expected.dtype)
+            loaded = traverse_util.unflatten_dict(flat_loaded)
+        else:
+            loaded = weight_loaders.CheckpointWeightLoader(self.base_params_path).load(params)
         if self.sidecar_params is not None:
             loaded = policy_config.merge_acot_endpoint_student_params(loaded, self.sidecar_params)
         return loaded
@@ -486,6 +552,7 @@ def _endpoint_train_step(
     multi_time_response_loss_weight: float,
     multi_time_timestep: float,
     joint_coupled_training: bool,
+    adaptive_final_time_warp: bool,
     ofp_sc: bool,
     ofp_seed: int,
     ofp_train_steps: int,
@@ -548,6 +615,7 @@ def _endpoint_train_step(
             multi_time_response_loss_weight=multi_time_response_loss_weight,
             multi_time_timestep=multi_time_timestep,
             joint_coupled_training=joint_coupled_training,
+            adaptive_final_time_warp=adaptive_final_time_warp,
             compute_ir_metrics=False,
             compute_multi_time_metrics=False,
         )
@@ -596,6 +664,7 @@ def _endpoint_validation_step(
     multi_time_response_loss_weight: float,
     multi_time_timestep: float,
     joint_coupled_training: bool,
+    adaptive_final_time_warp: bool,
     ofp_sc: bool,
     ofp_seed: int,
     ofp_train_steps: int,
@@ -657,6 +726,7 @@ def _endpoint_validation_step(
         multi_time_response_loss_weight=multi_time_response_loss_weight,
         multi_time_timestep=multi_time_timestep,
         joint_coupled_training=joint_coupled_training,
+        adaptive_final_time_warp=adaptive_final_time_warp,
         compute_ir_metrics=stage in {"final", "dual"},
         compute_multi_time_metrics=(
             multi_time_flow_loss_weight > 0 or multi_time_response_loss_weight > 0
@@ -716,6 +786,7 @@ def _save_sidecar(
     overwrite: bool,
     use_ema: bool,
     ofp_adapter_only: bool,
+    adaptive_final_time_warp: bool,
 ) -> int:
     source_params = state.ema_params if use_ema else state.params
     if source_params is None:
@@ -729,7 +800,12 @@ def _save_sidecar(
         )
         for path, value in flat.items()
         if path in resume_paths
-        or _matches_stage(path, stage, ofp_adapter_only=ofp_adapter_only)
+        or _matches_stage(
+            path,
+            stage,
+            ofp_adapter_only=ofp_adapter_only,
+            adaptive_final_time_warp=adaptive_final_time_warp,
+        )
     }
     if not selected:
         raise ValueError("No endpoint-student parameters matched the save filter.")
@@ -772,6 +848,14 @@ def main(args: Args) -> None:
     )
     train_config_base = config_lib.get_config(args.config_name)
     model_config = train_config_base.model
+    if args.adaptive_final_time_warp:
+        if not hasattr(model_config, "adaptive_final_time_warp"):
+            raise ValueError("Adaptive final time warp requires ACOTConfig.")
+        model_config = dataclasses.replace(
+            model_config,
+            adaptive_final_time_warp=True,
+        )
+        train_config_base = dataclasses.replace(train_config_base, model=model_config)
     expected_shapes = {
         "clean_coarse": (model_config.coarse_action_horizon, model_config.action_dim),
         "clean_actions": (model_config.action_horizon, model_config.action_dim),
@@ -794,6 +878,7 @@ def main(args: Args) -> None:
     trainable_filter = _train_filter(
         args.stage,
         ofp_adapter_only=args.ofp_adapter_only,
+        adaptive_final_time_warp=args.adaptive_final_time_warp,
     )
     ir_weight = args.ir_loss_weight if args.variant == "ir" else 0.0
     objective_name = "endpoint"
@@ -803,9 +888,15 @@ def main(args: Args) -> None:
             if args.ofp_endpoint_anchor_loss_weight > 0
             else "ofp_sc"
         )
+    elif args.adaptive_final_time_warp:
+        objective_name = "adaptive_final_time_warp_ir"
     train_config = dataclasses.replace(
         train_config_base,
-        weight_loader=_BaseAndSidecarLoader(str(base_params_path), resume_params),
+        weight_loader=_BaseAndSidecarLoader(
+            str(base_params_path),
+            resume_params,
+            adaptive_final_time_warp=args.adaptive_final_time_warp,
+        ),
         freeze_filter=nnx.Not(trainable_filter),
         lr_schedule=optimizer_lib.CosineDecaySchedule(
             warmup_steps=args.warmup_steps,
@@ -839,7 +930,13 @@ def main(args: Args) -> None:
     jax.block_until_ready(state)
     trainable_params = state.params.filter(trainable_filter)
     trainable_parameter_count = training_utils.count_parameters(trainable_params)
-    trainable_scope = "ofp_final_adapter" if args.ofp_adapter_only else args.stage
+    trainable_scope = (
+        "adaptive_final_time_warp_gate"
+        if args.adaptive_final_time_warp
+        else "ofp_final_adapter"
+        if args.ofp_adapter_only
+        else args.stage
+    )
     LOGGER.info(
         "Initialized endpoint student: objective=%s stage=%s variant=%s trainable_scope=%s "
         "train=%s validation=%s trainable_params=%s",
@@ -865,6 +962,7 @@ def main(args: Args) -> None:
             multi_time_response_loss_weight=args.multi_time_response_loss_weight,
             multi_time_timestep=args.multi_time_timestep,
             joint_coupled_training=args.joint_coupled_training,
+            adaptive_final_time_warp=args.adaptive_final_time_warp,
             ofp_sc=args.ofp_sc,
             ofp_seed=args.seed,
             ofp_train_steps=args.train_steps,
@@ -892,6 +990,7 @@ def main(args: Args) -> None:
             multi_time_response_loss_weight=args.multi_time_response_loss_weight,
             multi_time_timestep=args.multi_time_timestep,
             joint_coupled_training=args.joint_coupled_training,
+            adaptive_final_time_warp=args.adaptive_final_time_warp,
             ofp_sc=args.ofp_sc,
             ofp_seed=args.seed,
             ofp_train_steps=args.train_steps,
@@ -983,6 +1082,7 @@ def main(args: Args) -> None:
                     overwrite=args.overwrite,
                     use_ema=args.ofp_sc,
                     ofp_adapter_only=args.ofp_adapter_only,
+                    adaptive_final_time_warp=args.adaptive_final_time_warp,
                 )
                 LOGGER.info("Saved step %s delta sidecar with %s parameters.", step, saved_params)
 
@@ -1039,6 +1139,7 @@ def main(args: Args) -> None:
         overwrite=args.overwrite,
         use_ema=args.ofp_sc,
         ofp_adapter_only=args.ofp_adapter_only,
+        adaptive_final_time_warp=args.adaptive_final_time_warp,
     )
     summary = {
         "config_name": args.config_name,
@@ -1064,6 +1165,9 @@ def main(args: Args) -> None:
         "ofp_interval_condition_mode": args.ofp_interval_condition_mode,
         "ofp_adapter_only": args.ofp_adapter_only,
         "ofp_self_guidance": False,
+        "adaptive_final_time_warp": args.adaptive_final_time_warp,
+        "adaptive_final_time_warp_center": 0.05 if args.adaptive_final_time_warp else None,
+        "adaptive_final_time_warp_radius": 0.05 if args.adaptive_final_time_warp else None,
         "trainable_scope": trainable_scope,
         "trainable_parameter_count": trainable_parameter_count,
         "saved_parameter_source": "ema" if args.ofp_sc else "online",
