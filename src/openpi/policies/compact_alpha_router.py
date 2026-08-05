@@ -53,10 +53,9 @@ def _vector(archive: np.lib.npyio.NpzFile, name: str) -> np.ndarray:
 class CompactAlphaRouter:
     """Hard router between final time-warp alpha 0 and .05.
 
-    The score calculation intentionally mirrors the ridge trainer instead of
-    using the optional pre-composed affine fields. This preserves the exported
-    mean/std/feature-scale/weight/bias contract and makes artifact validation
-    explicit at the deployment boundary.
+    The deployed CPU ``route`` mirrors the ridge trainer. Loading also validates
+    and retains the equivalent pre-composed affine for artifact compatibility,
+    while static endpoint selection preserves the original action path.
     """
 
     feature_mean: np.ndarray
