@@ -94,6 +94,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument(
+        "--use-policy-default-denoising-steps",
+        action="store_true",
+        help=(
+            "Do not send an action_cot_denoising_steps override. This is required "
+            "when evaluating an endpoint-student sidecar whose server defaults select "
+            "the distilled coarse/final step counts."
+        ),
+    )
+    parser.add_argument(
         "--matched-diff-min-control-step",
         type=int,
         default=0,
@@ -473,12 +482,13 @@ def _full_request(
     element: dict[str, Any],
     *,
     seed: int,
-    denoising_steps: int,
+    denoising_steps: int | None,
     export_cache: bool,
     run_execution_horizon_predictor: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     request = dict(element)
-    request["action_cot_denoising_steps"] = np.asarray(denoising_steps, dtype=np.int32)
+    if denoising_steps is not None:
+        request["action_cot_denoising_steps"] = np.asarray(denoising_steps, dtype=np.int32)
     if export_cache:
         request["export_acot_cache"] = np.ones((), dtype=np.bool_)
     if run_execution_horizon_predictor:
@@ -600,6 +610,11 @@ def _run_episode(
         args.seed,
     )
     started = time.monotonic()
+    request_denoising_steps = (
+        None
+        if args.use_policy_default_denoising_steps
+        else args.action_cot_denoising_steps
+    )
     try:
         env.reset()
         observation = env.set_init_state(initial_state)
@@ -686,7 +701,7 @@ def _run_episode(
                         client,
                         element,
                         seed=policy_seed,
-                        denoising_steps=args.action_cot_denoising_steps,
+                        denoising_steps=request_denoising_steps,
                         export_cache=False,
                     )
                     policy_wall_ms.append(float(timing["wall_ms"]))
@@ -719,7 +734,7 @@ def _run_episode(
                         client,
                         element,
                         seed=policy_seed,
-                        denoising_steps=args.action_cot_denoising_steps,
+                        denoising_steps=request_denoising_steps,
                         export_cache=False,
                     )
                     policy_wall_ms.append(float(timing["wall_ms"]))
@@ -753,7 +768,7 @@ def _run_episode(
                         client,
                         element,
                         seed=policy_seed,
-                        denoising_steps=args.action_cot_denoising_steps,
+                        denoising_steps=request_denoising_steps,
                         export_cache=False,
                     )
                     policy_wall_ms.append(float(timing["wall_ms"]))
@@ -786,7 +801,7 @@ def _run_episode(
                         client,
                         element,
                         seed=policy_seed,
-                        denoising_steps=args.action_cot_denoising_steps,
+                        denoising_steps=request_denoising_steps,
                         export_cache=False,
                     )
                     policy_wall_ms.append(float(timing["wall_ms"]))
@@ -941,7 +956,7 @@ def _run_episode(
                         client,
                         element,
                         seed=policy_seed,
-                        denoising_steps=args.action_cot_denoising_steps,
+                        denoising_steps=request_denoising_steps,
                         export_cache=export_cache,
                         run_execution_horizon_predictor=plan_refresh_in_window,
                     )
@@ -1554,7 +1569,16 @@ def main() -> None:
                             "trial_start": args.trial_start,
                             "num_trials": args.num_trials,
                             "seed": args.seed,
-                            "denoising_steps": args.action_cot_denoising_steps,
+                            "denoising_steps": (
+                                None
+                                if args.use_policy_default_denoising_steps
+                                else args.action_cot_denoising_steps
+                            ),
+                            "denoising_steps_source": (
+                                "policy_default"
+                                if args.use_policy_default_denoising_steps
+                                else "request_override"
+                            ),
                             "matched_diff_min_control_step": (
                                 args.matched_diff_min_control_step
                             ),
@@ -1607,7 +1631,16 @@ def main() -> None:
             "trial_start": args.trial_start,
             "num_trials": args.num_trials,
             "seed": args.seed,
-            "denoising_steps": args.action_cot_denoising_steps,
+            "denoising_steps": (
+                None
+                if args.use_policy_default_denoising_steps
+                else args.action_cot_denoising_steps
+            ),
+            "denoising_steps_source": (
+                "policy_default"
+                if args.use_policy_default_denoising_steps
+                else "request_override"
+            ),
             "matched_diff_min_control_step": args.matched_diff_min_control_step,
             "matched_diff_max_response_l2": args.matched_diff_max_response_l2,
             "matched_diff_max_control_step": args.matched_diff_max_control_step,
