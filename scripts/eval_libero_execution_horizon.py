@@ -53,6 +53,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument(
+        "--final-denoising-steps",
+        type=int,
+        default=None,
+        help=(
+            "Optional independent NFE for the final action expert. When unset, "
+            "the policy keeps its existing final-sampling behavior."
+        ),
+    )
+    parser.add_argument(
         "--final-time-warp-alpha",
         type=float,
         default=0.0,
@@ -174,6 +183,11 @@ def _request(
         "profile_policy_timing": np.asarray(1, dtype=np.bool_),
         "action_cot_denoising_steps": np.asarray(args.action_cot_denoising_steps, dtype=np.int32),
     }
+    if args.final_denoising_steps is not None:
+        request["action_cot_final_denoising_steps"] = np.asarray(
+            args.final_denoising_steps,
+            dtype=np.int32,
+        )
     if args.final_time_warp_alpha > 0.0:
         request["action_cot_final_time_warp_alpha"] = np.asarray(
             args.final_time_warp_alpha,
@@ -734,6 +748,8 @@ def _prepare_journal(
 def main(args: argparse.Namespace) -> None:
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action_cot_denoising_steps must be positive.")
+    if args.final_denoising_steps is not None and args.final_denoising_steps <= 0:
+        raise ValueError("final_denoising_steps must be positive when set.")
     if not 0.0 <= args.final_time_warp_alpha < 1.0:
         raise ValueError("final_time_warp_alpha must be in [0, 1).")
     if args.final_time_warp_alpha > 0.0 and args.ofp_interval_flow:
@@ -747,6 +763,15 @@ def main(args: argparse.Namespace) -> None:
     if args.adaptive_final_time_warp and "exact_batched_mc_v2" in args.modes:
         raise ValueError(
             "adaptive_final_time_warp cannot be evaluated with exact_batched_mc_v2; "
+            "pass --modes without that batched-teacher mode."
+        )
+    if args.final_denoising_steps is not None and args.ofp_interval_flow:
+        raise ValueError("final_denoising_steps cannot be combined with OFP interval flow.")
+    if args.final_denoising_steps is not None and args.adaptive_final_time_warp:
+        raise ValueError("final_denoising_steps cannot be combined with adaptive final time warp.")
+    if args.final_denoising_steps is not None and "exact_batched_mc_v2" in args.modes:
+        raise ValueError(
+            "final_denoising_steps cannot be evaluated with exact_batched_mc_v2; "
             "pass --modes without that batched-teacher mode."
         )
     if not 0.0 < args.ofp_warm_start_time <= 1.0:

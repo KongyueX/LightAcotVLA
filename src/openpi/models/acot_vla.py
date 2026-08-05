@@ -1898,6 +1898,7 @@ class ACOT_VLA(_model.BaseModel):
         observation: _model.Observation,
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
+        final_denoising_steps: int | at.Int[at.Array, ""] | None = None,
         action_cot_denoising_steps: int | at.Int[at.Array, ""] | None = None,
         dynamic_denoising_steps: bool | None = None,
         explicit_action_reason_override: _model.CoarseActions | None = None,
@@ -1917,7 +1918,7 @@ class ACOT_VLA(_model.BaseModel):
             prefix_state,
             coarse_outputs["explicit_action_reason"],
             implicit_outputs["implicit_action_reason"],
-            num_steps=num_steps,
+            num_steps=num_steps if final_denoising_steps is None else final_denoising_steps,
         )
         if self.adopt_explicit_action_reasoner:
             result = {

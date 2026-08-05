@@ -117,6 +117,13 @@ class Policy(BasePolicy):
         export_acot_cache = _as_bool(inputs.pop("export_acot_cache", False))
         action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
+        final_denoising_steps_raw = inputs.pop("action_cot_final_denoising_steps", None)
+        final_denoising_steps = None
+        if final_denoising_steps_raw is not None:
+            raw_value = np.asarray(final_denoising_steps_raw).item()
+            final_denoising_steps = int(raw_value)
+            if final_denoising_steps <= 0 or float(final_denoising_steps) != float(raw_value):
+                raise ValueError("action_cot_final_denoising_steps must be a positive integer.")
         final_time_warp_alpha = float(
             np.asarray(inputs.pop("action_cot_final_time_warp_alpha", 0.0)).item()
         )
@@ -158,6 +165,7 @@ class Policy(BasePolicy):
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
+            override_inputs.pop("action_cot_final_denoising_steps", None)
             override_inputs.pop("action_cot_final_time_warp_alpha", None)
             override_inputs.pop("action_cot_adaptive_final_time_warp", None)
             override_inputs.pop("action_cot_ofp_interval_flow", None)
@@ -238,6 +246,11 @@ class Policy(BasePolicy):
                 **sample_kwargs,
                 "dynamic_denoising_steps": bool(np.asarray(action_cot_dynamic_denoising_steps).item()),
             }
+        if final_denoising_steps is not None:
+            sample_kwargs = {
+                **sample_kwargs,
+                "final_denoising_steps": np.asarray(final_denoising_steps, dtype=np.int32).reshape(()),
+            }
         if not 0.0 <= final_time_warp_alpha < 1.0:
             raise ValueError("action_cot_final_time_warp_alpha must be in [0, 1).")
         if final_time_warp_alpha > 0.0:
@@ -291,6 +304,8 @@ class Policy(BasePolicy):
             raise ValueError("Final time warp cannot be combined with a contextual Action-CoT compiler.")
         if adaptive_final_time_warp and self._acot_contextual_compiler is not None:
             raise ValueError("Adaptive final time warp cannot be combined with a contextual Action-CoT compiler.")
+        if final_denoising_steps is not None and self._acot_contextual_compiler is not None:
+            raise ValueError("Independent final denoising steps cannot be combined with a contextual compiler.")
         if final_time_warp_alpha > 0.0 and ofp_interval_flow:
             raise ValueError("Final time warp and OFP interval inference are mutually exclusive.")
         if adaptive_final_time_warp and (final_time_warp_alpha > 0.0 or ofp_interval_flow):
@@ -300,6 +315,14 @@ class Policy(BasePolicy):
         if adaptive_final_time_warp and (joint_coupled_sampler or batched_mc_samples):
             raise ValueError(
                 "Adaptive final time warp cannot be combined with coupled or batched-MC sampling."
+            )
+        if final_denoising_steps is not None and ofp_interval_flow:
+            raise ValueError("Independent final denoising steps cannot be combined with OFP inference.")
+        if final_denoising_steps is not None and adaptive_final_time_warp:
+            raise ValueError("Independent final denoising steps cannot be combined with adaptive final time warp.")
+        if final_denoising_steps is not None and (joint_coupled_sampler or batched_mc_samples):
+            raise ValueError(
+                "Independent final denoising steps cannot be combined with coupled or batched-MC sampling."
             )
         if adaptive_final_time_warp and self._sample_actions_profile_adaptive_one_step_expert is None:
             raise ValueError("The loaded policy does not contain an adaptive final time-warp gate.")
@@ -352,6 +375,7 @@ class Policy(BasePolicy):
         elif (
             self._acot_contextual_compiler is not None
             or ofp_interval_flow
+            or final_denoising_steps is not None
             or final_time_warp_alpha > 0.0
             or adaptive_final_time_warp
             or profile_policy_timing
@@ -528,6 +552,14 @@ class Policy(BasePolicy):
 
         stage_start = time.monotonic()
         prefix_feature = None
+        explicit_final_steps = sample_kwargs.get("final_denoising_steps")
+        final_time_warp_alpha = float(sample_kwargs.get("final_time_warp_alpha", 0.0))
+        use_direct_final_expert = (
+            explicit_final_steps is None and final_time_warp_alpha > 0.0
+        ) or (
+            explicit_final_steps is not None
+            and int(np.asarray(explicit_final_steps).item()) == 1
+        )
         if self._acot_contextual_compiler is None:
             if _as_bool(sample_kwargs.get("ofp_interval_flow", False)):
                 if self._sample_actions_profile_ofp_expert is None:
@@ -550,22 +582,26 @@ class Policy(BasePolicy):
                     coarse_outputs["explicit_action_reason"],
                     implicit_outputs["implicit_action_reason"],
                 )
-            elif float(sample_kwargs.get("final_time_warp_alpha", 0.0)) > 0.0:
+            elif use_direct_final_expert:
                 if self._sample_actions_profile_direct_one_step_expert is None:
                     raise ValueError("The loaded policy does not implement direct one-step final inference.")
                 expert_outputs = self._sample_actions_profile_direct_one_step_expert(
                     prefix_state,
                     coarse_outputs["explicit_action_reason"],
                     implicit_outputs["implicit_action_reason"],
-                    float(sample_kwargs["final_time_warp_alpha"]),
+                    final_time_warp_alpha,
                 )
             else:
                 expert_outputs = self._sample_actions_profile_expert(
                     prefix_state,
                     coarse_outputs["explicit_action_reason"],
                     implicit_outputs["implicit_action_reason"],
-                    num_steps=sample_kwargs.get("num_steps", 10),
-                    final_time_warp_alpha=sample_kwargs.get("final_time_warp_alpha", 0.0),
+                    num_steps=(
+                        explicit_final_steps
+                        if explicit_final_steps is not None
+                        else sample_kwargs.get("num_steps", 10)
+                    ),
+                    final_time_warp_alpha=final_time_warp_alpha,
                 )
             _block_until_ready(expert_outputs)
             timing["action_expert_ms"] = (time.monotonic() - stage_start) * 1000
