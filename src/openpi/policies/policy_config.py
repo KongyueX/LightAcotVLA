@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 
 from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
+from openpi.models import harp_temporal_residual as _harp_temporal_residual
 import openpi.models.model as _model
 from openpi.policies import compact_alpha_router as _compact_alpha_router
 import openpi.policies.policy as _policy
@@ -96,6 +97,7 @@ def create_trained_policy(
     acot_endpoint_student_params: pathlib.Path | str | None = None,
     acot_contextual_compiler_params: pathlib.Path | str | None = None,
     acot_compact_alpha_router_params: pathlib.Path | str | None = None,
+    acot_harp_residual_params: pathlib.Path | str | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -118,6 +120,9 @@ def create_trained_policy(
             300M action expert and uses this compiler instead.
         acot_compact_alpha_router_params: Optional compact ridge-router NPZ.
             It remains inactive until a request explicitly enables it.
+        acot_harp_residual_params: Optional tiny temporal residual NPZ. Loading
+            it is inert; each request must additionally set
+            ``action_cot_harp_residual=True``.
     """
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
@@ -273,6 +278,23 @@ def create_trained_policy(
         compact_alpha_router = _compact_alpha_router.load_compact_alpha_router(router_path)
         logging.info("Loaded compact ACoT alpha router from %s", router_path)
 
+    harp_residual = None
+    if acot_harp_residual_params is not None:
+        if acot_endpoint_student_params is None:
+            raise ValueError(
+                "HARP was trained on deployed one-step IR endpoints; load "
+                "acot_endpoint_student_params in the same server."
+            )
+        harp_path = pathlib.Path(
+            download.maybe_download(str(acot_harp_residual_params))
+        )
+        harp_residual = _harp_temporal_residual.load_harp_residual_sidecar(harp_path)
+        logging.info(
+            "Loaded inert HARP residual sidecar from %s (%s parameters)",
+            harp_path,
+            harp_residual.parameter_count,
+        )
+
     data_config = train_config.data.create(train_config.assets_dirs, model_config)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
@@ -303,4 +325,5 @@ def create_trained_policy(
         action_dim=model_config.action_dim,
         acot_contextual_compiler=contextual_compiler,
         acot_compact_alpha_router=compact_alpha_router,
+        acot_harp_residual=harp_residual,
     )

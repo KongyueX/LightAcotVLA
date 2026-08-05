@@ -91,6 +91,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--harp-residual",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Apply the separately loaded HARP temporal residual after direct "
+            "IR NFE1. This path requires EAR/final NFE1 and leaves gripper unchanged."
+        ),
+    )
+    parser.add_argument(
         "--ofp-interval-flow",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -219,6 +228,8 @@ def _request(
                 ),
             }
         )
+    if args.harp_residual:
+        request["action_cot_harp_residual"] = np.asarray(True, dtype=np.bool_)
     if args.ofp_interval_flow:
         request.update(
             {
@@ -271,6 +282,7 @@ def _request(
         "compact_alpha_router_ms": float(
             policy_timing.get("compact_alpha_router_ms", np.nan)
         ),
+        "harp_residual_ms": float(policy_timing.get("harp_residual_ms", np.nan)),
     }
 
 
@@ -583,6 +595,7 @@ def _run_episode(
                     "server_ms": timing["server_ms"],
                     "predictor_ms": timing["predictor_ms"],
                     "batched_teacher_ms": timing["batched_teacher_ms"],
+                    "harp_residual_ms": timing["harp_residual_ms"],
                     "selector_json": json.dumps(selector_info, separators=(",", ":")),
                     **compact_router_info,
                 }
@@ -632,6 +645,7 @@ def _run_episode(
         "actual_server_total_ms": total("server_ms"),
         "actual_predictor_total_ms": total("predictor_ms"),
         "actual_batched_teacher_total_ms": total("batched_teacher_ms"),
+        "actual_harp_residual_total_ms": total("harp_residual_ms"),
     }
     if args.compact_alpha_router:
         alpha_histogram = collections.Counter(
@@ -716,6 +730,8 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
         "predictor_ms_per_episode": mean("actual_predictor_total_ms"),
         "predictor_ms_per_call": per_call("actual_predictor_total_ms"),
         "batched_teacher_ms_per_episode": mean("actual_batched_teacher_total_ms"),
+        "harp_residual_ms_per_episode": mean("actual_harp_residual_total_ms"),
+        "harp_residual_ms_per_call": per_call("actual_harp_residual_total_ms"),
     }
     if any("compact_alpha_router_alpha_distribution_json" in row for row in subset):
         alpha_histogram: collections.Counter[str] = collections.Counter()
@@ -801,6 +817,7 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "actual_server_total_ms",
         "actual_predictor_total_ms",
         "actual_batched_teacher_total_ms",
+        "actual_harp_residual_total_ms",
         "compact_alpha_router_score_sum",
         "compact_alpha_router_score_mean",
         "actual_compact_alpha_router_total_ms",
@@ -935,6 +952,19 @@ def main(args: argparse.Namespace) -> None:
                 "The compact outcome router is Task8-specific and its one-shot formal evaluation "
                 "requires libero_10 Task8, initial-state offset 0, and explicit episode IDs 10..29."
             )
+    if args.harp_residual:
+        if args.final_denoising_steps is not None:
+            raise ValueError("harp_residual forces direct final NFE1; do not set final_denoising_steps.")
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError("harp_residual requires endpoint-student EAR NFE1.")
+        if args.final_time_warp_alpha > 0.0 or args.adaptive_final_time_warp or args.ofp_interval_flow:
+            raise ValueError(
+                "harp_residual cannot be combined with fixed/adaptive time warp or OFP inference."
+            )
+        if args.compact_alpha_router:
+            raise ValueError("harp_residual cannot be combined with compact_alpha_router.")
+        if "exact_batched_mc_v2" in args.modes:
+            raise ValueError("harp_residual cannot be evaluated with exact_batched_mc_v2.")
     if not 0.0 < args.ofp_warm_start_time <= 1.0:
         raise ValueError("ofp_warm_start_time must be in (0, 1].")
     if not 0.0 <= args.ofp_interval_condition_strength <= 1.0:

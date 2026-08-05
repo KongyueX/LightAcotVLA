@@ -39,6 +39,8 @@ class Checkpoint:
     acot_contextual_compiler_params: str | None = None
     # Optional compact state/absolute-step outcome router NPZ.
     acot_compact_alpha_router_params: str | None = None
+    # Optional inert HARP temporal residual NPZ; requests opt in separately.
+    acot_harp_residual_params: str | None = None
     # Opt in to the joint coupled Action-CoT prototype sampler.
     joint_coupled_sampler: bool = False
 
@@ -126,6 +128,7 @@ def create_policy(args: Args) -> _policy.Policy:
                 acot_endpoint_student_params=args.policy.acot_endpoint_student_params,
                 acot_contextual_compiler_params=args.policy.acot_contextual_compiler_params,
                 acot_compact_alpha_router_params=args.policy.acot_compact_alpha_router_params,
+                acot_harp_residual_params=args.policy.acot_harp_residual_params,
                 sample_kwargs={"joint_coupled_sampler": True}
                 if args.policy.joint_coupled_sampler
                 else None,

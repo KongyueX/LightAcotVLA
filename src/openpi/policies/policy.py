@@ -14,6 +14,7 @@ from typing_extensions import override
 
 from openpi import transforms as _transforms
 from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
+from openpi.models import harp_temporal_residual as _harp_temporal_residual
 from openpi.models import model as _model
 from openpi.policies import compact_alpha_router as _compact_alpha_router
 from openpi.shared import array_typing as at
@@ -45,6 +46,7 @@ class Policy(BasePolicy):
         action_dim: int | None = None,
         acot_contextual_compiler: _contextual_plan_compiler.ContextualPlanCompiler | None = None,
         acot_compact_alpha_router: _compact_alpha_router.CompactAlphaRouter | None = None,
+        acot_harp_residual: _harp_temporal_residual.HARPResidualSidecar | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
         self._input_transform = _transforms.compose(transforms)
@@ -57,6 +59,12 @@ class Policy(BasePolicy):
         self._action_dim = action_dim or model.action_dim
         self._acot_contextual_compiler = acot_contextual_compiler
         self._acot_compact_alpha_router = acot_compact_alpha_router
+        self._acot_harp_residual = acot_harp_residual
+        self._apply_harp_residual = (
+            jax.jit(acot_harp_residual.predict_and_correct)
+            if acot_harp_residual is not None
+            else None
+        )
         self._sample_actions_profile_prefix = None
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
@@ -119,6 +127,13 @@ class Policy(BasePolicy):
             raise ValueError(
                 "A compact alpha router requires the model's sequential direct one-step entrypoint."
             )
+        if self._acot_harp_residual is not None and (
+            not self._can_profile_sample_actions()
+            or self._sample_actions_profile_direct_one_step_expert is None
+        ):
+            raise ValueError(
+                "A HARP sidecar requires the sequential direct one-step Action-CoT entrypoint."
+            )
 
     @override
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
@@ -131,6 +146,9 @@ class Policy(BasePolicy):
         export_acot_cache = _as_bool(inputs.pop("export_acot_cache", False))
         compact_alpha_router_enabled = _as_bool(
             inputs.pop("action_cot_compact_alpha_router", False)
+        )
+        harp_residual_enabled = _as_bool(
+            inputs.pop("action_cot_harp_residual", False)
         )
         absolute_decision_step_raw = inputs.pop(
             "action_cot_absolute_decision_step",
@@ -204,6 +222,7 @@ class Policy(BasePolicy):
             override_inputs.pop("profile_policy_timing", None)
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_compact_alpha_router", None)
+            override_inputs.pop("action_cot_harp_residual", None)
             override_inputs.pop("action_cot_absolute_decision_step", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
@@ -341,6 +360,12 @@ class Policy(BasePolicy):
                 **sample_kwargs,
                 "adaptive_final_time_warp": True,
             }
+        if harp_residual_enabled:
+            sample_kwargs = {
+                **sample_kwargs,
+                "force_direct_one_step_expert": True,
+                "apply_harp_residual": True,
+            }
         if ofp_interval_flow:
             if not 0.0 < ofp_warm_start_time <= 1.0:
                 raise ValueError("action_cot_ofp_warm_start_time must be in (0, 1].")
@@ -390,6 +415,51 @@ class Policy(BasePolicy):
             if self._acot_contextual_compiler is not None:
                 raise ValueError(
                     "Compact alpha routing cannot be combined with a contextual Action-CoT compiler."
+                )
+        if harp_residual_enabled:
+            if self._apply_harp_residual is None:
+                raise ValueError(
+                    "action_cot_harp_residual=True requires a HARP NPZ at serve startup."
+                )
+            if (
+                compact_alpha_router_enabled
+                or adaptive_final_time_warp
+                or ofp_interval_flow
+                or _as_bool(self._sample_kwargs.get("adaptive_final_time_warp", False))
+                or _as_bool(self._sample_kwargs.get("ofp_interval_flow", False))
+            ):
+                raise ValueError(
+                    "HARP cannot be combined with compact routing, adaptive time warp, or OFP inference."
+                )
+            configured_final_time_warp_alpha = float(
+                np.asarray(sample_kwargs.get("final_time_warp_alpha", 0.0)).item()
+            )
+            if final_time_warp_alpha > 0.0 or configured_final_time_warp_alpha > 0.0:
+                raise ValueError("HARP requires the unwarped deployed IR NFE1 draft.")
+            if joint_coupled_sampler or batched_mc_samples:
+                raise ValueError("HARP cannot be combined with coupled or batched-MC sampling.")
+            if self._acot_contextual_compiler is not None:
+                raise ValueError("HARP cannot be combined with a contextual Action-CoT compiler.")
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            final_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "final_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            if coarse_steps != 1 or final_steps != 1:
+                raise ValueError(
+                    "HARP was calibrated for endpoint-student EAR NFE1 and direct final NFE1; "
+                    f"got EAR NFE={coarse_steps}, final NFE={final_steps}."
                 )
         if joint_coupled_sampler and batched_mc_samples:
             raise ValueError("joint_coupled_sampler cannot be combined with batched_mc_samples.")
@@ -478,6 +548,7 @@ class Policy(BasePolicy):
             or final_time_warp_alpha > 0.0
             or adaptive_final_time_warp
             or compact_alpha_router_enabled
+            or harp_residual_enabled
             or profile_policy_timing
             or export_acot_cache
         ) and self._can_profile_sample_actions():
@@ -583,6 +654,7 @@ class Policy(BasePolicy):
                     "batched_mc_teacher_ms",
                     "execution_horizon_predictor_ms",
                     "compact_alpha_router_ms",
+                    "harp_residual_ms",
                 )
             )
             detailed_timing["profile_overhead_ms"] = max(0.0, model_time * 1000 - stage_total_ms)
@@ -751,6 +823,35 @@ class Policy(BasePolicy):
             _block_until_ready(expert_outputs)
             timing["action_expert_ms"] = (time.monotonic() - stage_start) * 1000
             result = dict(expert_outputs)
+            if _as_bool(sample_kwargs.get("apply_harp_residual", False)):
+                if self._apply_harp_residual is None:
+                    raise ValueError("HARP was requested but no residual sidecar is loaded.")
+                explicit_action_reason = coarse_outputs.get("explicit_action_reason")
+                implicit_action_reason = implicit_outputs.get("implicit_action_reason")
+                if explicit_action_reason is None or implicit_action_reason is None:
+                    raise ValueError("HARP requires both EAR and IAR from the current Action-CoT pass.")
+                action_nfe1 = expert_outputs["actions"]
+                harp_started = time.monotonic()
+                harp_outputs = self._apply_harp_residual(
+                    action_nfe1,
+                    explicit_action_reason,
+                    implicit_action_reason,
+                    prefix_state["expert_action_noise"],
+                    prefix_state["observation"].state,
+                )
+                _block_until_ready(harp_outputs)
+                timing["harp_residual_ms"] = (time.monotonic() - harp_started) * 1000
+                result.update(
+                    {
+                        "actions": harp_outputs["actions"],
+                        "harp_action_nfe1_normalized": action_nfe1,
+                        "harp_raw_residual": harp_outputs["raw_residual"],
+                        "harp_applied_residual": harp_outputs["applied_residual"],
+                        "harp_log_variance": harp_outputs["log_variance"],
+                        "harp_confidence": harp_outputs["confidence"],
+                        "harp_ear_reliability": harp_outputs["ear_reliability"],
+                    }
+                )
         else:
             explicit_action_reason = coarse_outputs.get("explicit_action_reason")
             implicit_action_reason = implicit_outputs.get("implicit_action_reason")
