@@ -53,6 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument(
+        "--final-time-warp-alpha",
+        type=float,
+        default=0.0,
+        help=(
+            "Endpoint-directed final-expert time calibration in [0,1). "
+            "Alpha=0 preserves the legacy sampler; alpha>0 uses the legacy "
+            "fast path at effective time (1-alpha)*t."
+        ),
+    )
+    parser.add_argument(
         "--ofp-interval-flow",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -155,6 +165,11 @@ def _request(
         "profile_policy_timing": np.asarray(1, dtype=np.bool_),
         "action_cot_denoising_steps": np.asarray(args.action_cot_denoising_steps, dtype=np.int32),
     }
+    if args.final_time_warp_alpha > 0.0:
+        request["action_cot_final_time_warp_alpha"] = np.asarray(
+            args.final_time_warp_alpha,
+            dtype=np.float32,
+        )
     if args.ofp_interval_flow:
         request.update(
             {
@@ -705,6 +720,10 @@ def _prepare_journal(
 def main(args: argparse.Namespace) -> None:
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action_cot_denoising_steps must be positive.")
+    if not 0.0 <= args.final_time_warp_alpha < 1.0:
+        raise ValueError("final_time_warp_alpha must be in [0, 1).")
+    if args.final_time_warp_alpha > 0.0 and args.ofp_interval_flow:
+        raise ValueError("final_time_warp_alpha and ofp_interval_flow are mutually exclusive.")
     if not 0.0 < args.ofp_warm_start_time <= 1.0:
         raise ValueError("ofp_warm_start_time must be in (0, 1].")
     if not 0.0 <= args.ofp_interval_condition_strength <= 1.0:

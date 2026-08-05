@@ -2180,6 +2180,7 @@ class ACOT_VLA(_model.BaseModel):
         implicit_action_reason: jax.Array | None,
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
+        final_time_warp_alpha: jax.Array | float = 0.0,
     ) -> dict[str, Any]:
         observation = prefix_state["observation"]
         prefix_tokens = prefix_state["prefix_tokens"]
@@ -2191,8 +2192,21 @@ class ACOT_VLA(_model.BaseModel):
 
         def step_expert(carry):
             x_t, time, step_idx = carry
+            # A weak endpoint-directed time warp reuses the legacy expert
+            # graph while matching OFP time_blend(t, r=0, alpha).  The ODE
+            # integration step remains unchanged; alpha=0 is exactly the
+            # original sampler.  This avoids the OFP warm-action input path
+            # when only endpoint calibration is requested.
+            conditioned_time = time * (
+                1.0
+                - jnp.clip(
+                    jnp.asarray(final_time_warp_alpha, dtype=jnp.float32),
+                    0.0,
+                    1.0,
+                )
+            )
             suffix_tokens, suffix_mask, suffix_ar_mask, adarms_cond = self.embed_suffix(
-                observation, x_t, jnp.broadcast_to(time, batch_size),
+                observation, x_t, jnp.broadcast_to(conditioned_time, batch_size),
                 explicit_action_reason=explicit_action_reason,
                 implicit_action_reason=implicit_action_reason,
                 suf_type = "expert"

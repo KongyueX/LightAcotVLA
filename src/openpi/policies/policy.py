@@ -105,6 +105,9 @@ class Policy(BasePolicy):
         export_acot_cache = _as_bool(inputs.pop("export_acot_cache", False))
         action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
+        final_time_warp_alpha = float(
+            np.asarray(inputs.pop("action_cot_final_time_warp_alpha", 0.0)).item()
+        )
         ofp_interval_flow = _as_bool(inputs.pop("action_cot_ofp_interval_flow", False))
         ofp_warm_start_actions = inputs.pop("action_cot_ofp_warm_start_actions", None)
         ofp_warm_start_valid = inputs.pop(
@@ -140,6 +143,7 @@ class Policy(BasePolicy):
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
+            override_inputs.pop("action_cot_final_time_warp_alpha", None)
             override_inputs.pop("action_cot_ofp_interval_flow", None)
             override_inputs.pop("action_cot_ofp_warm_start_actions", None)
             override_inputs.pop("action_cot_ofp_warm_start_valid", None)
@@ -218,6 +222,13 @@ class Policy(BasePolicy):
                 **sample_kwargs,
                 "dynamic_denoising_steps": bool(np.asarray(action_cot_dynamic_denoising_steps).item()),
             }
+        if not 0.0 <= final_time_warp_alpha < 1.0:
+            raise ValueError("action_cot_final_time_warp_alpha must be in [0, 1).")
+        if final_time_warp_alpha > 0.0:
+            sample_kwargs = {
+                **sample_kwargs,
+                "final_time_warp_alpha": jnp.asarray(final_time_warp_alpha, dtype=jnp.float32),
+            }
         if ofp_interval_flow:
             if not 0.0 < ofp_warm_start_time <= 1.0:
                 raise ValueError("action_cot_ofp_warm_start_time must be in (0, 1].")
@@ -253,6 +264,10 @@ class Policy(BasePolicy):
             raise ValueError("A contextual Action-CoT compiler cannot be combined with joint coupled sampling.")
         if ofp_interval_flow and self._acot_contextual_compiler is not None:
             raise ValueError("OFP interval inference cannot be combined with a contextual Action-CoT compiler.")
+        if final_time_warp_alpha > 0.0 and self._acot_contextual_compiler is not None:
+            raise ValueError("Final time warp cannot be combined with a contextual Action-CoT compiler.")
+        if final_time_warp_alpha > 0.0 and ofp_interval_flow:
+            raise ValueError("Final time warp and OFP interval inference are mutually exclusive.")
         if ofp_interval_flow and (joint_coupled_sampler or batched_mc_samples):
             raise ValueError("OFP interval inference cannot be combined with coupled or batched-MC sampling.")
         if ofp_interval_flow and self._sample_actions_profile_ofp_expert is None:
@@ -302,6 +317,7 @@ class Policy(BasePolicy):
         elif (
             self._acot_contextual_compiler is not None
             or ofp_interval_flow
+            or final_time_warp_alpha > 0.0
             or profile_policy_timing
             or export_acot_cache
         ) and self._can_profile_sample_actions():
@@ -496,6 +512,7 @@ class Policy(BasePolicy):
                     coarse_outputs["explicit_action_reason"],
                     implicit_outputs["implicit_action_reason"],
                     num_steps=sample_kwargs.get("num_steps", 10),
+                    final_time_warp_alpha=sample_kwargs.get("final_time_warp_alpha", 0.0),
                 )
             _block_until_ready(expert_outputs)
             timing["action_expert_ms"] = (time.monotonic() - stage_start) * 1000
