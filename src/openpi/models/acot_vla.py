@@ -1277,6 +1277,7 @@ class ACOT_VLA(_model.BaseModel):
         training_progress: jax.Array | float,
         flow_anchor_loss_weight: float = 1.0,
         self_consistency_loss_weight: float = 1.0,
+        endpoint_anchor_loss_weight: float = 0.0,
         min_interval: float = 0.05,
         contraction_power: float = 1.0,
         compute_endpoint_metrics: bool = False,
@@ -1286,6 +1287,9 @@ class ACOT_VLA(_model.BaseModel):
         This is deliberately named OFP-SC rather than full OFP: it implements
         the all-time instantaneous flow anchor and EMA nested-interval
         self-consistency from OFP, but not its classifier-free self-guidance.
+        ``endpoint_anchor_loss_weight > 0`` optionally adds a hybrid teacher
+        anchor on the explicit full ``1 -> 0`` interval; that mode is
+        OFP-SC+endpoint anchor, not full OFP.
 
         The original OFP paper uses ``t=0`` noise and ``t=1`` data.  ACoT uses
         the reverse convention ``x(t)=t*noise+(1-t)*action``.  We therefore
@@ -1298,7 +1302,11 @@ class ACOT_VLA(_model.BaseModel):
 
         if not self.adopt_explicit_action_reasoner:
             raise ValueError("OFP-SC requires adopt_explicit_action_reasoner=True.")
-        if flow_anchor_loss_weight < 0 or self_consistency_loss_weight < 0:
+        if min(
+            flow_anchor_loss_weight,
+            self_consistency_loss_weight,
+            endpoint_anchor_loss_weight,
+        ) < 0:
             raise ValueError("OFP-SC loss weights must be non-negative.")
         if not 0.0 < min_interval < 1.0:
             raise ValueError("min_interval must be in (0, 1).")
@@ -1417,7 +1425,7 @@ class ACOT_VLA(_model.BaseModel):
             "ofp_sc_interval_length": jnp.mean(interval_start_time - interval_end_time),
             "loss": total_loss,
         }
-        if compute_endpoint_metrics:
+        if endpoint_anchor_loss_weight > 0 or compute_endpoint_metrics:
             endpoint_start = jnp.ones((batch_size,), dtype=jnp.float32)
             endpoint_end = jnp.zeros((batch_size,), dtype=jnp.float32)
             predicted_actions = self._action_interval_endpoint(
@@ -1431,6 +1439,11 @@ class ACOT_VLA(_model.BaseModel):
             endpoint_mse = jnp.mean(
                 jnp.square(predicted_actions - teacher_actions_float)
             )
+            if endpoint_anchor_loss_weight > 0:
+                total_loss = total_loss + endpoint_anchor_loss_weight * endpoint_mse
+                metrics["loss"] = total_loss
+            metrics["ofp_sc_endpoint_anchor_mse"] = endpoint_mse
+            metrics["ofp_sc_endpoint_anchor_rmse"] = jnp.sqrt(endpoint_mse)
             metrics["ofp_sc_endpoint_mse"] = endpoint_mse
             metrics["ofp_sc_endpoint_rmse"] = jnp.sqrt(endpoint_mse)
         return total_loss, metrics

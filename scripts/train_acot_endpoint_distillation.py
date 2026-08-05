@@ -106,6 +106,7 @@ class Args:
     ofp_sc: bool = False
     ofp_flow_anchor_loss_weight: float = 1.0
     ofp_self_consistency_loss_weight: float = 1.0
+    ofp_endpoint_anchor_loss_weight: float = 0.0
     ofp_ema_decay: float = 0.999
     ofp_min_interval: float = 0.05
     ofp_contraction_power: float = 1.0
@@ -224,12 +225,16 @@ def _validate_args(args: Args) -> None:
             raise ValueError("--ofp-flow-anchor-loss-weight must be positive.")
         if args.ofp_self_consistency_loss_weight <= 0:
             raise ValueError("--ofp-self-consistency-loss-weight must be positive.")
+        if args.ofp_endpoint_anchor_loss_weight < 0:
+            raise ValueError("--ofp-endpoint-anchor-loss-weight must be non-negative.")
         if not 0.0 < args.ofp_ema_decay < 1.0:
             raise ValueError("--ofp-ema-decay must be in (0, 1).")
         if not 0.0 < args.ofp_min_interval < 1.0:
             raise ValueError("--ofp-min-interval must be in (0, 1).")
         if args.ofp_contraction_power <= 0:
             raise ValueError("--ofp-contraction-power must be positive.")
+    elif args.ofp_endpoint_anchor_loss_weight != 0:
+        raise ValueError("--ofp-endpoint-anchor-loss-weight requires --ofp-sc.")
 
 
 def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
@@ -442,6 +447,7 @@ def _endpoint_train_step(
     ofp_train_steps: int,
     ofp_flow_anchor_loss_weight: float,
     ofp_self_consistency_loss_weight: float,
+    ofp_endpoint_anchor_loss_weight: float,
     ofp_min_interval: float,
     ofp_contraction_power: float,
 ) -> tuple[training_utils.TrainState, dict[str, jax.Array]]:
@@ -472,6 +478,7 @@ def _endpoint_train_step(
                 training_progress=training_progress,
                 flow_anchor_loss_weight=ofp_flow_anchor_loss_weight,
                 self_consistency_loss_weight=ofp_self_consistency_loss_weight,
+                endpoint_anchor_loss_weight=ofp_endpoint_anchor_loss_weight,
                 min_interval=ofp_min_interval,
                 contraction_power=ofp_contraction_power,
                 compute_endpoint_metrics=False,
@@ -546,6 +553,7 @@ def _endpoint_validation_step(
     ofp_train_steps: int,
     ofp_flow_anchor_loss_weight: float,
     ofp_self_consistency_loss_weight: float,
+    ofp_endpoint_anchor_loss_weight: float,
     ofp_min_interval: float,
     ofp_contraction_power: float,
 ) -> dict[str, jax.Array]:
@@ -570,6 +578,7 @@ def _endpoint_validation_step(
             training_progress=training_progress,
             flow_anchor_loss_weight=ofp_flow_anchor_loss_weight,
             self_consistency_loss_weight=ofp_self_consistency_loss_weight,
+            endpoint_anchor_loss_weight=ofp_endpoint_anchor_loss_weight,
             min_interval=ofp_min_interval,
             contraction_power=ofp_contraction_power,
             compute_endpoint_metrics=True,
@@ -726,6 +735,13 @@ def main(args: Args) -> None:
     resume_params, resume_paths = _load_resume_params(args.resume_sidecar_params)
     trainable_filter = _train_filter(args.stage)
     ir_weight = args.ir_loss_weight if args.variant == "ir" else 0.0
+    objective_name = "endpoint"
+    if args.ofp_sc:
+        objective_name = (
+            "ofp_sc_endpoint_anchor"
+            if args.ofp_endpoint_anchor_loss_weight > 0
+            else "ofp_sc"
+        )
     train_config = dataclasses.replace(
         train_config_base,
         weight_loader=_BaseAndSidecarLoader(str(base_params_path), resume_params),
@@ -763,7 +779,7 @@ def main(args: Args) -> None:
     trainable_params = state.params.filter(trainable_filter)
     LOGGER.info(
         "Initialized endpoint student: objective=%s stage=%s variant=%s train=%s validation=%s trainable_params=%s",
-        "ofp_sc" if args.ofp_sc else "endpoint",
+        objective_name,
         args.stage,
         args.variant,
         train_indices.size,
@@ -789,6 +805,7 @@ def main(args: Args) -> None:
             ofp_train_steps=args.train_steps,
             ofp_flow_anchor_loss_weight=args.ofp_flow_anchor_loss_weight,
             ofp_self_consistency_loss_weight=args.ofp_self_consistency_loss_weight,
+            ofp_endpoint_anchor_loss_weight=args.ofp_endpoint_anchor_loss_weight,
             ofp_min_interval=args.ofp_min_interval,
             ofp_contraction_power=args.ofp_contraction_power,
         ),
@@ -813,6 +830,7 @@ def main(args: Args) -> None:
             ofp_train_steps=args.train_steps,
             ofp_flow_anchor_loss_weight=args.ofp_flow_anchor_loss_weight,
             ofp_self_consistency_loss_weight=args.ofp_self_consistency_loss_weight,
+            ofp_endpoint_anchor_loss_weight=args.ofp_endpoint_anchor_loss_weight,
             ofp_min_interval=args.ofp_min_interval,
             ofp_contraction_power=args.ofp_contraction_power,
         ),
@@ -957,7 +975,7 @@ def main(args: Args) -> None:
         "dataset": list(args.dataset),
         "stage": args.stage,
         "variant": args.variant,
-        "training_objective": "ofp_sc" if args.ofp_sc else "endpoint",
+        "training_objective": objective_name,
         "resume_sidecar_params": args.resume_sidecar_params,
         "causal_audit_summary": args.causal_audit_summary,
         "multi_time_flow_loss_weight": args.multi_time_flow_loss_weight,
@@ -967,6 +985,7 @@ def main(args: Args) -> None:
         "ofp_sc": args.ofp_sc,
         "ofp_flow_anchor_loss_weight": args.ofp_flow_anchor_loss_weight,
         "ofp_self_consistency_loss_weight": args.ofp_self_consistency_loss_weight,
+        "ofp_endpoint_anchor_loss_weight": args.ofp_endpoint_anchor_loss_weight,
         "ofp_ema_decay": args.ofp_ema_decay if args.ofp_sc else None,
         "ofp_min_interval": args.ofp_min_interval,
         "ofp_contraction_power": args.ofp_contraction_power,
