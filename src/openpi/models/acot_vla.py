@@ -2239,6 +2239,37 @@ class ACOT_VLA(_model.BaseModel):
         x_0_expert, _, _ = jax.lax.while_loop(cond_expert, step_expert, (expert_action_noise, 1.0, 1))
         return {"actions": x_0_expert}
 
+    def sample_actions_profile_direct_one_step_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+        final_time_warp_alpha: float = 0.0,
+    ) -> dict[str, Any]:
+        """Run the endpoint student as a direct one-step graph.
+
+        ``final_time_warp_alpha`` is static at the policy JIT boundary, so the
+        effective time and its positional embedding can be constant-folded.
+        This is mathematically identical to the one-iteration legacy sampler
+        but removes its dynamic ``while_loop`` control flow.
+        """
+
+        observation = prefix_state["observation"]
+        expert_action_noise = prefix_state["expert_action_noise"]
+        batch_size = observation.state.shape[0]
+        conditioned_time = jnp.ones((batch_size,), dtype=jnp.float32) * (
+            1.0
+            - jnp.asarray(final_time_warp_alpha, dtype=jnp.float32)
+        )
+        velocity = self._action_velocity_at_time(
+            prefix_state,
+            expert_action_noise,
+            conditioned_time,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        return {"actions": expert_action_noise - velocity}
+
     def sample_actions_profile_ofp_expert(
         self,
         prefix_state: dict[str, Any],

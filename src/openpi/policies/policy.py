@@ -58,6 +58,7 @@ class Policy(BasePolicy):
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
         self._sample_actions_profile_expert = None
+        self._sample_actions_profile_direct_one_step_expert = None
         self._sample_actions_profile_ofp_expert = None
         self._sample_actions_joint_coupled = None
         self._sample_actions_batched_mc = None
@@ -81,6 +82,12 @@ class Policy(BasePolicy):
             self._sample_actions_profile_implicit = nnx_utils.module_jit(model.sample_actions_profile_implicit)
             self._sample_actions_profile_coarse = nnx_utils.module_jit(model.sample_actions_profile_coarse)
             self._sample_actions_profile_expert = nnx_utils.module_jit(model.sample_actions_profile_expert)
+        if hasattr(model, "sample_actions_profile_direct_one_step_expert"):
+            self._sample_actions_profile_direct_one_step_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_direct_one_step_expert,
+                # module_jit prepends module state: alpha is argument four.
+                static_argnums=(4,),
+            )
         if hasattr(model, "sample_actions_profile_ofp_expert"):
             self._sample_actions_profile_ofp_expert = nnx_utils.module_jit(
                 model.sample_actions_profile_ofp_expert,
@@ -227,7 +234,9 @@ class Policy(BasePolicy):
         if final_time_warp_alpha > 0.0:
             sample_kwargs = {
                 **sample_kwargs,
-                "final_time_warp_alpha": jnp.asarray(final_time_warp_alpha, dtype=jnp.float32),
+                # Keep this hashable so the direct endpoint JIT can specialize
+                # and constant-fold the effective time.
+                "final_time_warp_alpha": final_time_warp_alpha,
             }
         if ofp_interval_flow:
             if not 0.0 < ofp_warm_start_time <= 1.0:
@@ -505,6 +514,15 @@ class Policy(BasePolicy):
                     sample_kwargs["ofp_warm_start_time"],
                     sample_kwargs["ofp_interval_condition_strength"],
                     sample_kwargs["ofp_interval_condition_mode"],
+                )
+            elif float(sample_kwargs.get("final_time_warp_alpha", 0.0)) > 0.0:
+                if self._sample_actions_profile_direct_one_step_expert is None:
+                    raise ValueError("The loaded policy does not implement direct one-step final inference.")
+                expert_outputs = self._sample_actions_profile_direct_one_step_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    float(sample_kwargs["final_time_warp_alpha"]),
                 )
             else:
                 expert_outputs = self._sample_actions_profile_expert(
