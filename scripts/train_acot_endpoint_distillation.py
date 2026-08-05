@@ -98,6 +98,7 @@ class Args:
     multi_time_flow_loss_weight: float = 0.0
     multi_time_response_loss_weight: float = 0.0
     multi_time_timestep: float = 0.5
+    joint_coupled_training: bool = False
     use_student_coarse: bool = False
     fsdp_devices: int = 1
     overwrite: bool = False
@@ -186,6 +187,13 @@ def _validate_args(args: Args) -> None:
         )
     if args.multi_time_response_loss_weight > 0 and args.stage == "coarse":
         raise ValueError("Multi-time response alignment acts on final actions; use final or dual stage.")
+    if args.joint_coupled_training and args.stage == "coarse":
+        raise ValueError("--joint-coupled-training requires final or dual stage.")
+    if args.joint_coupled_training and args.multi_time_response_loss_weight <= 0:
+        raise ValueError(
+            "--joint-coupled-training requires positive --multi-time-response-loss-weight "
+            "because coupled endpoint paths share the same coarse noise at t=1."
+        )
 
 
 def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
@@ -392,6 +400,7 @@ def _endpoint_train_step(
     multi_time_flow_loss_weight: float,
     multi_time_response_loss_weight: float,
     multi_time_timestep: float,
+    joint_coupled_training: bool,
 ) -> tuple[training_utils.TrainState, dict[str, jax.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -413,6 +422,7 @@ def _endpoint_train_step(
             multi_time_flow_loss_weight=multi_time_flow_loss_weight,
             multi_time_response_loss_weight=multi_time_response_loss_weight,
             multi_time_timestep=multi_time_timestep,
+            joint_coupled_training=joint_coupled_training,
             compute_ir_metrics=False,
             compute_multi_time_metrics=False,
         )
@@ -448,6 +458,7 @@ def _endpoint_validation_step(
     multi_time_flow_loss_weight: float,
     multi_time_response_loss_weight: float,
     multi_time_timestep: float,
+    joint_coupled_training: bool,
 ) -> dict[str, jax.Array]:
     model = nnx.merge(state.model_def, state.params)
     model.eval()
@@ -467,6 +478,7 @@ def _endpoint_validation_step(
         multi_time_flow_loss_weight=multi_time_flow_loss_weight,
         multi_time_response_loss_weight=multi_time_response_loss_weight,
         multi_time_timestep=multi_time_timestep,
+        joint_coupled_training=joint_coupled_training,
         compute_ir_metrics=stage in {"final", "dual"},
         compute_multi_time_metrics=(
             multi_time_flow_loss_weight > 0 or multi_time_response_loss_weight > 0
@@ -653,6 +665,7 @@ def main(args: Args) -> None:
             multi_time_flow_loss_weight=args.multi_time_flow_loss_weight,
             multi_time_response_loss_weight=args.multi_time_response_loss_weight,
             multi_time_timestep=args.multi_time_timestep,
+            joint_coupled_training=args.joint_coupled_training,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=(state_sharding, replicated_sharding),
@@ -669,6 +682,7 @@ def main(args: Args) -> None:
             multi_time_flow_loss_weight=args.multi_time_flow_loss_weight,
             multi_time_response_loss_weight=args.multi_time_response_loss_weight,
             multi_time_timestep=args.multi_time_timestep,
+            joint_coupled_training=args.joint_coupled_training,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=replicated_sharding,
@@ -814,6 +828,7 @@ def main(args: Args) -> None:
         "multi_time_flow_loss_weight": args.multi_time_flow_loss_weight,
         "multi_time_response_loss_weight": args.multi_time_response_loss_weight,
         "multi_time_timestep": args.multi_time_timestep,
+        "joint_coupled_training": args.joint_coupled_training,
         "train_records": int(train_indices.size),
         "validation_records": int(validation_indices.size),
         "completed_steps": args.train_steps,

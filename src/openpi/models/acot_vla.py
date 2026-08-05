@@ -1105,6 +1105,87 @@ class ACOT_VLA(_model.BaseModel):
         )
         return self.action_out_proj(suffix_out[:, -self.action_horizon :])
 
+    def _joint_coupled_velocities(
+        self,
+        prefix_state: dict[str, Any],
+        coarse_x_t: jax.Array,
+        action_x_t: jax.Array,
+        time: jax.Array,
+        implicit_action_reason: jax.Array | None,
+        *,
+        freeze_coarse_branch: bool = False,
+    ) -> tuple[jax.Array, jax.Array]:
+        """Evaluate coupled EAR/action flow fields in one suffix LLM call.
+
+        Coarse and action tokens share the prefix KV cache and use a
+        block-triangular suffix mask: the coarse branch cannot attend to the
+        action branch, while the action branch can attend to the coarse branch.
+        RoPE positions are branch-local, so both suffixes start immediately
+        after the prefix instead of shifting the action positions by the coarse
+        suffix length.
+        """
+
+        if not self.adopt_explicit_action_reasoner:
+            raise ValueError("Joint coupled flow evaluation requires adopt_explicit_action_reasoner=True.")
+
+        observation = prefix_state["observation"]
+        prefix_mask = prefix_state["prefix_mask"]
+        kv_cache = prefix_state["kv_cache"]
+        batch_size = observation.state.shape[0]
+
+        if freeze_coarse_branch:
+            coarse_x_t = jax.lax.stop_gradient(coarse_x_t)
+        coarse_tokens, coarse_mask, coarse_ar_mask, coarse_adarms_cond = self.embed_suffix(
+            observation,
+            coarse_x_t,
+            time,
+            suf_type="reasoner",
+        )
+        action_tokens, action_mask, action_ar_mask, action_adarms_cond = self.embed_suffix(
+            observation,
+            action_x_t,
+            time,
+            explicit_action_reason=coarse_x_t,
+            implicit_action_reason=implicit_action_reason,
+            suf_type="expert",
+        )
+        if freeze_coarse_branch:
+            # Final-only training also excludes the coarse parameter subtree via
+            # its trainable filter. Stopping the branch inputs here prevents an
+            # accidental gradient path through the explicit-condition inputs.
+            coarse_tokens = jax.lax.stop_gradient(coarse_tokens)
+            if coarse_adarms_cond is not None:
+                coarse_adarms_cond = jax.lax.stop_gradient(coarse_adarms_cond)
+
+        suffix_mask = jnp.concatenate([coarse_mask, action_mask], axis=1)
+        suffix_ar_mask = jnp.concatenate([coarse_ar_mask, action_ar_mask], axis=0)
+        suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
+        prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_mask.shape[1])
+        full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
+        assert full_attn_mask.shape == (
+            batch_size,
+            suffix_mask.shape[1],
+            prefix_mask.shape[1] + suffix_mask.shape[1],
+        )
+
+        prefix_end = jnp.sum(prefix_mask, axis=-1)[:, None]
+        coarse_positions = prefix_end + jnp.cumsum(coarse_mask, axis=-1) - 1
+        action_positions = prefix_end + jnp.cumsum(action_mask, axis=-1) - 1
+        positions = jnp.concatenate([coarse_positions, action_positions], axis=1)
+
+        (_, coarse_out, action_out), _ = self.PaliGemma.llm(
+            [None, coarse_tokens, action_tokens],
+            mask=full_attn_mask,
+            positions=positions,
+            kv_cache=kv_cache,
+            adarms_cond=[None, coarse_adarms_cond, action_adarms_cond],
+        )
+        coarse_velocity = self.coarse_action_out_proj(
+            coarse_out[:, -self.coarse_action_horizon :]
+        )
+        action_velocity = self.action_out_proj(action_out[:, -self.action_horizon :])
+        return coarse_velocity, action_velocity
+
     def compute_endpoint_distillation_loss(
         self,
         observation: _model.Observation,
@@ -1123,6 +1204,7 @@ class ACOT_VLA(_model.BaseModel):
         multi_time_flow_loss_weight: float = 0.0,
         multi_time_response_loss_weight: float = 0.0,
         multi_time_timestep: float = 0.5,
+        joint_coupled_training: bool = False,
         compute_ir_metrics: bool = False,
         compute_multi_time_metrics: bool = False,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
@@ -1149,6 +1231,8 @@ class ACOT_VLA(_model.BaseModel):
             raise ValueError("Multi-time response loss requires a positive multi-time flow loss weight.")
         if multi_time_response_loss_weight > 0 and stage == "coarse":
             raise ValueError("Multi-time response alignment acts on final actions.")
+        if joint_coupled_training and stage == "coarse":
+            raise ValueError("Joint coupled training requires a final-action branch; use final or dual stage.")
         if not self.adopt_explicit_action_reasoner:
             raise ValueError("Endpoint distillation requires adopt_explicit_action_reasoner=True.")
         need_final = stage in {"final", "dual"}
@@ -1174,7 +1258,20 @@ class ACOT_VLA(_model.BaseModel):
         total_loss = zero
         metrics: dict[str, jax.Array] = {}
         predicted_coarse = None
-        if need_coarse_prediction:
+        predicted_actions = None
+        if joint_coupled_training:
+            endpoint_time = jnp.ones((coarse_noise.shape[0],), dtype=jnp.float32)
+            endpoint_coarse_velocity, endpoint_action_velocity = self._joint_coupled_velocities(
+                prefix_state,
+                coarse_noise,
+                action_noise,
+                endpoint_time,
+                implicit_action_reason,
+                freeze_coarse_branch=stage == "final",
+            )
+            predicted_coarse = coarse_noise - endpoint_coarse_velocity
+            predicted_actions = action_noise - endpoint_action_velocity
+        elif need_coarse_prediction:
             predicted_coarse = self._one_step_coarse_endpoint(prefix_state, coarse_noise)
         if stage in {"coarse", "dual"}:
             assert predicted_coarse is not None
@@ -1215,12 +1312,14 @@ class ACOT_VLA(_model.BaseModel):
             if use_student_coarse:
                 assert predicted_coarse is not None
                 explicit_action_reason = jax.lax.stop_gradient(predicted_coarse)
-            predicted_actions = self._one_step_action_endpoint(
-                prefix_state,
-                action_noise,
-                explicit_action_reason,
-                implicit_action_reason,
-            )
+            if not joint_coupled_training:
+                predicted_actions = self._one_step_action_endpoint(
+                    prefix_state,
+                    action_noise,
+                    explicit_action_reason,
+                    implicit_action_reason,
+                )
+            assert predicted_actions is not None
             final_error = predicted_actions - teacher_actions.astype(predicted_actions.dtype)
             final_mse = jnp.mean(jnp.square(final_error))
             total_loss = total_loss + final_loss_weight * final_mse
@@ -1242,13 +1341,29 @@ class ACOT_VLA(_model.BaseModel):
                     expanded_time * action_noise
                     + (1.0 - expanded_time) * teacher_actions_float
                 )
-                multi_time_action_velocity = self._action_velocity_at_time(
-                    prefix_state,
-                    action_x_t,
-                    multi_time,
-                    explicit_action_reason,
-                    implicit_action_reason,
-                )
+                if joint_coupled_training:
+                    teacher_coarse_float = teacher_coarse.astype(coarse_noise.dtype)
+                    coarse_expanded_time = multi_time[:, None, None].astype(coarse_noise.dtype)
+                    coarse_x_t = (
+                        coarse_expanded_time * coarse_noise
+                        + (1.0 - coarse_expanded_time) * teacher_coarse_float
+                    )
+                    _, multi_time_action_velocity = self._joint_coupled_velocities(
+                        prefix_state,
+                        coarse_x_t,
+                        action_x_t,
+                        multi_time,
+                        implicit_action_reason,
+                        freeze_coarse_branch=stage == "final",
+                    )
+                else:
+                    multi_time_action_velocity = self._action_velocity_at_time(
+                        prefix_state,
+                        action_x_t,
+                        multi_time,
+                        explicit_action_reason,
+                        implicit_action_reason,
+                    )
                 multi_time_target_velocity = action_noise - teacher_actions_float
                 multi_time_final_mse = jnp.mean(
                     jnp.square(multi_time_action_velocity - multi_time_target_velocity)
@@ -1270,13 +1385,29 @@ class ACOT_VLA(_model.BaseModel):
                     expanded_time * action_noise
                     + (1.0 - expanded_time) * intervention_actions_float
                 )
-                intervention_velocity = self._action_velocity_at_time(
-                    prefix_state,
-                    intervention_x_t,
-                    multi_time,
-                    intervention_coarse,
-                    implicit_action_reason,
-                )
+                if joint_coupled_training:
+                    intervention_coarse_float = intervention_coarse.astype(coarse_noise.dtype)
+                    intervention_coarse_x_t = (
+                        expanded_time.astype(coarse_noise.dtype) * coarse_noise
+                        + (1.0 - expanded_time.astype(coarse_noise.dtype))
+                        * intervention_coarse_float
+                    )
+                    _, intervention_velocity = self._joint_coupled_velocities(
+                        prefix_state,
+                        intervention_coarse_x_t,
+                        intervention_x_t,
+                        multi_time,
+                        implicit_action_reason,
+                        freeze_coarse_branch=stage == "final",
+                    )
+                else:
+                    intervention_velocity = self._action_velocity_at_time(
+                        prefix_state,
+                        intervention_x_t,
+                        multi_time,
+                        intervention_coarse,
+                        implicit_action_reason,
+                    )
                 target_intervention_velocity = action_noise - intervention_actions_float
                 student_velocity_delta = intervention_velocity - multi_time_action_velocity
                 teacher_velocity_delta = target_intervention_velocity - multi_time_target_velocity
@@ -1314,12 +1445,27 @@ class ACOT_VLA(_model.BaseModel):
             if need_ir:
                 assert intervention_coarse is not None
                 assert teacher_intervention_actions is not None
-                predicted_intervention_actions = self._one_step_action_endpoint(
-                    prefix_state,
-                    action_noise,
-                    intervention_coarse,
-                    implicit_action_reason,
-                )
+                if joint_coupled_training:
+                    # At t=1 both clean and intervened rectified-flow paths start
+                    # from the same coarse noise. Endpoint IR therefore has zero
+                    # causal separation; the t=.5 response term supplies the
+                    # interventional supervision for the coupled graph.
+                    _, intervention_endpoint_velocity = self._joint_coupled_velocities(
+                        prefix_state,
+                        coarse_noise,
+                        action_noise,
+                        jnp.ones((coarse_noise.shape[0],), dtype=jnp.float32),
+                        implicit_action_reason,
+                        freeze_coarse_branch=stage == "final",
+                    )
+                    predicted_intervention_actions = action_noise - intervention_endpoint_velocity
+                else:
+                    predicted_intervention_actions = self._one_step_action_endpoint(
+                        prefix_state,
+                        action_noise,
+                        intervention_coarse,
+                        implicit_action_reason,
+                    )
                 student_delta = predicted_intervention_actions - predicted_actions
                 teacher_delta = teacher_intervention_actions.astype(predicted_actions.dtype)
                 teacher_delta = teacher_delta - teacher_actions.astype(predicted_actions.dtype)
@@ -1423,47 +1569,13 @@ class ACOT_VLA(_model.BaseModel):
         def step_coupled(carry):
             coarse_x_t, action_x_t, time = carry
             batch_time = jnp.broadcast_to(time, (batch_size,))
-            coarse_tokens, coarse_mask, coarse_ar_mask, coarse_adarms_cond = self.embed_suffix(
-                observation,
+            coarse_velocity, action_velocity = self._joint_coupled_velocities(
+                prefix_state,
                 coarse_x_t,
-                batch_time,
-                suf_type="reasoner",
-            )
-            action_tokens, action_mask, action_ar_mask, action_adarms_cond = self.embed_suffix(
-                observation,
                 action_x_t,
                 batch_time,
-                explicit_action_reason=coarse_x_t,
-                implicit_action_reason=implicit_action_reason,
-                suf_type="expert",
+                implicit_action_reason,
             )
-
-            # make_attn_mask interprets each True entry as a new causal block.
-            # With coarse before action, this is block triangular: C cannot see
-            # A, while A can see all current C tokens as well as its own block.
-            suffix_mask = jnp.concatenate([coarse_mask, action_mask], axis=1)
-            suffix_ar_mask = jnp.concatenate([coarse_ar_mask, action_ar_mask], axis=0)
-            suffix_attn_mask = make_attn_mask(suffix_mask, suffix_ar_mask)
-            prefix_attn_mask = einops.repeat(prefix_mask, "b p -> b s p", s=suffix_mask.shape[1])
-            full_attn_mask = jnp.concatenate([prefix_attn_mask, suffix_attn_mask], axis=-1)
-            assert full_attn_mask.shape == (
-                batch_size,
-                suffix_mask.shape[1],
-                prefix_tokens.shape[1] + suffix_mask.shape[1],
-            )
-            positions = jnp.sum(prefix_mask, axis=-1)[:, None] + jnp.cumsum(suffix_mask, axis=-1) - 1
-
-            (_, coarse_out, action_out), _ = self.PaliGemma.llm(
-                [None, coarse_tokens, action_tokens],
-                mask=full_attn_mask,
-                positions=positions,
-                kv_cache=kv_cache,
-                adarms_cond=[None, coarse_adarms_cond, action_adarms_cond],
-            )
-            coarse_velocity = self.coarse_action_out_proj(
-                coarse_out[:, -self.coarse_action_horizon :]
-            )
-            action_velocity = self.action_out_proj(action_out[:, -self.action_horizon :])
             return (
                 coarse_x_t + coupled_dt * coarse_velocity,
                 action_x_t + coupled_dt * action_velocity,
