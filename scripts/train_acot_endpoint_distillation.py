@@ -69,6 +69,15 @@ _FINAL_PATH = re.compile(
     r"action_out_proj/.*"
     r")$"
 )
+_FINAL_ADAPTER_PATH = re.compile(
+    r"^(?:"
+    r"time_mlp_in/.*|"
+    r"time_mlp_out/.*|"
+    r"action_time_mlp_in/.*|"
+    r"action_time_mlp_out/.*|"
+    r"action_out_proj/.*"
+    r")$"
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -111,6 +120,7 @@ class Args:
     ofp_min_interval: float = 0.05
     ofp_contraction_power: float = 1.0
     ofp_interval_condition_strength: float = 1.0
+    ofp_adapter_only: bool = False
     fsdp_devices: int = 1
     overwrite: bool = False
     allow_failed_audit: bool = False
@@ -120,15 +130,35 @@ def _path_text(path: tuple[Any, ...]) -> str:
     return "/".join(map(str, path))
 
 
-def _matches_stage(path: tuple[Any, ...], stage: str) -> bool:
+def _matches_stage(
+    path: tuple[Any, ...],
+    stage: str,
+    *,
+    ofp_adapter_only: bool = False,
+) -> bool:
     text = _path_text(path)
+    if ofp_adapter_only:
+        return stage == "final" and _FINAL_ADAPTER_PATH.fullmatch(text) is not None
     return (
         (stage in {"coarse", "dual"} and _COARSE_PATH.fullmatch(text) is not None)
         or (stage in {"final", "dual"} and _FINAL_PATH.fullmatch(text) is not None)
     )
 
 
-def _train_filter(stage: str) -> nnx.filterlib.Filter:
+def _train_filter(stage: str, *, ofp_adapter_only: bool = False) -> nnx.filterlib.Filter:
+    if ofp_adapter_only:
+        if stage != "final":
+            raise ValueError("OFP adapter-only training requires stage='final'.")
+        # Deliberately exclude PaliGemma/llm/*_2 and action_in_proj.  This
+        # scope only calibrates the existing final time-conditioning stack and
+        # endpoint projection; it introduces no random checkpoint modules.
+        return nnx.Any(
+            nnx_utils.PathRegex(r"time_mlp_in/.*"),
+            nnx_utils.PathRegex(r"time_mlp_out/.*"),
+            nnx_utils.PathRegex(r"action_time_mlp_in/.*"),
+            nnx_utils.PathRegex(r"action_time_mlp_out/.*"),
+            nnx_utils.PathRegex(r"action_out_proj/.*"),
+        )
     filters: list[nnx.filterlib.Filter] = []
     if stage in {"coarse", "dual"}:
         filters.extend(
@@ -240,6 +270,8 @@ def _validate_args(args: Args) -> None:
         raise ValueError("--ofp-endpoint-anchor-loss-weight requires --ofp-sc.")
     if not args.ofp_sc and args.ofp_interval_condition_strength != 1.0:
         raise ValueError("--ofp-interval-condition-strength requires --ofp-sc.")
+    if args.ofp_adapter_only and (not args.ofp_sc or args.stage != "final"):
+        raise ValueError("--ofp-adapter-only requires --ofp-sc with --stage final.")
 
 
 def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
@@ -672,6 +704,7 @@ def _save_sidecar(
     resume_paths: set[tuple[Any, ...]],
     overwrite: bool,
     use_ema: bool,
+    ofp_adapter_only: bool,
 ) -> int:
     source_params = state.ema_params if use_ema else state.params
     if source_params is None:
@@ -684,7 +717,8 @@ def _save_sidecar(
             else value
         )
         for path, value in flat.items()
-        if path in resume_paths or _matches_stage(path, stage)
+        if path in resume_paths
+        or _matches_stage(path, stage, ofp_adapter_only=ofp_adapter_only)
     }
     if not selected:
         raise ValueError("No endpoint-student parameters matched the save filter.")
@@ -746,7 +780,10 @@ def main(args: Args) -> None:
     observation_dataset = data_loader.transform_dataset(raw_dataset, data_config)
 
     resume_params, resume_paths = _load_resume_params(args.resume_sidecar_params)
-    trainable_filter = _train_filter(args.stage)
+    trainable_filter = _train_filter(
+        args.stage,
+        ofp_adapter_only=args.ofp_adapter_only,
+    )
     ir_weight = args.ir_loss_weight if args.variant == "ir" else 0.0
     objective_name = "endpoint"
     if args.ofp_sc:
@@ -790,14 +827,18 @@ def main(args: Args) -> None:
     )
     jax.block_until_ready(state)
     trainable_params = state.params.filter(trainable_filter)
+    trainable_parameter_count = training_utils.count_parameters(trainable_params)
+    trainable_scope = "ofp_final_adapter" if args.ofp_adapter_only else args.stage
     LOGGER.info(
-        "Initialized endpoint student: objective=%s stage=%s variant=%s train=%s validation=%s trainable_params=%s",
+        "Initialized endpoint student: objective=%s stage=%s variant=%s trainable_scope=%s "
+        "train=%s validation=%s trainable_params=%s",
         objective_name,
         args.stage,
         args.variant,
+        trainable_scope,
         train_indices.size,
         validation_indices.size,
-        training_utils.count_parameters(trainable_params),
+        trainable_parameter_count,
     )
 
     train_step = jax.jit(
@@ -928,6 +969,7 @@ def main(args: Args) -> None:
                     resume_paths=resume_paths,
                     overwrite=args.overwrite,
                     use_ema=args.ofp_sc,
+                    ofp_adapter_only=args.ofp_adapter_only,
                 )
                 LOGGER.info("Saved step %s delta sidecar with %s parameters.", step, saved_params)
 
@@ -983,6 +1025,7 @@ def main(args: Args) -> None:
         resume_paths=resume_paths,
         overwrite=args.overwrite,
         use_ema=args.ofp_sc,
+        ofp_adapter_only=args.ofp_adapter_only,
     )
     summary = {
         "config_name": args.config_name,
@@ -1005,7 +1048,10 @@ def main(args: Args) -> None:
         "ofp_min_interval": args.ofp_min_interval,
         "ofp_contraction_power": args.ofp_contraction_power,
         "ofp_interval_condition_strength": args.ofp_interval_condition_strength,
+        "ofp_adapter_only": args.ofp_adapter_only,
         "ofp_self_guidance": False,
+        "trainable_scope": trainable_scope,
+        "trainable_parameter_count": trainable_parameter_count,
         "saved_parameter_source": "ema" if args.ofp_sc else "online",
         "validation_parameter_source": "ema" if args.ofp_sc else "online",
         "train_records": int(train_indices.size),
