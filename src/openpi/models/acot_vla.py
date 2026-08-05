@@ -606,6 +606,7 @@ class ACOT_VLA(_model.BaseModel):
         self, obs: _model.Observation,
         noisy_actions,
         timestep: at.Float[at.Array, " b"],
+        interval_end_timestep: Optional[at.Float[at.Array, " b"]] = None,
         explicit_action_reason: Optional[jax.Array] = None,
         implicit_action_reason: Optional[jax.Array] = None,
         suf_type = "reasoner"
@@ -630,6 +631,21 @@ class ACOT_VLA(_model.BaseModel):
         if suf_type == "reasoner":
             action_tokens = self.coarse_action_in_proj(noisy_actions)
             time_emb = posemb_sincos(timestep, self.coarse_action_in_proj.out_features, min_period=4e-3, max_period=4.0)
+            if interval_end_timestep is not None:
+                endpoint_emb = posemb_sincos(
+                    interval_end_timestep,
+                    self.coarse_action_in_proj.out_features,
+                    min_period=4e-3,
+                    max_period=4.0,
+                )
+                split = time_emb.shape[-1] // 2
+                # Parameterize u(x_t, t, r) without adding checkpoint-only
+                # modules: half of the existing sinusoidal features encode t
+                # and half encode r.  When r == t this is exactly the original
+                # time embedding, preserving the pretrained flow anchor.
+                time_emb = jnp.concatenate(
+                    [time_emb[..., :split], endpoint_emb[..., split:]], axis=-1
+                )
 
             if self.pi05:
                 # time MLP (for adaRMS)
@@ -652,6 +668,17 @@ class ACOT_VLA(_model.BaseModel):
         elif suf_type == "expert":
             action_tokens = self.action_in_proj(noisy_actions)
             time_emb = posemb_sincos(timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0)
+            if interval_end_timestep is not None:
+                endpoint_emb = posemb_sincos(
+                    interval_end_timestep,
+                    self.action_in_proj.out_features,
+                    min_period=4e-3,
+                    max_period=4.0,
+                )
+                split = time_emb.shape[-1] // 2
+                time_emb = jnp.concatenate(
+                    [time_emb[..., :split], endpoint_emb[..., split:]], axis=-1
+                )
 
             if self.pi05:
                 # time MLP (for adaRMS)
@@ -1077,6 +1104,8 @@ class ACOT_VLA(_model.BaseModel):
         time: jax.Array,
         explicit_action_reason: _model.CoarseActions | None,
         implicit_action_reason: jax.Array | None,
+        *,
+        interval_end_time: jax.Array | None = None,
     ) -> jax.Array:
         """Evaluate the final-action flow field at an explicit state and time."""
 
@@ -1088,6 +1117,7 @@ class ACOT_VLA(_model.BaseModel):
             observation,
             action_x_t,
             time,
+            interval_end_timestep=interval_end_time,
             explicit_action_reason=explicit_action_reason,
             implicit_action_reason=implicit_action_reason,
             suf_type="expert",
@@ -1104,6 +1134,55 @@ class ACOT_VLA(_model.BaseModel):
             adarms_cond=[None, None, adarms_cond],
         )
         return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+
+    def _action_interval_velocity(
+        self,
+        prefix_state: dict[str, Any],
+        action_x_t: jax.Array,
+        interval_start_time: jax.Array,
+        interval_end_time: jax.Array,
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+    ) -> jax.Array:
+        """Predict average velocity u(x_t, t, r) for a reverse-time interval.
+
+        ACoT uses ``x(t) = t * noise + (1 - t) * action`` and samples from
+        ``t=1`` down to ``t=0``.  Therefore valid inference intervals satisfy
+        ``0 <= r <= t <= 1`` and use ``x_r = x_t + (r - t) * u``.
+        Keeping ``r`` explicit lets later warm-start inference begin at any
+        noising level instead of hard-coding the endpoint-only ``1 -> 0`` map.
+        """
+
+        return self._action_velocity_at_time(
+            prefix_state,
+            action_x_t,
+            interval_start_time,
+            explicit_action_reason,
+            implicit_action_reason,
+            interval_end_time=interval_end_time,
+        )
+
+    def _action_interval_endpoint(
+        self,
+        prefix_state: dict[str, Any],
+        action_x_t: jax.Array,
+        interval_start_time: jax.Array,
+        interval_end_time: jax.Array,
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+    ) -> jax.Array:
+        """Advance one learned average-velocity interval to its endpoint."""
+
+        velocity = self._action_interval_velocity(
+            prefix_state,
+            action_x_t,
+            interval_start_time,
+            interval_end_time,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        delta_time = (interval_end_time - interval_start_time).astype(action_x_t.dtype)
+        return action_x_t + delta_time[:, None, None] * velocity
 
     def _joint_coupled_velocities(
         self,
@@ -1185,6 +1264,176 @@ class ACOT_VLA(_model.BaseModel):
         )
         action_velocity = self.action_out_proj(action_out[:, -self.action_horizon :])
         return coarse_velocity, action_velocity
+
+    def compute_ofp_sc_loss(
+        self,
+        ema_teacher: "ACOT_VLA",
+        observation: _model.Observation,
+        teacher_coarse: _model.CoarseActions,
+        teacher_actions: _model.Actions,
+        action_noise: jax.Array,
+        rng: at.KeyArrayLike,
+        *,
+        training_progress: jax.Array | float,
+        flow_anchor_loss_weight: float = 1.0,
+        self_consistency_loss_weight: float = 1.0,
+        min_interval: float = 0.05,
+        contraction_power: float = 1.0,
+        compute_endpoint_metrics: bool = False,
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
+        """Train the final branch with OFP self-consistency in ACoT time.
+
+        This is deliberately named OFP-SC rather than full OFP: it implements
+        the all-time instantaneous flow anchor and EMA nested-interval
+        self-consistency from OFP, but not its classifier-free self-guidance.
+
+        The original OFP paper uses ``t=0`` noise and ``t=1`` data.  ACoT uses
+        the reverse convention ``x(t)=t*noise+(1-t)*action``.  We therefore
+        sample ``0 <= r < t <= 1`` and retain the interval update
+        ``x_r=x_t+(r-t)u(x_t,t,r)``.  For the nested target, ``m`` lies between
+        ``r`` and ``t`` and the EMA model maps the ground-truth ``x_m`` to
+        ``r``; the resulting endpoint defines the student's average velocity
+        over the larger ``t -> r`` interval.
+        """
+
+        if not self.adopt_explicit_action_reasoner:
+            raise ValueError("OFP-SC requires adopt_explicit_action_reasoner=True.")
+        if flow_anchor_loss_weight < 0 or self_consistency_loss_weight < 0:
+            raise ValueError("OFP-SC loss weights must be non-negative.")
+        if not 0.0 < min_interval < 1.0:
+            raise ValueError("min_interval must be in (0, 1).")
+        if contraction_power <= 0:
+            raise ValueError("contraction_power must be positive.")
+
+        prefix_state = self._compute_prefix_state(observation)
+        implicit_action_reason = self.sample_actions_profile_implicit(prefix_state)[
+            "implicit_action_reason"
+        ]
+        batch_size = action_noise.shape[0]
+        teacher_actions_float = teacher_actions.astype(action_noise.dtype)
+        teacher_coarse_float = teacher_coarse.astype(action_noise.dtype)
+        target_velocity = action_noise - teacher_actions_float
+
+        anchor_rng, end_rng, start_rng, middle_rng = jax.random.split(rng, 4)
+        anchor_time = jax.random.uniform(
+            anchor_rng,
+            (batch_size,),
+            minval=0.0,
+            maxval=1.0,
+            dtype=jnp.float32,
+        )
+        anchor_time_expanded = anchor_time[:, None, None].astype(action_noise.dtype)
+        anchor_x_t = (
+            anchor_time_expanded * action_noise
+            + (1.0 - anchor_time_expanded) * teacher_actions_float
+        )
+        anchor_velocity = self._action_interval_velocity(
+            prefix_state,
+            anchor_x_t,
+            anchor_time,
+            anchor_time,
+            teacher_coarse_float,
+            implicit_action_reason,
+        )
+        flow_anchor_mse = jnp.mean(jnp.square(anchor_velocity - target_velocity))
+
+        interval_end_time = jax.random.uniform(
+            end_rng,
+            (batch_size,),
+            minval=0.0,
+            maxval=1.0 - min_interval,
+            dtype=jnp.float32,
+        )
+        start_fraction = jax.random.uniform(
+            start_rng,
+            (batch_size,),
+            minval=0.0,
+            maxval=1.0,
+            dtype=jnp.float32,
+        )
+        interval_start_time = interval_end_time + min_interval + start_fraction * (
+            1.0 - interval_end_time - min_interval
+        )
+        progress = jnp.clip(jnp.asarray(training_progress, dtype=jnp.float32), 0.0, 1.0)
+        contraction = jnp.power(1.0 - progress, contraction_power)
+        middle_fraction = jax.random.uniform(
+            middle_rng,
+            (batch_size,),
+            minval=0.0,
+            maxval=1.0,
+            dtype=jnp.float32,
+        )
+        interval_middle_time = interval_start_time - (
+            interval_start_time - interval_end_time
+        ) * contraction * middle_fraction
+
+        start_expanded = interval_start_time[:, None, None].astype(action_noise.dtype)
+        middle_expanded = interval_middle_time[:, None, None].astype(action_noise.dtype)
+        action_x_start = (
+            start_expanded * action_noise
+            + (1.0 - start_expanded) * teacher_actions_float
+        )
+        action_x_middle = (
+            middle_expanded * action_noise
+            + (1.0 - middle_expanded) * teacher_actions_float
+        )
+        student_interval_velocity = self._action_interval_velocity(
+            prefix_state,
+            action_x_start,
+            interval_start_time,
+            interval_end_time,
+            teacher_coarse_float,
+            implicit_action_reason,
+        )
+        ema_interval_velocity = ema_teacher._action_interval_velocity(
+            prefix_state,
+            action_x_middle,
+            interval_middle_time,
+            interval_end_time,
+            teacher_coarse_float,
+            implicit_action_reason,
+        )
+        ema_endpoint = action_x_middle + (
+            interval_end_time - interval_middle_time
+        )[:, None, None].astype(action_noise.dtype) * ema_interval_velocity
+        target_interval_velocity = (ema_endpoint - action_x_start) / (
+            interval_end_time - interval_start_time
+        )[:, None, None].astype(action_noise.dtype)
+        target_interval_velocity = jax.lax.stop_gradient(target_interval_velocity)
+        self_consistency_mse = jnp.mean(
+            jnp.square(student_interval_velocity - target_interval_velocity)
+        )
+
+        total_loss = (
+            flow_anchor_loss_weight * flow_anchor_mse
+            + self_consistency_loss_weight * self_consistency_mse
+        )
+        metrics: dict[str, jax.Array] = {
+            "ofp_sc_flow_anchor_mse": flow_anchor_mse,
+            "ofp_sc_flow_anchor_rmse": jnp.sqrt(flow_anchor_mse),
+            "ofp_sc_consistency_mse": self_consistency_mse,
+            "ofp_sc_consistency_rmse": jnp.sqrt(self_consistency_mse),
+            "ofp_sc_contraction": contraction,
+            "ofp_sc_interval_length": jnp.mean(interval_start_time - interval_end_time),
+            "loss": total_loss,
+        }
+        if compute_endpoint_metrics:
+            endpoint_start = jnp.ones((batch_size,), dtype=jnp.float32)
+            endpoint_end = jnp.zeros((batch_size,), dtype=jnp.float32)
+            predicted_actions = self._action_interval_endpoint(
+                prefix_state,
+                action_noise,
+                endpoint_start,
+                endpoint_end,
+                teacher_coarse_float,
+                implicit_action_reason,
+            )
+            endpoint_mse = jnp.mean(
+                jnp.square(predicted_actions - teacher_actions_float)
+            )
+            metrics["ofp_sc_endpoint_mse"] = endpoint_mse
+            metrics["ofp_sc_endpoint_rmse"] = jnp.sqrt(endpoint_mse)
+        return total_loss, metrics
 
     def compute_endpoint_distillation_loss(
         self,
@@ -1914,3 +2163,49 @@ class ACOT_VLA(_model.BaseModel):
 
         x_0_expert, _, _ = jax.lax.while_loop(cond_expert, step_expert, (expert_action_noise, 1.0, 1))
         return {"actions": x_0_expert}
+
+    def sample_actions_profile_ofp_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+        warm_start_actions: _model.Actions,
+        warm_start_valid: jax.Array,
+        warm_start_time: jax.Array,
+    ) -> dict[str, Any]:
+        """Evaluate the opt-in OFP-SC interval map in one final-branch call.
+
+        The default start is the usual ``t=1`` Gaussian noise.  When a caller
+        supplies a valid previous action chunk, it can instead start from the
+        noised warm action at ``0 < t <= 1``.  Both cases use the explicitly
+        conditioned interval ``t -> 0`` learned by ``compute_ofp_sc_loss``;
+        legacy endpoint sidecars continue to use ``sample_actions_profile_expert``.
+        """
+
+        observation = prefix_state["observation"]
+        expert_action_noise = prefix_state["expert_action_noise"]
+        batch_size = observation.state.shape[0]
+        valid = jnp.broadcast_to(jnp.asarray(warm_start_valid, dtype=jnp.bool_), (batch_size,))
+        requested_start = jnp.broadcast_to(
+            jnp.asarray(warm_start_time, dtype=jnp.float32),
+            (batch_size,),
+        )
+        requested_start = jnp.clip(requested_start, 1e-3, 1.0)
+        interval_start = jnp.where(valid, requested_start, jnp.ones_like(requested_start))
+        interval_end = jnp.zeros_like(interval_start)
+        start = interval_start[:, None, None].astype(expert_action_noise.dtype)
+        warm_actions = jnp.asarray(warm_start_actions, dtype=expert_action_noise.dtype)
+        action_x_start = start * expert_action_noise + (1.0 - start) * warm_actions
+        actions = self._action_interval_endpoint(
+            prefix_state,
+            action_x_start,
+            interval_start,
+            interval_end,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        return {
+            "actions": actions,
+            "ofp_interval_start_time": interval_start,
+            "ofp_warm_start_used": valid,
+        }

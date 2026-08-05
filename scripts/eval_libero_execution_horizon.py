@@ -52,6 +52,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
+    parser.add_argument(
+        "--ofp-interval-flow",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the opt-in OFP-SC final interval map instead of the legacy final sampler.",
+    )
+    parser.add_argument(
+        "--ofp-warm-start-time",
+        type=float,
+        default=1.0,
+        help="Previous-chunk noising time in (0,1]; 1 disables its influence.",
+    )
     parser.add_argument("--original-horizon", type=int, default=5)
     parser.add_argument("--fixed-horizon", type=int, default=9)
     parser.add_argument("--teacher-samples", type=int, choices=(10, 20, 32), default=20)
@@ -125,6 +137,22 @@ def _request(
         "profile_policy_timing": np.asarray(1, dtype=np.bool_),
         "action_cot_denoising_steps": np.asarray(args.action_cot_denoising_steps, dtype=np.int32),
     }
+    if args.ofp_interval_flow:
+        request.update(
+            {
+                "action_cot_ofp_interval_flow": np.asarray(1, dtype=np.bool_),
+                "action_cot_ofp_warm_start_actions": (
+                    np.asarray(previous_actions, dtype=np.float32)
+                    if previous_actions is not None
+                    else np.zeros((10, 7), dtype=np.float32)
+                ),
+                "action_cot_ofp_warm_start_valid": np.asarray(previous_actions is not None),
+                "action_cot_ofp_warm_start_time": np.asarray(
+                    args.ofp_warm_start_time,
+                    dtype=np.float32,
+                ),
+            }
+        )
     if mode == "exact_batched_mc_v2":
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
     if mode in {"v2_distilled", "v2_value_refined", *SELECTOR_MODES}:
@@ -654,6 +682,8 @@ def _prepare_journal(
 def main(args: argparse.Namespace) -> None:
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action_cot_denoising_steps must be positive.")
+    if not 0.0 < args.ofp_warm_start_time <= 1.0:
+        raise ValueError("ofp_warm_start_time must be in (0, 1].")
     if args.v2_budget_capacity <= 0 or args.v2_initial_budget > args.v2_budget_capacity:
         raise ValueError("Invalid V2 budget configuration.")
     if args.selector_temperature <= 0:

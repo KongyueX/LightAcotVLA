@@ -58,6 +58,7 @@ class Policy(BasePolicy):
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
         self._sample_actions_profile_expert = None
+        self._sample_actions_profile_ofp_expert = None
         self._sample_actions_joint_coupled = None
         self._sample_actions_batched_mc = None
         self._predict_execution_horizon = None
@@ -80,6 +81,10 @@ class Policy(BasePolicy):
             self._sample_actions_profile_implicit = nnx_utils.module_jit(model.sample_actions_profile_implicit)
             self._sample_actions_profile_coarse = nnx_utils.module_jit(model.sample_actions_profile_coarse)
             self._sample_actions_profile_expert = nnx_utils.module_jit(model.sample_actions_profile_expert)
+        if hasattr(model, "sample_actions_profile_ofp_expert"):
+            self._sample_actions_profile_ofp_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_ofp_expert
+            )
         if self._acot_contextual_compiler is not None and not self._can_profile_sample_actions():
             raise ValueError(
                 "A contextual Action-CoT compiler requires the model's sequential profile entrypoints."
@@ -96,6 +101,15 @@ class Policy(BasePolicy):
         export_acot_cache = _as_bool(inputs.pop("export_acot_cache", False))
         action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
+        ofp_interval_flow = _as_bool(inputs.pop("action_cot_ofp_interval_flow", False))
+        ofp_warm_start_actions = inputs.pop("action_cot_ofp_warm_start_actions", None)
+        ofp_warm_start_valid = inputs.pop(
+            "action_cot_ofp_warm_start_valid",
+            ofp_warm_start_actions is not None,
+        )
+        ofp_warm_start_time = float(
+            np.asarray(inputs.pop("action_cot_ofp_warm_start_time", 1.0)).item()
+        )
         joint_coupled_sampler = _as_bool(
             inputs.pop("joint_coupled_sampler", self._sample_kwargs.get("joint_coupled_sampler", False))
         )
@@ -116,6 +130,10 @@ class Policy(BasePolicy):
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
+            override_inputs.pop("action_cot_ofp_interval_flow", None)
+            override_inputs.pop("action_cot_ofp_warm_start_actions", None)
+            override_inputs.pop("action_cot_ofp_warm_start_valid", None)
+            override_inputs.pop("action_cot_ofp_warm_start_time", None)
             override_inputs.pop("joint_coupled_sampler", None)
             override_inputs.pop("batched_mc_samples", None)
             override_inputs.pop("run_execution_horizon_predictor", None)
@@ -188,6 +206,18 @@ class Policy(BasePolicy):
                 **sample_kwargs,
                 "dynamic_denoising_steps": bool(np.asarray(action_cot_dynamic_denoising_steps).item()),
             }
+        if ofp_interval_flow:
+            if not 0.0 < ofp_warm_start_time <= 1.0:
+                raise ValueError("action_cot_ofp_warm_start_time must be in (0, 1].")
+            sample_kwargs = {
+                **sample_kwargs,
+                "ofp_interval_flow": True,
+                "ofp_warm_start_actions": jnp.asarray(
+                    self._normalize_previous_actions(ofp_warm_start_actions)
+                )[None, ...],
+                "ofp_warm_start_valid": jnp.asarray(ofp_warm_start_valid, dtype=jnp.bool_).reshape((1,)),
+                "ofp_warm_start_time": jnp.asarray(ofp_warm_start_time, dtype=jnp.float32).reshape((1,)),
+            }
         observation = _model.Observation.from_dict(inputs)
         detailed_timing = {}
         if joint_coupled_sampler and batched_mc_samples:
@@ -196,6 +226,12 @@ class Policy(BasePolicy):
             raise ValueError("A contextual Action-CoT compiler cannot be combined with batched MC sampling.")
         if self._acot_contextual_compiler is not None and joint_coupled_sampler:
             raise ValueError("A contextual Action-CoT compiler cannot be combined with joint coupled sampling.")
+        if ofp_interval_flow and self._acot_contextual_compiler is not None:
+            raise ValueError("OFP interval inference cannot be combined with a contextual Action-CoT compiler.")
+        if ofp_interval_flow and (joint_coupled_sampler or batched_mc_samples):
+            raise ValueError("OFP interval inference cannot be combined with coupled or batched-MC sampling.")
+        if ofp_interval_flow and self._sample_actions_profile_ofp_expert is None:
+            raise ValueError("The loaded policy does not implement OFP interval inference.")
         if joint_coupled_sampler and export_acot_cache:
             raise ValueError("joint_coupled_sampler does not yet support export_acot_cache.")
         if batched_mc_samples:
@@ -240,6 +276,7 @@ class Policy(BasePolicy):
                 detailed_timing["coupled_action_cot_ms"] = (time.monotonic() - stage_start) * 1000
         elif (
             self._acot_contextual_compiler is not None
+            or ofp_interval_flow
             or profile_policy_timing
             or export_acot_cache
         ) and self._can_profile_sample_actions():
@@ -415,12 +452,24 @@ class Policy(BasePolicy):
         stage_start = time.monotonic()
         prefix_feature = None
         if self._acot_contextual_compiler is None:
-            expert_outputs = self._sample_actions_profile_expert(
-                prefix_state,
-                coarse_outputs["explicit_action_reason"],
-                implicit_outputs["implicit_action_reason"],
-                num_steps=sample_kwargs.get("num_steps", 10),
-            )
+            if _as_bool(sample_kwargs.get("ofp_interval_flow", False)):
+                if self._sample_actions_profile_ofp_expert is None:
+                    raise ValueError("The loaded policy does not implement OFP interval inference.")
+                expert_outputs = self._sample_actions_profile_ofp_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    sample_kwargs["ofp_warm_start_actions"],
+                    sample_kwargs["ofp_warm_start_valid"],
+                    sample_kwargs["ofp_warm_start_time"],
+                )
+            else:
+                expert_outputs = self._sample_actions_profile_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    num_steps=sample_kwargs.get("num_steps", 10),
+                )
             _block_until_ready(expert_outputs)
             timing["action_expert_ms"] = (time.monotonic() - stage_start) * 1000
             result = dict(expert_outputs)

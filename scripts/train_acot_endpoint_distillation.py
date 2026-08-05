@@ -100,6 +100,15 @@ class Args:
     multi_time_timestep: float = 0.5
     joint_coupled_training: bool = False
     use_student_coarse: bool = False
+    # Opt-in final-action One-Step Flow Policy self-consistency.  This is
+    # OFP-SC, not full OFP: the current ACoT input path has no safe null
+    # condition / condition-dropout contract for OFP self-guidance.
+    ofp_sc: bool = False
+    ofp_flow_anchor_loss_weight: float = 1.0
+    ofp_self_consistency_loss_weight: float = 1.0
+    ofp_ema_decay: float = 0.999
+    ofp_min_interval: float = 0.05
+    ofp_contraction_power: float = 1.0
     fsdp_devices: int = 1
     overwrite: bool = False
     allow_failed_audit: bool = False
@@ -194,6 +203,33 @@ def _validate_args(args: Args) -> None:
             "--joint-coupled-training requires positive --multi-time-response-loss-weight "
             "because coupled endpoint paths share the same coarse noise at t=1."
         )
+    if args.ofp_sc:
+        if args.stage != "final":
+            raise ValueError("--ofp-sc is a final-only training path; use --stage final.")
+        if args.variant != "b6":
+            raise ValueError(
+                "--ofp-sc does not include endpoint IR alignment; use --variant b6."
+            )
+        if args.joint_coupled_training or args.use_student_coarse:
+            raise ValueError(
+                "--ofp-sc currently conditions on exported teacher EAR; do not combine it with "
+                "--joint-coupled-training or --use-student-coarse."
+            )
+        if args.multi_time_flow_loss_weight > 0 or args.multi_time_response_loss_weight > 0:
+            raise ValueError(
+                "--ofp-sc replaces the fixed multi-time objective with all-time flow anchoring "
+                "and nested-interval consistency; leave multi-time weights at zero."
+            )
+        if args.ofp_flow_anchor_loss_weight <= 0:
+            raise ValueError("--ofp-flow-anchor-loss-weight must be positive.")
+        if args.ofp_self_consistency_loss_weight <= 0:
+            raise ValueError("--ofp-self-consistency-loss-weight must be positive.")
+        if not 0.0 < args.ofp_ema_decay < 1.0:
+            raise ValueError("--ofp-ema-decay must be in (0, 1).")
+        if not 0.0 < args.ofp_min_interval < 1.0:
+            raise ValueError("--ofp-min-interval must be in (0, 1).")
+        if args.ofp_contraction_power <= 0:
+            raise ValueError("--ofp-contraction-power must be positive.")
 
 
 def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
@@ -401,11 +437,45 @@ def _endpoint_train_step(
     multi_time_response_loss_weight: float,
     multi_time_timestep: float,
     joint_coupled_training: bool,
+    ofp_sc: bool,
+    ofp_seed: int,
+    ofp_train_steps: int,
+    ofp_flow_anchor_loss_weight: float,
+    ofp_self_consistency_loss_weight: float,
+    ofp_min_interval: float,
+    ofp_contraction_power: float,
 ) -> tuple[training_utils.TrainState, dict[str, jax.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
 
+    ema_teacher = None
+    if ofp_sc:
+        if state.ema_params is None or state.ema_decay is None:
+            raise ValueError("OFP-SC requires EMA parameters in TrainState.")
+        ema_teacher = nnx.merge(state.model_def, state.ema_params)
+        ema_teacher.eval()
+
     def loss_fn(candidate: Any) -> tuple[jax.Array, dict[str, jax.Array]]:
+        if ofp_sc:
+            assert ema_teacher is not None
+            ofp_rng = jax.random.fold_in(jax.random.key(ofp_seed), state.step)
+            training_progress = jax.numpy.asarray(state.step, dtype=jax.numpy.float32) / max(
+                ofp_train_steps - 1, 1
+            )
+            return candidate.compute_ofp_sc_loss(
+                ema_teacher,
+                batch["observation"],
+                batch["teacher_coarse"],
+                batch["teacher_actions"],
+                batch["action_noise"],
+                ofp_rng,
+                training_progress=training_progress,
+                flow_anchor_loss_weight=ofp_flow_anchor_loss_weight,
+                self_consistency_loss_weight=ofp_self_consistency_loss_weight,
+                min_interval=ofp_min_interval,
+                contraction_power=ofp_contraction_power,
+                compute_endpoint_metrics=False,
+            )
         return candidate.compute_endpoint_distillation_loss(
             batch["observation"],
             batch["teacher_coarse"],
@@ -437,12 +507,24 @@ def _endpoint_train_step(
     updates, optimizer_state = state.tx.update(gradients, state.opt_state, params)
     updated_params = optax.apply_updates(params, updates)
     nnx.update(model, updated_params)
+    next_params = nnx.state(model)
     next_state = dataclasses.replace(
         state,
         step=state.step + 1,
-        params=nnx.state(model),
+        params=next_params,
         opt_state=optimizer_state,
     )
+    if ofp_sc:
+        assert state.ema_params is not None
+        assert state.ema_decay is not None
+        next_state = dataclasses.replace(
+            next_state,
+            ema_params=jax.tree.map(
+                lambda old, new: state.ema_decay * old + (1.0 - state.ema_decay) * new,
+                state.ema_params,
+                next_params,
+            ),
+        )
     return next_state, {**metrics, "gradient_norm": optax.global_norm(gradients)}
 
 
@@ -459,9 +541,40 @@ def _endpoint_validation_step(
     multi_time_response_loss_weight: float,
     multi_time_timestep: float,
     joint_coupled_training: bool,
+    ofp_sc: bool,
+    ofp_seed: int,
+    ofp_train_steps: int,
+    ofp_flow_anchor_loss_weight: float,
+    ofp_self_consistency_loss_weight: float,
+    ofp_min_interval: float,
+    ofp_contraction_power: float,
 ) -> dict[str, jax.Array]:
     model = nnx.merge(state.model_def, state.params)
     model.eval()
+    if ofp_sc:
+        if state.ema_params is None:
+            raise ValueError("OFP-SC validation requires EMA parameters in TrainState.")
+        ema_teacher = nnx.merge(state.model_def, state.ema_params)
+        ema_teacher.eval()
+        ofp_rng = jax.random.fold_in(jax.random.key(ofp_seed + 1), state.step)
+        training_progress = jax.numpy.asarray(state.step, dtype=jax.numpy.float32) / max(
+            ofp_train_steps - 1, 1
+        )
+        _, metrics = model.compute_ofp_sc_loss(
+            ema_teacher,
+            batch["observation"],
+            batch["teacher_coarse"],
+            batch["teacher_actions"],
+            batch["action_noise"],
+            ofp_rng,
+            training_progress=training_progress,
+            flow_anchor_loss_weight=ofp_flow_anchor_loss_weight,
+            self_consistency_loss_weight=ofp_self_consistency_loss_weight,
+            min_interval=ofp_min_interval,
+            contraction_power=ofp_contraction_power,
+            compute_endpoint_metrics=True,
+        )
+        return metrics
     _, metrics = model.compute_endpoint_distillation_loss(
         batch["observation"],
         batch["teacher_coarse"],
@@ -536,8 +649,12 @@ def _save_sidecar(
     stage: str,
     resume_paths: set[tuple[Any, ...]],
     overwrite: bool,
+    use_ema: bool,
 ) -> int:
-    flat = traverse_util.flatten_dict(state.params.to_pure_dict())
+    source_params = state.ema_params if use_ema else state.params
+    if source_params is None:
+        raise ValueError("Requested an EMA sidecar, but TrainState has no EMA parameters.")
+    flat = traverse_util.flatten_dict(source_params.to_pure_dict())
     selected = {
         path: (
             value.astype(jax.numpy.bfloat16)
@@ -584,7 +701,7 @@ def main(args: Args) -> None:
         arrays,
         validation_fraction=args.validation_fraction,
         seed=args.seed,
-        require_semantic_intervention=args.stage in {"final", "dual"},
+        require_semantic_intervention=args.stage in {"final", "dual"} and not args.ofp_sc,
     )
     train_config_base = config_lib.get_config(args.config_name)
     model_config = train_config_base.model
@@ -623,7 +740,7 @@ def main(args: Args) -> None:
             weight_decay=args.weight_decay,
             clip_gradient_norm=args.gradient_clip_norm,
         ),
-        ema_decay=None,
+        ema_decay=args.ofp_ema_decay if args.ofp_sc else None,
         batch_size=args.batch_size,
         num_train_steps=args.train_steps,
         fsdp_devices=args.fsdp_devices,
@@ -645,7 +762,8 @@ def main(args: Args) -> None:
     jax.block_until_ready(state)
     trainable_params = state.params.filter(trainable_filter)
     LOGGER.info(
-        "Initialized endpoint student: stage=%s variant=%s train=%s validation=%s trainable_params=%s",
+        "Initialized endpoint student: objective=%s stage=%s variant=%s train=%s validation=%s trainable_params=%s",
+        "ofp_sc" if args.ofp_sc else "endpoint",
         args.stage,
         args.variant,
         train_indices.size,
@@ -666,6 +784,13 @@ def main(args: Args) -> None:
             multi_time_response_loss_weight=args.multi_time_response_loss_weight,
             multi_time_timestep=args.multi_time_timestep,
             joint_coupled_training=args.joint_coupled_training,
+            ofp_sc=args.ofp_sc,
+            ofp_seed=args.seed,
+            ofp_train_steps=args.train_steps,
+            ofp_flow_anchor_loss_weight=args.ofp_flow_anchor_loss_weight,
+            ofp_self_consistency_loss_weight=args.ofp_self_consistency_loss_weight,
+            ofp_min_interval=args.ofp_min_interval,
+            ofp_contraction_power=args.ofp_contraction_power,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=(state_sharding, replicated_sharding),
@@ -683,6 +808,13 @@ def main(args: Args) -> None:
             multi_time_response_loss_weight=args.multi_time_response_loss_weight,
             multi_time_timestep=args.multi_time_timestep,
             joint_coupled_training=args.joint_coupled_training,
+            ofp_sc=args.ofp_sc,
+            ofp_seed=args.seed,
+            ofp_train_steps=args.train_steps,
+            ofp_flow_anchor_loss_weight=args.ofp_flow_anchor_loss_weight,
+            ofp_self_consistency_loss_weight=args.ofp_self_consistency_loss_weight,
+            ofp_min_interval=args.ofp_min_interval,
+            ofp_contraction_power=args.ofp_contraction_power,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=replicated_sharding,
@@ -762,6 +894,7 @@ def main(args: Args) -> None:
                     stage=args.stage,
                     resume_paths=resume_paths,
                     overwrite=args.overwrite,
+                    use_ema=args.ofp_sc,
                 )
                 LOGGER.info("Saved step %s delta sidecar with %s parameters.", step, saved_params)
 
@@ -816,6 +949,7 @@ def main(args: Args) -> None:
         stage=args.stage,
         resume_paths=resume_paths,
         overwrite=args.overwrite,
+        use_ema=args.ofp_sc,
     )
     summary = {
         "config_name": args.config_name,
@@ -823,12 +957,21 @@ def main(args: Args) -> None:
         "dataset": list(args.dataset),
         "stage": args.stage,
         "variant": args.variant,
+        "training_objective": "ofp_sc" if args.ofp_sc else "endpoint",
         "resume_sidecar_params": args.resume_sidecar_params,
         "causal_audit_summary": args.causal_audit_summary,
         "multi_time_flow_loss_weight": args.multi_time_flow_loss_weight,
         "multi_time_response_loss_weight": args.multi_time_response_loss_weight,
         "multi_time_timestep": args.multi_time_timestep,
         "joint_coupled_training": args.joint_coupled_training,
+        "ofp_sc": args.ofp_sc,
+        "ofp_flow_anchor_loss_weight": args.ofp_flow_anchor_loss_weight,
+        "ofp_self_consistency_loss_weight": args.ofp_self_consistency_loss_weight,
+        "ofp_ema_decay": args.ofp_ema_decay if args.ofp_sc else None,
+        "ofp_min_interval": args.ofp_min_interval,
+        "ofp_contraction_power": args.ofp_contraction_power,
+        "ofp_self_guidance": False,
+        "saved_parameter_source": "ema" if args.ofp_sc else "online",
         "train_records": int(train_indices.size),
         "validation_records": int(validation_indices.size),
         "completed_steps": args.train_steps,
