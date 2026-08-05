@@ -32,6 +32,7 @@ import jax
 import numpy as np
 
 from openpi.action_cot import endpoint_dataset
+from openpi.models import gemma
 from openpi.policies import policy_config
 from openpi.shared import download
 from openpi.training import checkpoints
@@ -54,6 +55,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--endpoint-student-params", default=None)
+    parser.add_argument(
+        "--indices-from",
+        nargs="+",
+        default=None,
+        help=(
+            "Endpoint shard directories/files whose dataset_index and policy_seed define the exact export rows. "
+            "This bypasses --selection/--max-items and supports cheap context-only relabel joins."
+        ),
+    )
     parser.add_argument(
         "--coarse-overrides-from",
         nargs="*",
@@ -87,6 +97,14 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--num-steps", type=int, default=None)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=None)
     parser.add_argument("--profile-policy-timing", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--export-deployment-context",
+        action="store_true",
+        help=(
+            "Opt in to storing current-observation IAR tokens, pooled VLM prefix, and normalized state. "
+            "These are deployment-available conditioning features; no future state or outcome is exported."
+        ),
+    )
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--min-semantic-response-l2", type=float, default=0.05)
     parser.add_argument("--min-semantic-null-ratio", type=float, default=3.0)
@@ -137,6 +155,41 @@ def _existing_indices(output_dir: pathlib.Path) -> set[int]:
         with h5py.File(shard, "r") as handle:
             result.update(int(value) for value in handle["dataset_index"][:])
     return result
+
+
+def _load_index_seeds(
+    inputs: list[str] | None,
+) -> tuple[np.ndarray | None, dict[int, int]]:
+    if not inputs:
+        return None, {}
+    ordered_indices: list[int] = []
+    seeds: dict[int, int] = {}
+    for shard in endpoint_dataset.discover_shards(inputs):
+        with h5py.File(shard, "r") as handle:
+            if "dataset_index" not in handle or "policy_seed" not in handle:
+                raise KeyError(f"Index source {shard} is missing dataset_index or policy_seed.")
+            shard_indices = np.asarray(handle["dataset_index"][:], dtype=np.int64)
+            shard_seeds = np.asarray(handle["policy_seed"][:], dtype=np.uint64)
+            if shard_indices.shape != shard_seeds.shape:
+                raise ValueError(
+                    f"Index source {shard} has mismatched index/seed shapes: "
+                    f"{shard_indices.shape} != {shard_seeds.shape}."
+                )
+            for index_value, seed_value in zip(shard_indices, shard_seeds, strict=True):
+                index = int(index_value)
+                seed = int(seed_value)
+                if index in seeds:
+                    if seeds[index] != seed:
+                        raise ValueError(
+                            f"Index source assigns conflicting policy seeds to dataset_index={index}: "
+                            f"{seeds[index]} != {seed}."
+                        )
+                    continue
+                ordered_indices.append(index)
+                seeds[index] = seed
+    if not ordered_indices:
+        raise ValueError(f"No endpoint rows found under --indices-from={inputs}.")
+    return np.asarray(ordered_indices, dtype=np.int64), seeds
 
 
 def _accumulate_existing_responses(
@@ -226,6 +279,43 @@ def _require_output(
     return coarse_env, actions_env, coarse, actions
 
 
+def _deployment_context(
+    result: dict[str, Any],
+    *,
+    shape: endpoint_dataset.EndpointDatasetShape,
+) -> dict[str, np.ndarray]:
+    required = (
+        "execution_horizon_state_normalized",
+        "acot_prefix_feature",
+        "acot_iar_tokens",
+    )
+    missing = [name for name in required if name not in result]
+    if missing:
+        raise KeyError(f"Policy output is missing deployment-context fields: {missing}")
+
+    state = np.asarray(result["execution_horizon_state_normalized"], dtype=np.float32).reshape(-1)
+    if state.size < shape.state_dim:
+        state = np.pad(state, (0, shape.state_dim - state.size))
+    state = state[: shape.state_dim]
+
+    prefix_feature = np.asarray(result["acot_prefix_feature"], dtype=np.float32).reshape(-1)
+    if prefix_feature.shape != (shape.prefix_feature_dim,):
+        raise ValueError(
+            f"Expected pooled prefix shape {(shape.prefix_feature_dim,)}, got {prefix_feature.shape}."
+        )
+
+    iar = np.asarray(result["acot_iar_tokens"], dtype=np.float32)
+    if iar.shape != (shape.iar_tokens, shape.iar_dim):
+        raise ValueError(
+            f"Expected IAR shape {(shape.iar_tokens, shape.iar_dim)}, got {iar.shape}."
+        )
+    return {
+        "deployment_state": state,
+        "deployment_prefix_feature": prefix_feature,
+        "deployment_iar": iar,
+    }
+
+
 def _load_coarse_overrides(
     inputs: list[str] | None,
 ) -> dict[int, tuple[int, np.ndarray]]:
@@ -265,10 +355,13 @@ def _infer(
     seed: int,
     profile_policy_timing: bool,
     coarse_override: np.ndarray | None = None,
+    export_acot_cache: bool = False,
 ) -> dict[str, Any]:
     inputs = dict(item)
     inputs["policy_seed"] = np.asarray(seed, dtype=np.uint32)
     inputs["profile_policy_timing"] = np.asarray(profile_policy_timing)
+    if export_acot_cache:
+        inputs["export_acot_cache"] = np.ones((), dtype=np.bool_)
     if coarse_override is not None:
         inputs["coarse_actions_override"] = np.asarray(coarse_override, dtype=np.float32)
     return policy.infer(inputs)
@@ -339,6 +432,10 @@ def main() -> None:
     model_config = train_config.model
     if not getattr(model_config, "adopt_explicit_action_reasoner", False):
         raise ValueError("The selected config does not enable explicit Action-CoT/EAR.")
+    if args.export_deployment_context and not getattr(
+        model_config, "adopt_implicit_action_reasoner", False
+    ):
+        raise ValueError("--export-deployment-context requires an enabled implicit action reasoner/IAR.")
     checkpoint_dir = pathlib.Path(download.maybe_download(args.checkpoint_dir))
     data_config = train_config.data.create(train_config.assets_dirs, model_config)
     norm_stats = _load_norm_stats(train_config, data_config, checkpoint_dir)
@@ -348,7 +445,18 @@ def main() -> None:
         raw_dataset,
         [*data_config.repack_transforms.inputs],
     )
-    selected_indices = _select_indices(len(policy_dataset), args.max_items, args.selection, args.seed)
+    source_indices, source_seeds = _load_index_seeds(args.indices_from)
+    selected_indices = (
+        source_indices
+        if source_indices is not None
+        else _select_indices(len(policy_dataset), args.max_items, args.selection, args.seed)
+    )
+    if np.any(selected_indices < 0) or np.any(selected_indices >= len(policy_dataset)):
+        invalid = selected_indices[(selected_indices < 0) | (selected_indices >= len(policy_dataset))]
+        raise IndexError(
+            f"--indices-from contains rows outside the current policy dataset of length {len(policy_dataset)}: "
+            f"{invalid[:5].tolist()}"
+        )
     overrides = _load_coarse_overrides(args.coarse_overrides_from)
     if overrides:
         missing = [int(index) for index in selected_indices if int(index) not in overrides]
@@ -376,12 +484,19 @@ def main() -> None:
         acot_endpoint_student_params=args.endpoint_student_params,
     )
 
+    paligemma_config = gemma.get_config(model_config.paligemma_variant)
+    action_expert_config = gemma.get_config(model_config.action_expert_variant)
     shape = endpoint_dataset.EndpointDatasetShape(
         action_dim=model_config.action_dim,
         env_action_dim=7,
         coarse_horizon=model_config.coarse_action_horizon,
         action_horizon=model_config.action_horizon,
         num_interventions=len(endpoint_dataset.INTERVENTION_NAMES),
+        state_dim=model_config.action_dim,
+        prefix_feature_dim=paligemma_config.width,
+        iar_tokens=paligemma_config.depth,
+        iar_dim=action_expert_config.width,
+        include_deployment_context=args.export_deployment_context,
     )
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -390,14 +505,21 @@ def main() -> None:
         "config_name": args.config_name,
         "checkpoint_dir": str(checkpoint_dir),
         "endpoint_student_params": args.endpoint_student_params,
+        "indices_from": args.indices_from,
         "coarse_overrides_from": args.coarse_overrides_from,
         "num_steps": sample_kwargs["num_steps"],
         "action_cot_denoising_steps": sample_kwargs["action_cot_denoising_steps"],
-        "selection": args.selection,
+        "selection": "indices_from" if args.indices_from else args.selection,
         "selection_seed": args.seed,
         "interventions": list(args.interventions),
         "one_intervention_per_record": args.one_intervention_per_record,
         "clean_only": args.clean_only,
+        "export_deployment_context": args.export_deployment_context,
+        "deployment_context_contract": (
+            "current observation only: normalized state + pooled VLM prefix + IAR; shared by clean/interventions"
+            if args.export_deployment_context
+            else None
+        ),
         "translation_magnitude": args.translation_magnitude,
         "rotation_magnitude": args.rotation_magnitude,
         "gripper_shift": args.gripper_shift,
@@ -424,15 +546,24 @@ def main() -> None:
                 if item is None:
                     raise ValueError("Dataset returned None.")
                 seed = args.seed + dataset_index
+                if source_seeds:
+                    seed = source_seeds[dataset_index]
                 coarse_override = None
                 if overrides:
-                    seed, coarse_override = overrides[dataset_index]
+                    override_seed, coarse_override = overrides[dataset_index]
+                    if source_seeds and override_seed != seed:
+                        raise ValueError(
+                            f"policy_seed mismatch for dataset_index={dataset_index}: "
+                            f"--indices-from has {seed}, --coarse-overrides-from has {override_seed}."
+                        )
+                    seed = override_seed
                 clean_result = _infer(
                     policy,
                     item,
                     seed=seed,
                     profile_policy_timing=args.profile_policy_timing,
                     coarse_override=coarse_override,
+                    export_acot_cache=args.export_deployment_context,
                 )
                 clean_coarse_env, _, clean_coarse, clean_actions = _require_output(
                     clean_result,
@@ -501,26 +632,31 @@ def main() -> None:
                     response_values[name].append(response)
 
                 coarse_noise, action_noise = _noise(seed, shape)
-                writer.append(
-                    {
-                        "dataset_index": dataset_index,
-                        "task_id": _scalar(raw_item, ("task_index", "task_id"), -1),
-                        "episode_id": _scalar(raw_item, ("episode_index", "episode_id"), -1),
-                        "frame_id": _scalar(raw_item, ("frame_index", "frame_id", "index"), dataset_index),
-                        "policy_seed": seed,
-                        "coarse_noise": coarse_noise,
-                        "action_noise": action_noise,
-                        "clean_coarse": clean_coarse,
-                        "clean_actions": clean_actions,
-                        "clean_coarse_env": clean_coarse_env,
-                        "intervention_ids": intervention_ids,
-                        "intervention_valid": intervention_valid,
-                        "intervention_coarse": intervention_coarse,
-                        "intervention_actions": intervention_actions,
-                        "intervention_coarse_env": intervention_coarse_env,
-                        "response_l2": response_l2,
-                    }
-                )
+                record = {
+                    "dataset_index": dataset_index,
+                    "task_id": _scalar(raw_item, ("task_index", "task_id"), -1),
+                    "episode_id": _scalar(raw_item, ("episode_index", "episode_id"), -1),
+                    "frame_id": _scalar(
+                        raw_item,
+                        ("frame_index", "frame_id", "index"),
+                        dataset_index,
+                    ),
+                    "policy_seed": seed,
+                    "coarse_noise": coarse_noise,
+                    "action_noise": action_noise,
+                    "clean_coarse": clean_coarse,
+                    "clean_actions": clean_actions,
+                    "clean_coarse_env": clean_coarse_env,
+                    "intervention_ids": intervention_ids,
+                    "intervention_valid": intervention_valid,
+                    "intervention_coarse": intervention_coarse,
+                    "intervention_actions": intervention_actions,
+                    "intervention_coarse_env": intervention_coarse_env,
+                    "response_l2": response_l2,
+                }
+                if args.export_deployment_context:
+                    record.update(_deployment_context(clean_result, shape=shape))
+                writer.append(record)
                 processed += 1
                 if processed == 1 or processed % 10 == 0:
                     _status(

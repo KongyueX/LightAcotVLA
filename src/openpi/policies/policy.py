@@ -421,6 +421,15 @@ class Policy(BasePolicy):
             # crosses the policy boundary, while ordinary inference remains
             # unchanged and does not return the extra tensor.
             result["acot_iar_tokens"] = jnp.asarray(implicit_action_reason, dtype=jnp.float32)
+            # This pooled prefix is derived from the same current-observation
+            # VLM pass that deployment already executes.  It is exposed only
+            # for opt-in teacher export and contains no future/outcome data.
+            prefix_mask = prefix_state["prefix_mask"].astype(prefix_state["prefix_out"].dtype)
+            result["acot_prefix_feature"] = jnp.asarray(
+                jnp.sum(prefix_state["prefix_out"] * prefix_mask[..., None], axis=1)
+                / jnp.maximum(jnp.sum(prefix_mask, axis=1, keepdims=True), 1.0),
+                dtype=jnp.float32,
+            )
         return result, timing
 
     def post_process(self, obs: dict, outputs: dict) -> dict:

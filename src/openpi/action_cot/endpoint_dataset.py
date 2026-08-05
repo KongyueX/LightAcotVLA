@@ -3,6 +3,8 @@
 The dataset intentionally stores only compact action-space tensors and the
 index of the corresponding frame in the original LeRobot dataset. Images and
 tokenized prompts are reconstructed from that source dataset during training.
+An opt-in deployment-context extension can additionally store the IAR, pooled
+current-observation prefix, and normalized proprioception used by the teacher.
 """
 
 from __future__ import annotations
@@ -35,6 +37,11 @@ class EndpointDatasetShape:
     coarse_horizon: int = 15
     action_horizon: int = 10
     num_interventions: int = len(INTERVENTION_NAMES)
+    state_dim: int = 32
+    prefix_feature_dim: int = 2048
+    iar_tokens: int = 18
+    iar_dim: int = 1024
+    include_deployment_context: bool = False
 
 
 DEFAULT_DATASET_SHAPE = EndpointDatasetShape()
@@ -71,13 +78,42 @@ _ARRAY_SPECS: dict[str, tuple[np.dtype, tuple[str, ...]]] = {
     "response_l2": (np.dtype(np.float32), ("num_interventions",)),
 }
 
+_DEPLOYMENT_CONTEXT_ARRAY_SPECS: dict[str, tuple[np.dtype, tuple[str, ...]]] = {
+    "deployment_state": (np.dtype(np.float16), ("state_dim",)),
+    "deployment_prefix_feature": (np.dtype(np.float16), ("prefix_feature_dim",)),
+    "deployment_iar": (np.dtype(np.float16), ("iar_tokens", "iar_dim")),
+}
+
+
+def _array_specs(shape: EndpointDatasetShape) -> dict[str, tuple[np.dtype, tuple[str, ...]]]:
+    if not shape.include_deployment_context:
+        return _ARRAY_SPECS
+    return {**_ARRAY_SPECS, **_DEPLOYMENT_CONTEXT_ARRAY_SPECS}
+
+
+def _shape_payload(shape: EndpointDatasetShape) -> dict[str, Any]:
+    payload = dataclasses.asdict(shape)
+    if not shape.include_deployment_context:
+        # Preserve the original v1 shape payload for ordinary endpoint
+        # datasets so older readers remain compatible with the default path.
+        for name in (
+            "state_dim",
+            "prefix_feature_dim",
+            "iar_tokens",
+            "iar_dim",
+            "include_deployment_context",
+        ):
+            payload.pop(name)
+    return payload
+
 
 def _shape_for(names: tuple[str, ...], shape: EndpointDatasetShape) -> tuple[int, ...]:
     return tuple(int(getattr(shape, name)) for name in names)
 
 
 def _coerce_record(record: Mapping[str, Any], shape: EndpointDatasetShape) -> dict[str, np.ndarray]:
-    required = set(_SCALAR_SPECS) | set(_ARRAY_SPECS)
+    array_specs = _array_specs(shape)
+    required = set(_SCALAR_SPECS) | set(array_specs)
     missing = sorted(required.difference(record))
     if missing:
         raise KeyError(f"Endpoint record is missing required fields: {missing}")
@@ -89,7 +125,7 @@ def _coerce_record(record: Mapping[str, Any], shape: EndpointDatasetShape) -> di
             raise ValueError(f"{name} has shape {value.shape}; expected a scalar.")
         result[name] = value
 
-    for name, (dtype, shape_names) in _ARRAY_SPECS.items():
+    for name, (dtype, shape_names) in array_specs.items():
         value = np.asarray(record[name], dtype=dtype)
         expected_shape = _shape_for(shape_names, shape)
         if value.shape != expected_shape:
@@ -130,7 +166,7 @@ class ShardedEndpointWriter:
             if int(manifest["schema_version"]) != SCHEMA_VERSION:
                 raise ValueError(f"Cannot append to schema version {manifest['schema_version']}.")
             existing_shape = EndpointDatasetShape(**manifest["shape"])
-            if existing_shape != shape:
+            if _shape_payload(existing_shape) != _shape_payload(shape):
                 raise ValueError(f"Dataset shape mismatch: existing={existing_shape}, requested={shape}.")
             if manifest.get("metadata", {}) != self.metadata:
                 raise ValueError(
@@ -151,12 +187,12 @@ class ShardedEndpointWriter:
         records = self._buffer
         with h5py.File(temporary, "w") as handle:
             handle.attrs["schema_version"] = SCHEMA_VERSION
-            handle.attrs["shape_json"] = json.dumps(dataclasses.asdict(self.shape), sort_keys=True)
+            handle.attrs["shape_json"] = json.dumps(_shape_payload(self.shape), sort_keys=True)
             handle.attrs["metadata_json"] = json.dumps(self.metadata, sort_keys=True)
             for name, dtype in _SCALAR_SPECS.items():
                 values = np.stack([record[name] for record in records])
                 handle.create_dataset(name, data=values.astype(dtype, copy=False), compression="lzf", shuffle=True)
-            for name, (dtype, _) in _ARRAY_SPECS.items():
+            for name, (dtype, _) in _array_specs(self.shape).items():
                 values = np.stack([record[name] for record in records])
                 handle.create_dataset(name, data=values.astype(dtype, copy=False), compression="lzf", shuffle=True)
             handle.flush()
@@ -174,7 +210,7 @@ class ShardedEndpointWriter:
                 total_records += int(handle["dataset_index"].shape[0])
         manifest = {
             "schema_version": SCHEMA_VERSION,
-            "shape": dataclasses.asdict(self.shape),
+            "shape": _shape_payload(self.shape),
             "records_per_shard": self.records_per_shard,
             "num_shards": len(shards),
             "num_records": total_records,
@@ -213,9 +249,18 @@ def discover_shards(inputs: Sequence[pathlib.Path | str]) -> list[pathlib.Path]:
     return unique
 
 
-def load_endpoint_arrays(inputs: Sequence[pathlib.Path | str]) -> dict[str, np.ndarray]:
+def load_endpoint_arrays(
+    inputs: Sequence[pathlib.Path | str],
+    *,
+    include_deployment_context: bool = False,
+) -> dict[str, np.ndarray]:
+    requested_array_specs = (
+        {**_ARRAY_SPECS, **_DEPLOYMENT_CONTEXT_ARRAY_SPECS}
+        if include_deployment_context
+        else _ARRAY_SPECS
+    )
     pieces: dict[str, list[np.ndarray]] = {
-        name: [] for name in (*_SCALAR_SPECS, *_ARRAY_SPECS)
+        name: [] for name in (*_SCALAR_SPECS, *requested_array_specs)
     }
     expected_shape: EndpointDatasetShape | None = None
     for shard in discover_shards(inputs):
@@ -225,9 +270,15 @@ def load_endpoint_arrays(inputs: Sequence[pathlib.Path | str]) -> dict[str, np.n
             current_shape = EndpointDatasetShape(**json.loads(handle.attrs["shape_json"]))
             if expected_shape is None:
                 expected_shape = current_shape
-            elif current_shape != expected_shape:
+            elif _shape_payload(current_shape) != _shape_payload(expected_shape):
                 raise ValueError(f"Endpoint shape mismatch in {shard}: {current_shape} != {expected_shape}.")
+            if include_deployment_context and not current_shape.include_deployment_context:
+                raise ValueError(
+                    f"Endpoint shard {shard} does not contain the opt-in deployment context."
+                )
             for name, destination in pieces.items():
+                if name not in handle:
+                    raise KeyError(f"Endpoint shard {shard} is missing requested field {name!r}.")
                 destination.append(handle[name][:])
     return {name: np.concatenate(values, axis=0) for name, values in pieces.items()}
 
