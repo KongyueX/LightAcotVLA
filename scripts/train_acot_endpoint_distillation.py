@@ -557,11 +557,13 @@ def _endpoint_validation_step(
     ofp_min_interval: float,
     ofp_contraction_power: float,
 ) -> dict[str, jax.Array]:
-    model = nnx.merge(state.model_def, state.params)
-    model.eval()
     if ofp_sc:
         if state.ema_params is None:
             raise ValueError("OFP-SC validation requires EMA parameters in TrainState.")
+        # OFP-SC deploys and saves EMA weights, so validation must score that
+        # exact parameter source rather than the transient online student.
+        model = nnx.merge(state.model_def, state.ema_params)
+        model.eval()
         ema_teacher = nnx.merge(state.model_def, state.ema_params)
         ema_teacher.eval()
         ofp_rng = jax.random.fold_in(jax.random.key(ofp_seed + 1), state.step)
@@ -584,6 +586,8 @@ def _endpoint_validation_step(
             compute_endpoint_metrics=True,
         )
         return metrics
+    model = nnx.merge(state.model_def, state.params)
+    model.eval()
     _, metrics = model.compute_endpoint_distillation_loss(
         batch["observation"],
         batch["teacher_coarse"],
@@ -991,6 +995,7 @@ def main(args: Args) -> None:
         "ofp_contraction_power": args.ofp_contraction_power,
         "ofp_self_guidance": False,
         "saved_parameter_source": "ema" if args.ofp_sc else "online",
+        "validation_parameter_source": "ema" if args.ofp_sc else "online",
         "train_records": int(train_indices.size),
         "validation_records": int(validation_indices.size),
         "completed_steps": args.train_steps,
