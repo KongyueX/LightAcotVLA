@@ -475,6 +475,48 @@ def _endpoint_validation_step(
     return metrics
 
 
+def _full_validation_index_batches(
+    indices: np.ndarray,
+    *,
+    batch_size: int,
+    device_count: int,
+) -> list[tuple[np.ndarray, int]]:
+    """Build sharding-compatible batches with equal-repeat padding.
+
+    The returned count is the number of real validation records represented by
+    the batch.  Any padding repeats every represented record equally, so a
+    batch mean remains the exact mean of those real records.
+    """
+
+    batches: list[tuple[np.ndarray, int]] = []
+    offset = 0
+    while offset + batch_size <= indices.size:
+        selected = indices[offset : offset + batch_size]
+        batches.append((selected, int(selected.size)))
+        offset += batch_size
+
+    remaining = indices[offset:]
+    shardable_count = (remaining.size // device_count) * device_count
+    if shardable_count:
+        selected = remaining[:shardable_count]
+        batches.append((selected, int(selected.size)))
+        remaining = remaining[shardable_count:]
+
+    divisors = [
+        value
+        for value in range(1, device_count + 1)
+        if device_count % value == 0
+    ]
+    offset = 0
+    while offset < remaining.size:
+        actual_count = max(value for value in divisors if value <= remaining.size - offset)
+        selected = remaining[offset : offset + actual_count]
+        repeats = device_count // actual_count
+        batches.append((np.repeat(selected, repeats), int(actual_count)))
+        offset += actual_count
+    return batches
+
+
 def _save_sidecar(
     state: training_utils.TrainState,
     target: pathlib.Path,
@@ -709,6 +751,51 @@ def main(args: Args) -> None:
                 )
                 LOGGER.info("Saved step %s delta sidecar with %s parameters.", step, saved_params)
 
+    full_validation_sums: dict[str, float] = {}
+    full_validation_count = 0
+    full_validation_rng = np.random.default_rng(args.seed)
+    for validation_sample, represented_count in _full_validation_index_batches(
+        validation_indices,
+        batch_size=args.batch_size,
+        device_count=jax.device_count(),
+    ):
+        validation_batch = _make_batch(
+            observation_dataset,
+            arrays,
+            validation_sample,
+            full_validation_rng,
+            deterministic_intervention=True,
+        )
+        validation_batch = jax.device_put(validation_batch, data_sharding)
+        with sharding.set_mesh(mesh):
+            validation_metrics = validation_step(state, validation_batch)
+        for name, value in jax.device_get(validation_metrics).items():
+            full_validation_sums[name] = full_validation_sums.get(
+                name, 0.0
+            ) + float(value) * represented_count
+        full_validation_count += represented_count
+    if full_validation_count != validation_indices.size:
+        raise RuntimeError(
+            "Full validation represented "
+            f"{full_validation_count} records, expected {validation_indices.size}."
+        )
+    full_validation_values = {
+        name: value / full_validation_count
+        for name, value in full_validation_sums.items()
+    }
+    for name in tuple(full_validation_values):
+        if not name.endswith("_rmse"):
+            continue
+        mse_name = f"{name[:-5]}_mse"
+        if mse_name in full_validation_values:
+            full_validation_values[name] = float(
+                np.sqrt(max(full_validation_values[mse_name], 0.0))
+            )
+    full_validation_metrics = {
+        f"validation/{name}": value
+        for name, value in full_validation_values.items()
+    }
+
     saved_params = _save_sidecar(
         state,
         final_params_path,
@@ -734,6 +821,7 @@ def main(args: Args) -> None:
         "final_params_path": str(final_params_path.resolve()),
         "last_train_metrics": last_train_metrics,
         "last_validation_metrics": last_validation_metrics,
+        "full_validation_metrics": full_validation_metrics,
         "elapsed_seconds": time.monotonic() - started,
         "frozen_contract": "VLM, IAR, and reasoning fusion frozen; only selected EAR/final local branches train.",
     }
