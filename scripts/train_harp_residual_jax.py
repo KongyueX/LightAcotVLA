@@ -1,4 +1,4 @@
-"""Train and calibrate the sub-10k JAX/Flax HARP temporal residual sidecar."""
+"""Train and calibrate the sub-100k JAX/Flax HARP temporal residual sidecar."""
 
 from __future__ import annotations
 
@@ -99,7 +99,9 @@ def _output_paths(args: Args) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]
     return output_dir, model_path, metrics_path
 
 
-def _load_pairs(path: str) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+def _load_pairs(
+    path: str,
+) -> tuple[dict[str, np.ndarray], dict[str, Any], np.ndarray, np.ndarray]:
     resolved = pathlib.Path(path).resolve()
     if not resolved.exists():
         raise FileNotFoundError(f"HARP pair file not found: {resolved}")
@@ -117,8 +119,8 @@ def _load_pairs(path: str) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     }
     with h5py.File(resolved, "r") as handle:
         schema = int(handle.attrs.get("schema_version", -1))
-        if schema != 1:
-            raise ValueError(f"Unsupported HARP pair schema {schema}; expected 1.")
+        if schema != 2:
+            raise ValueError(f"Unsupported HARP pair schema {schema}; expected 2.")
         missing = sorted(required.difference(handle.keys()))
         if missing:
             raise KeyError(f"HARP pair file is missing fields: {missing}")
@@ -129,6 +131,15 @@ def _load_pairs(path: str) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
             )
             for name, value in handle.attrs.items()
         }
+        for name in ("ear_normalization_scale", "ear_normalization_bias"):
+            if name not in handle.attrs:
+                raise KeyError(f"HARP-v2 pair file is missing attribute {name!r}.")
+        ear_normalization_scale = np.asarray(
+            handle.attrs["ear_normalization_scale"], dtype=np.float32
+        )
+        ear_normalization_bias = np.asarray(
+            handle.attrs["ear_normalization_bias"], dtype=np.float32
+        )
     count = len(arrays["dataset_index"])
     if any(len(value) != count for value in arrays.values()):
         raise ValueError("HARP pair arrays have inconsistent record counts.")
@@ -136,7 +147,23 @@ def _load_pairs(path: str) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
         raise ValueError("NFE1/NFE2 pair shapes differ.")
     if arrays["action_nfe1"].shape[-1] < harp.CONTROL_DIM:
         raise ValueError("HARP pairs contain fewer than six continuous action dimensions.")
-    return arrays, metadata
+    if ear_normalization_scale.shape != (harp.CONTROL_DIM,):
+        raise ValueError(
+            "HARP-v2 ear_normalization_scale must have shape "
+            f"({harp.CONTROL_DIM},), got {ear_normalization_scale.shape}."
+        )
+    if ear_normalization_bias.shape != (harp.CONTROL_DIM,):
+        raise ValueError(
+            "HARP-v2 ear_normalization_bias must have shape "
+            f"({harp.CONTROL_DIM},), got {ear_normalization_bias.shape}."
+        )
+    if not np.all(np.isfinite(ear_normalization_scale)) or np.any(
+        ear_normalization_scale <= 0.0
+    ):
+        raise ValueError("HARP-v2 ear_normalization_scale must be finite and positive.")
+    if not np.all(np.isfinite(ear_normalization_bias)):
+        raise ValueError("HARP-v2 ear_normalization_bias must be finite.")
+    return arrays, metadata, ear_normalization_scale, ear_normalization_bias
 
 
 def _episode_split(
@@ -167,18 +194,27 @@ def _episode_split(
 
 
 def _prepare_examples(
-    arrays: dict[str, np.ndarray], device: jax.Device
+    arrays: dict[str, np.ndarray],
+    device: jax.Device,
+    ear_normalization_scale: np.ndarray,
+    ear_normalization_bias: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    raw_ear = jnp.asarray(arrays["ear"], dtype=jnp.float32)
+    mapped_ear = jax.jit(harp.map_ear_to_action_normalization, device=device)(
+        raw_ear,
+        jnp.asarray(ear_normalization_scale, dtype=jnp.float32),
+        jnp.asarray(ear_normalization_bias, dtype=jnp.float32),
+    )
     build_features = jax.jit(harp.build_harp_features, device=device)
     features = build_features(
         jnp.asarray(arrays["action_nfe1"], dtype=jnp.float32),
-        jnp.asarray(arrays["ear"], dtype=jnp.float32),
+        mapped_ear,
         jnp.asarray(arrays["iar"], dtype=jnp.float32),
         jnp.asarray(arrays["action_noise"], dtype=jnp.float32),
         jnp.asarray(arrays["state"], dtype=jnp.float32),
     )
     aligned_ear = jax.jit(harp.align_ear_to_action_time, static_argnums=(1,), device=device)(
-        jnp.asarray(arrays["ear"], dtype=jnp.float32),
+        mapped_ear,
         arrays["action_nfe1"].shape[1],
     )
     action_nfe1 = jax.device_put(
@@ -259,8 +295,8 @@ def _sigmoid(value: np.ndarray) -> np.ndarray:
 def _calibrated_residual(
     raw_residual: np.ndarray,
     log_variance: np.ndarray,
-    reliability: np.ndarray,
     *,
+    residual_gain: np.ndarray,
     residual_abs_limit: np.ndarray,
     residual_norm_limit: float,
     confidence_temperature: float,
@@ -270,16 +306,16 @@ def _calibrated_residual(
     confidence = _sigmoid(
         (confidence_bias - log_variance) / max(confidence_temperature, 1e-3)
     )
-    reliability_gate = np.clip(2.0 * reliability, 0.0, 1.0)
+    gained_residual = raw_residual * residual_gain
     projected = np.clip(
-        raw_residual,
+        gained_residual,
         -residual_abs_limit * trust_scale,
         residual_abs_limit * trust_scale,
     )
     norm = np.linalg.norm(projected, axis=-1, keepdims=True)
     limit = max(residual_norm_limit * trust_scale, 1e-6)
     projected *= np.minimum(1.0, limit / (norm + 1e-6))
-    return projected * (confidence * reliability_gate)[..., None]
+    return projected * confidence[..., None]
 
 
 def _save_sidecar(
@@ -290,6 +326,9 @@ def _save_sidecar(
     feature_mean: np.ndarray,
     feature_std: np.ndarray,
     target_scale: np.ndarray,
+    ear_normalization_scale: np.ndarray,
+    ear_normalization_bias: np.ndarray,
+    residual_gain: np.ndarray,
     residual_abs_limit: np.ndarray,
     residual_norm_limit: float,
     confidence_temperature: float,
@@ -310,6 +349,9 @@ def _save_sidecar(
         "feature_mean": np.asarray(feature_mean, dtype=np.float32),
         "feature_std": np.asarray(feature_std, dtype=np.float32),
         "target_scale": np.asarray(target_scale, dtype=np.float32),
+        "ear_normalization_scale": np.asarray(ear_normalization_scale, dtype=np.float32),
+        "ear_normalization_bias": np.asarray(ear_normalization_bias, dtype=np.float32),
+        "residual_gain": np.asarray(residual_gain, dtype=np.float32),
         "residual_abs_limit": np.asarray(residual_abs_limit, dtype=np.float32),
         "residual_norm_limit": np.asarray(residual_norm_limit, dtype=np.float32),
         "confidence_temperature": np.asarray(confidence_temperature, dtype=np.float32),
@@ -330,11 +372,21 @@ def main(args: Args) -> None:
     _validate_args(args)
     device = _gpu()
     output_dir, model_path, metrics_path = _output_paths(args)
-    arrays, pair_metadata = _load_pairs(args.pairs)
+    (
+        arrays,
+        pair_metadata,
+        ear_normalization_scale,
+        ear_normalization_bias,
+    ) = _load_pairs(args.pairs)
     train_indices, validation_indices = _episode_split(
         arrays, validation_fraction=args.validation_fraction, seed=args.seed
     )
-    features, residual, reliability = _prepare_examples(arrays, device)
+    features, residual, reliability = _prepare_examples(
+        arrays,
+        device,
+        ear_normalization_scale,
+        ear_normalization_bias,
+    )
 
     feature_mean = np.mean(features[train_indices], axis=(0, 1), dtype=np.float64).astype(np.float32)
     feature_std = np.std(features[train_indices], axis=(0, 1), dtype=np.float64).astype(np.float32)
@@ -490,6 +542,17 @@ def main(args: Args) -> None:
         1e-4,
     )
     validation_target = residual[validation_indices]
+    gain_numerator = np.sum(
+        raw_validation_residual.astype(np.float64)
+        * validation_target.astype(np.float64),
+        axis=(0, 1),
+    )
+    gain_denominator = np.sum(
+        np.square(raw_validation_residual.astype(np.float64)), axis=(0, 1)
+    )
+    residual_gain = np.clip(
+        gain_numerator / (gain_denominator + 1e-8), 0.0, 1.0
+    ).astype(np.float32)
     best: tuple[float, float, float, float] | None = None
     for temperature in (0.5, 0.75, 1.0, 1.5, 2.0):
         for bias in (-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0):
@@ -497,7 +560,7 @@ def main(args: Args) -> None:
                 applied = _calibrated_residual(
                     raw_validation_residual,
                     validation_log_variance,
-                    validation_reliability,
+                    residual_gain=residual_gain,
                     residual_abs_limit=residual_abs_limit,
                     residual_norm_limit=residual_norm_limit,
                     confidence_temperature=temperature,
@@ -514,6 +577,13 @@ def main(args: Args) -> None:
     raw_head_mse = float(
         np.mean(np.square(raw_validation_residual - validation_target))
     )
+    gain_head_mse = float(
+        np.mean(
+            np.square(
+                raw_validation_residual * residual_gain - validation_target
+            )
+        )
+    )
     validation_reliability_target = reliability[validation_indices] >= 0.5
     reliability_accuracy = float(
         np.mean((validation_reliability >= 0.5) == validation_reliability_target)
@@ -528,6 +598,10 @@ def main(args: Args) -> None:
         "validation_records": int(validation_indices.size),
         "episode_disjoint_calibration": True,
         "gripper_unchanged": True,
+        "ear_normalization_scale": ear_normalization_scale.tolist(),
+        "ear_normalization_bias": ear_normalization_bias.tolist(),
+        "residual_gain": residual_gain.tolist(),
+        "ear_reliability_use": "diagnostic_only",
     }
     _save_sidecar(
         model_path,
@@ -536,6 +610,9 @@ def main(args: Args) -> None:
         feature_mean=feature_mean,
         feature_std=feature_std,
         target_scale=target_scale,
+        ear_normalization_scale=ear_normalization_scale,
+        ear_normalization_bias=ear_normalization_bias,
+        residual_gain=residual_gain,
         residual_abs_limit=residual_abs_limit,
         residual_norm_limit=residual_norm_limit,
         confidence_temperature=confidence_temperature,
@@ -574,6 +651,7 @@ def main(args: Args) -> None:
         "feature_dim": harp.FEATURE_DIM,
         "validation_nfe1_to_nfe2_mse_first6": baseline_mse,
         "validation_raw_head_mse_first6": raw_head_mse,
+        "validation_gain_head_mse_first6": gain_head_mse,
         "validation_calibrated_mse_first6": calibrated_mse,
         "validation_relative_mse_reduction": (
             (baseline_mse - calibrated_mse) / baseline_mse if baseline_mse > 0 else 0.0
@@ -588,8 +666,9 @@ def main(args: Args) -> None:
         "last_validation_metrics": last_validation_metrics,
         "elapsed_seconds": time.monotonic() - started,
         "serving_contract": (
-            "strict opt-in after direct final IR NFE1; confidence shrink + trust projection "
-            "on device; first six dimensions only"
+            "strict opt-in after direct final IR NFE1; raw EAR is mapped to action "
+            "normalization; held-out residual gain + confidence shrink + trust projection "
+            "on device; EAR reliability is diagnostic only; first six dimensions only"
         ),
     }
     (output_dir / "summary.json").write_text(

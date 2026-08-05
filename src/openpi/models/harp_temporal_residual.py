@@ -28,7 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CONTROL_DIM = 6
 STATE_FEATURE_DIM = 8
 IAR_SUMMARY_DIM = 1024
@@ -47,7 +47,7 @@ class HARPHeadConfig:
 
 
 class HARPTemporalResidualHead(nn.Module):
-    """Sub-10k temporal residual, heteroscedasticity, and EAR-reliability head."""
+    """Sub-100k temporal residual, heteroscedasticity, and EAR-reliability head."""
 
     config: HARPHeadConfig
 
@@ -98,6 +98,27 @@ def align_ear_to_action_time(ear: jax.Array, action_horizon: int) -> jax.Array:
     )
 
 
+def map_ear_to_action_normalization(
+    ear: jax.Array,
+    scale: jax.Array,
+    bias: jax.Array,
+) -> jax.Array:
+    """Map the EAR's coarse-action normalization into final-action normalization."""
+
+    ear = jnp.asarray(ear, dtype=jnp.float32)
+    scale = jnp.asarray(scale, dtype=jnp.float32)
+    bias = jnp.asarray(bias, dtype=jnp.float32)
+    if ear.ndim != 3 or ear.shape[-1] < CONTROL_DIM:
+        raise ValueError(f"EAR must have shape [B,T,D>=6], got {ear.shape}.")
+    if scale.shape != (CONTROL_DIM,) or bias.shape != (CONTROL_DIM,):
+        raise ValueError(
+            "EAR normalization affine must contain six scale and bias values; "
+            f"got scale={scale.shape}, bias={bias.shape}."
+        )
+    mapped_control = ear[..., :CONTROL_DIM] * scale + bias
+    return jnp.concatenate([mapped_control, ear[..., CONTROL_DIM:]], axis=-1)
+
+
 def _temporal_delta(values: jax.Array) -> jax.Array:
     return jnp.concatenate(
         [jnp.zeros_like(values[:, :1]), values[:, 1:] - values[:, :-1]],
@@ -120,7 +141,7 @@ def _iar_summary(iar: jax.Array) -> jax.Array:
 
 def build_harp_features(
     action_nfe1: jax.Array,
-    ear: jax.Array,
+    ear_action_normalized: jax.Array,
     iar: jax.Array,
     action_noise: jax.Array,
     state: jax.Array,
@@ -138,13 +159,15 @@ def build_harp_features(
         )
     if state.ndim != 2 or state.shape[0] != action_nfe1.shape[0]:
         raise ValueError(f"state must have shape [B,D], got {state.shape}.")
-    if min(action_nfe1.shape[-1], ear.shape[-1]) < CONTROL_DIM:
+    if min(action_nfe1.shape[-1], ear_action_normalized.shape[-1]) < CONTROL_DIM:
         raise ValueError("HARP requires at least six continuous action dimensions.")
     if state.shape[-1] < STATE_FEATURE_DIM:
         raise ValueError(f"HARP requires at least {STATE_FEATURE_DIM} state dimensions.")
 
     action = action_nfe1[..., :CONTROL_DIM]
-    aligned_ear = align_ear_to_action_time(ear, action_nfe1.shape[1])[..., :CONTROL_DIM]
+    aligned_ear = align_ear_to_action_time(
+        ear_action_normalized, action_nfe1.shape[1]
+    )[..., :CONTROL_DIM]
     noise = action_noise[..., :CONTROL_DIM]
     state_features = jnp.broadcast_to(
         state[:, None, :STATE_FEATURE_DIM],
@@ -184,6 +207,9 @@ class HARPResidualSidecar:
     confidence_temperature: jax.Array
     confidence_bias: jax.Array
     trust_scale: jax.Array
+    ear_normalization_scale: jax.Array
+    ear_normalization_bias: jax.Array
+    residual_gain: jax.Array
     parameter_count: int
     metadata: Mapping[str, Any]
 
@@ -197,7 +223,18 @@ class HARPResidualSidecar:
     ) -> dict[str, jax.Array]:
         """Apply confidence shrink and a calibrated trust projection on device."""
 
-        features = build_harp_features(action_nfe1, ear, iar, action_noise, state)
+        ear_action_normalized = map_ear_to_action_normalization(
+            ear,
+            self.ear_normalization_scale,
+            self.ear_normalization_bias,
+        )
+        features = build_harp_features(
+            action_nfe1,
+            ear_action_normalized,
+            iar,
+            action_noise,
+            state,
+        )
         normalized = (features - self.feature_mean) / self.feature_std
         head_output = HARPTemporalResidualHead(self.config).apply(
             {"params": self.params}, normalized
@@ -210,21 +247,20 @@ class HARPResidualSidecar:
             (self.confidence_bias - log_variance)
             / jnp.maximum(self.confidence_temperature, 1e-3)
         )
-        # Reliability 0.5 is neutral; only evidence of unreliable EAR shrinks
-        # the correction further.  This avoids an unconditional 0.5 penalty at
-        # the head's zero-logit initialization.
-        reliability_gate = jnp.clip(2.0 * ear_reliability, 0.0, 1.0)
-        shrink = confidence * reliability_gate
+        # The reliability head is diagnostic only.  A held-out, per-dimension
+        # least-squares gain calibrates residual direction without turning a
+        # class-imbalanced auxiliary label into a multiplicative action gate.
+        gained_residual = raw_residual * self.residual_gain
 
         coordinate_limit = jnp.maximum(
             self.residual_abs_limit * self.trust_scale,
             1e-6,
         )
-        projected = jnp.clip(raw_residual, -coordinate_limit, coordinate_limit)
+        projected = jnp.clip(gained_residual, -coordinate_limit, coordinate_limit)
         residual_norm = jnp.linalg.norm(projected, axis=-1, keepdims=True)
         norm_limit = jnp.maximum(self.residual_norm_limit * self.trust_scale, 1e-6)
         projected = projected * jnp.minimum(1.0, norm_limit / (residual_norm + 1e-6))
-        applied_residual = projected * shrink[..., None]
+        applied_residual = projected * confidence[..., None]
 
         corrected_control = jnp.asarray(action_nfe1[..., :CONTROL_DIM], dtype=jnp.float32) + applied_residual
         corrected_actions = jnp.concatenate(
@@ -311,6 +347,12 @@ def load_harp_residual_sidecar(path: pathlib.Path | str) -> HARPResidualSidecar:
     metadata: Mapping[str, Any] = {}
     if "metadata_json" in data:
         metadata = json.loads(str(np.asarray(data["metadata_json"]).reshape(()).item()))
+    ear_normalization_scale = vector("ear_normalization_scale", CONTROL_DIM)
+    if np.any(np.asarray(ear_normalization_scale) <= 0.0):
+        raise ValueError("HARP ear_normalization_scale must be strictly positive.")
+    residual_gain = vector("residual_gain", CONTROL_DIM)
+    if np.any((np.asarray(residual_gain) < 0.0) | (np.asarray(residual_gain) > 1.0)):
+        raise ValueError("HARP residual_gain must lie in [0, 1].")
     return HARPResidualSidecar(
         config=config,
         params=params,
@@ -328,6 +370,9 @@ def load_harp_residual_sidecar(path: pathlib.Path | str) -> HARPResidualSidecar:
         ),
         confidence_bias=jnp.asarray(_scalar(data, "confidence_bias", float), dtype=jnp.float32),
         trust_scale=jnp.asarray(max(_scalar(data, "trust_scale", float), 1e-3), dtype=jnp.float32),
+        ear_normalization_scale=ear_normalization_scale,
+        ear_normalization_bias=vector("ear_normalization_bias", CONTROL_DIM),
+        residual_gain=residual_gain,
         parameter_count=loaded_parameter_count,
         metadata=metadata,
     )

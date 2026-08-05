@@ -34,6 +34,7 @@ from openpi.models import model as model_lib
 from openpi.policies import policy_config
 from openpi.shared import download
 from openpi.shared import nnx_utils
+from openpi.shared import normalize as normalize_lib
 from openpi.training import config as config_lib
 from openpi.training import data_loader
 
@@ -44,7 +45,7 @@ except ImportError:  # pragma: no cover - supports python -m scripts...
 
 
 LOGGER = logging.getLogger("export_harp_ir_pairs")
-PAIR_SCHEMA_VERSION = 1
+PAIR_SCHEMA_VERSION = 2
 
 
 @dataclasses.dataclass(frozen=True)
@@ -82,7 +83,45 @@ def _prepare_output(args: Args) -> tuple[pathlib.Path, pathlib.Path]:
     return target, temporary
 
 
-def _load_model_and_data(args: Args) -> tuple[Any, data_loader.Dataset, dict[str, np.ndarray], pathlib.Path]:
+def _ear_normalization_affine(
+    checkpoint_dir: pathlib.Path,
+) -> tuple[np.ndarray, np.ndarray, pathlib.Path, dict[str, Any]]:
+    norm_stats_path = checkpoint_dir / "assets" / "norm_stats.json"
+    if not norm_stats_path.exists():
+        raise FileNotFoundError(
+            "HARP-v2 requires checkpoint normalization statistics at "
+            f"{norm_stats_path}."
+        )
+    norm_stats = normalize_lib.load(norm_stats_path.parent)
+    missing = sorted({"coarse_actions", "actions"}.difference(norm_stats))
+    if missing:
+        raise KeyError(f"Checkpoint norm_stats.json is missing HARP fields: {missing}")
+    coarse_mean = np.asarray(norm_stats["coarse_actions"].mean, dtype=np.float64)[:6]
+    coarse_std = np.asarray(norm_stats["coarse_actions"].std, dtype=np.float64)[:6]
+    action_mean = np.asarray(norm_stats["actions"].mean, dtype=np.float64)[:6]
+    action_std = np.asarray(norm_stats["actions"].std, dtype=np.float64)[:6]
+    if any(value.shape != (6,) for value in (coarse_mean, coarse_std, action_mean, action_std)):
+        raise ValueError("HARP-v2 normalization statistics must contain at least six dimensions.")
+    scale = (coarse_std + 1e-6) / (action_std + 1e-6)
+    bias = (coarse_mean - action_mean) / (action_std + 1e-6)
+    if not np.all(np.isfinite(scale)) or not np.all(np.isfinite(bias)):
+        raise ValueError("HARP-v2 EAR normalization affine contains non-finite values.")
+    if np.any(scale <= 0.0):
+        raise ValueError("HARP-v2 EAR normalization scale must be strictly positive.")
+    return scale.astype(np.float32), bias.astype(np.float32), norm_stats_path, norm_stats
+
+
+def _load_model_and_data(
+    args: Args,
+) -> tuple[
+    Any,
+    data_loader.Dataset,
+    dict[str, np.ndarray],
+    pathlib.Path,
+    np.ndarray,
+    np.ndarray,
+    pathlib.Path,
+]:
     arrays = endpoint_dataset.load_endpoint_arrays(args.dataset)
     train_config = config_lib.get_config(args.config_name)
     model_config = train_config.model
@@ -117,13 +156,21 @@ def _load_model_and_data(args: Args) -> tuple[Any, data_loader.Dataset, dict[str
         )
 
     data_config = train_config.data.create(train_config.assets_dirs, model_config)
-    norm_stats = endpoint_trainer._load_norm_stats(  # noqa: SLF001
-        train_config, data_config, checkpoint_dir
+    ear_normalization_scale, ear_normalization_bias, norm_stats_path, norm_stats = (
+        _ear_normalization_affine(checkpoint_dir)
     )
     data_config = endpoint_trainer._with_norm_stats(data_config, norm_stats)  # noqa: SLF001
     raw_dataset = data_loader.create_torch_dataset(data_config, model_config)
     observation_dataset = data_loader.transform_dataset(raw_dataset, data_config)
-    return model, observation_dataset, arrays, sidecar_path
+    return (
+        model,
+        observation_dataset,
+        arrays,
+        sidecar_path,
+        ear_normalization_scale,
+        ear_normalization_bias,
+        norm_stats_path,
+    )
 
 
 def _create_datasets(
@@ -177,7 +224,15 @@ def main(args: Args) -> None:
         raise ValueError("--batch-size must be positive.")
     device = _gpu()
     target, temporary = _prepare_output(args)
-    model, observation_dataset, arrays, sidecar_path = _load_model_and_data(args)
+    (
+        model,
+        observation_dataset,
+        arrays,
+        sidecar_path,
+        ear_normalization_scale,
+        ear_normalization_bias,
+        norm_stats_path,
+    ) = _load_model_and_data(args)
     count = len(arrays["dataset_index"])
     if count < 2:
         raise ValueError("HARP pair export requires at least two records.")
@@ -206,6 +261,12 @@ def main(args: Args) -> None:
         handle.attrs["source_dataset_json"] = json.dumps(list(args.dataset))
         handle.attrs["config_name"] = args.config_name
         handle.attrs["seed"] = args.seed
+        handle.attrs["ear_normalization_contract"] = (
+            "action_normalized = coarse_normalized * scale + bias"
+        )
+        handle.attrs["ear_normalization_scale"] = ear_normalization_scale
+        handle.attrs["ear_normalization_bias"] = ear_normalization_bias
+        handle.attrs["ear_normalization_norm_stats_path"] = str(norm_stats_path)
 
         for start in range(0, count, args.batch_size):
             stop = min(start + args.batch_size, count)
@@ -315,6 +376,9 @@ def main(args: Args) -> None:
         "endpoint_student_params": str(sidecar_path),
         "continuous_nfe1_nfe2_mse": continuous_mse,
         "gripper_nfe1_nfe2_mse": gripper_mse,
+        "ear_normalization_scale": ear_normalization_scale.tolist(),
+        "ear_normalization_bias": ear_normalization_bias.tolist(),
+        "ear_normalization_norm_stats_path": str(norm_stats_path),
         "elapsed_seconds": elapsed,
         "contract": (
             "exact deployed IR NFE1 and same-model NFE2 share observation, prefix, "
