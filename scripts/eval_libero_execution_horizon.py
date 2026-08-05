@@ -69,8 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help=(
-            "Blend in [0,1] between the pretrained start-time embedding (0) and "
-            "the OFP start/end half-concatenated embedding (1). Must match training."
+            "OFP interval-conditioning alpha in [0,1]. Its meaning is selected by "
+            "--ofp-interval-condition-mode; must match training."
+        ),
+    )
+    parser.add_argument(
+        "--ofp-interval-condition-mode",
+        choices=("half_concat", "time_blend"),
+        default="half_concat",
+        help=(
+            "OFP interval embedding mode. time_blend embeds t + alpha * (r - t) "
+            "with one posemb call; must match training."
         ),
     )
     parser.add_argument("--original-horizon", type=int, default=5)
@@ -164,6 +173,7 @@ def _request(
                     args.ofp_interval_condition_strength,
                     dtype=np.float32,
                 ),
+                "action_cot_ofp_interval_condition_mode": args.ofp_interval_condition_mode,
             }
         )
     if mode == "exact_batched_mc_v2":

@@ -608,6 +608,7 @@ class ACOT_VLA(_model.BaseModel):
         timestep: at.Float[at.Array, " b"],
         interval_end_timestep: Optional[at.Float[at.Array, " b"]] = None,
         interval_condition_strength: jax.Array | float = 1.0,
+        interval_condition_mode: str = "half_concat",
         explicit_action_reason: Optional[jax.Array] = None,
         implicit_action_reason: Optional[jax.Array] = None,
         suf_type = "reasoner"
@@ -620,6 +621,45 @@ class ACOT_VLA(_model.BaseModel):
         input_mask = []
         ar_mask = []
         tokens = []
+
+        def interval_time_embedding(width: int) -> jax.Array:
+            if interval_condition_mode not in {"half_concat", "time_blend"}:
+                raise ValueError(
+                    "interval_condition_mode must be 'half_concat' or 'time_blend'."
+                )
+            if interval_end_timestep is None:
+                return posemb_sincos(
+                    timestep, width, min_period=4e-3, max_period=4.0
+                )
+            strength = jnp.clip(
+                jnp.asarray(interval_condition_strength, dtype=timestep.dtype),
+                0.0,
+                1.0,
+            )
+            if interval_condition_mode == "time_blend":
+                # One embedding call only: alpha=0 or r=t exactly recovers the
+                # pretrained start-time path.
+                effective_timestep = timestep + strength * (
+                    interval_end_timestep - timestep
+                )
+                return posemb_sincos(
+                    effective_timestep, width, min_period=4e-3, max_period=4.0
+                )
+
+            time_emb = posemb_sincos(
+                timestep, width, min_period=4e-3, max_period=4.0
+            )
+            endpoint_emb = posemb_sincos(
+                interval_end_timestep, width, min_period=4e-3, max_period=4.0
+            )
+            split = time_emb.shape[-1] // 2
+            conditioned_time_emb = jnp.concatenate(
+                [time_emb[..., :split], endpoint_emb[..., split:]], axis=-1
+            )
+            while strength.ndim < time_emb.ndim:
+                strength = strength[..., None]
+            return time_emb + strength * (conditioned_time_emb - time_emb)
+
         if not self.pi05:
             # add a single state token
             state_token = self.state_proj(obs.state)[:, None, :]
@@ -631,30 +671,7 @@ class ACOT_VLA(_model.BaseModel):
 
         if suf_type == "reasoner":
             action_tokens = self.coarse_action_in_proj(noisy_actions)
-            time_emb = posemb_sincos(timestep, self.coarse_action_in_proj.out_features, min_period=4e-3, max_period=4.0)
-            if interval_end_timestep is not None:
-                endpoint_emb = posemb_sincos(
-                    interval_end_timestep,
-                    self.coarse_action_in_proj.out_features,
-                    min_period=4e-3,
-                    max_period=4.0,
-                )
-                split = time_emb.shape[-1] // 2
-                # Parameterize u(x_t, t, r) without adding checkpoint-only
-                # modules: half of the existing sinusoidal features encode t
-                # and half encode r.  When r == t this is exactly the original
-                # time embedding, preserving the pretrained flow anchor.
-                conditioned_time_emb = jnp.concatenate(
-                    [time_emb[..., :split], endpoint_emb[..., split:]], axis=-1
-                )
-                strength = jnp.clip(
-                    jnp.asarray(interval_condition_strength, dtype=time_emb.dtype),
-                    0.0,
-                    1.0,
-                )
-                while strength.ndim < time_emb.ndim:
-                    strength = strength[..., None]
-                time_emb = time_emb + strength * (conditioned_time_emb - time_emb)
+            time_emb = interval_time_embedding(self.coarse_action_in_proj.out_features)
 
             if self.pi05:
                 # time MLP (for adaRMS)
@@ -676,26 +693,7 @@ class ACOT_VLA(_model.BaseModel):
 
         elif suf_type == "expert":
             action_tokens = self.action_in_proj(noisy_actions)
-            time_emb = posemb_sincos(timestep, self.action_in_proj.out_features, min_period=4e-3, max_period=4.0)
-            if interval_end_timestep is not None:
-                endpoint_emb = posemb_sincos(
-                    interval_end_timestep,
-                    self.action_in_proj.out_features,
-                    min_period=4e-3,
-                    max_period=4.0,
-                )
-                split = time_emb.shape[-1] // 2
-                conditioned_time_emb = jnp.concatenate(
-                    [time_emb[..., :split], endpoint_emb[..., split:]], axis=-1
-                )
-                strength = jnp.clip(
-                    jnp.asarray(interval_condition_strength, dtype=time_emb.dtype),
-                    0.0,
-                    1.0,
-                )
-                while strength.ndim < time_emb.ndim:
-                    strength = strength[..., None]
-                time_emb = time_emb + strength * (conditioned_time_emb - time_emb)
+            time_emb = interval_time_embedding(self.action_in_proj.out_features)
 
             if self.pi05:
                 # time MLP (for adaRMS)
@@ -1124,6 +1122,7 @@ class ACOT_VLA(_model.BaseModel):
         *,
         interval_end_time: jax.Array | None = None,
         interval_condition_strength: jax.Array | float = 1.0,
+        interval_condition_mode: str = "half_concat",
     ) -> jax.Array:
         """Evaluate the final-action flow field at an explicit state and time."""
 
@@ -1137,6 +1136,7 @@ class ACOT_VLA(_model.BaseModel):
             time,
             interval_end_timestep=interval_end_time,
             interval_condition_strength=interval_condition_strength,
+            interval_condition_mode=interval_condition_mode,
             explicit_action_reason=explicit_action_reason,
             implicit_action_reason=implicit_action_reason,
             suf_type="expert",
@@ -1164,6 +1164,7 @@ class ACOT_VLA(_model.BaseModel):
         implicit_action_reason: jax.Array | None,
         *,
         interval_condition_strength: jax.Array | float = 1.0,
+        interval_condition_mode: str = "half_concat",
     ) -> jax.Array:
         """Predict average velocity u(x_t, t, r) for a reverse-time interval.
 
@@ -1182,6 +1183,7 @@ class ACOT_VLA(_model.BaseModel):
             implicit_action_reason,
             interval_end_time=interval_end_time,
             interval_condition_strength=interval_condition_strength,
+            interval_condition_mode=interval_condition_mode,
         )
 
     def _action_interval_endpoint(
@@ -1194,6 +1196,7 @@ class ACOT_VLA(_model.BaseModel):
         implicit_action_reason: jax.Array | None,
         *,
         interval_condition_strength: jax.Array | float = 1.0,
+        interval_condition_mode: str = "half_concat",
     ) -> jax.Array:
         """Advance one learned average-velocity interval to its endpoint."""
 
@@ -1205,6 +1208,7 @@ class ACOT_VLA(_model.BaseModel):
             explicit_action_reason,
             implicit_action_reason,
             interval_condition_strength=interval_condition_strength,
+            interval_condition_mode=interval_condition_mode,
         )
         delta_time = (interval_end_time - interval_start_time).astype(action_x_t.dtype)
         return action_x_t + delta_time[:, None, None] * velocity
@@ -1306,6 +1310,7 @@ class ACOT_VLA(_model.BaseModel):
         min_interval: float = 0.05,
         contraction_power: float = 1.0,
         interval_condition_strength: float = 1.0,
+        interval_condition_mode: str = "half_concat",
         compute_endpoint_metrics: bool = False,
     ) -> tuple[jax.Array, dict[str, jax.Array]]:
         """Train the final branch with OFP self-consistency in ACoT time.
@@ -1340,6 +1345,10 @@ class ACOT_VLA(_model.BaseModel):
             raise ValueError("contraction_power must be positive.")
         if not 0.0 <= interval_condition_strength <= 1.0:
             raise ValueError("interval_condition_strength must be in [0, 1].")
+        if interval_condition_mode not in {"half_concat", "time_blend"}:
+            raise ValueError(
+                "interval_condition_mode must be 'half_concat' or 'time_blend'."
+            )
 
         prefix_state = self._compute_prefix_state(observation)
         implicit_action_reason = self.sample_actions_profile_implicit(prefix_state)[
@@ -1371,6 +1380,7 @@ class ACOT_VLA(_model.BaseModel):
             teacher_coarse_float,
             implicit_action_reason,
             interval_condition_strength=interval_condition_strength,
+            interval_condition_mode=interval_condition_mode,
         )
         flow_anchor_mse = jnp.mean(jnp.square(anchor_velocity - target_velocity))
 
@@ -1422,6 +1432,7 @@ class ACOT_VLA(_model.BaseModel):
             teacher_coarse_float,
             implicit_action_reason,
             interval_condition_strength=interval_condition_strength,
+            interval_condition_mode=interval_condition_mode,
         )
         ema_interval_velocity = ema_teacher._action_interval_velocity(
             prefix_state,
@@ -1431,6 +1442,7 @@ class ACOT_VLA(_model.BaseModel):
             teacher_coarse_float,
             implicit_action_reason,
             interval_condition_strength=interval_condition_strength,
+            interval_condition_mode=interval_condition_mode,
         )
         ema_endpoint = action_x_middle + (
             interval_end_time - interval_middle_time
@@ -1470,6 +1482,7 @@ class ACOT_VLA(_model.BaseModel):
                 teacher_coarse_float,
                 implicit_action_reason,
                 interval_condition_strength=interval_condition_strength,
+                interval_condition_mode=interval_condition_mode,
             )
             endpoint_mse = jnp.mean(
                 jnp.square(predicted_actions - teacher_actions_float)
@@ -2221,6 +2234,7 @@ class ACOT_VLA(_model.BaseModel):
         warm_start_valid: jax.Array,
         warm_start_time: jax.Array,
         interval_condition_strength: jax.Array | float = 1.0,
+        interval_condition_mode: str = "half_concat",
     ) -> dict[str, Any]:
         """Evaluate the opt-in OFP-SC interval map in one final-branch call.
 
@@ -2253,6 +2267,7 @@ class ACOT_VLA(_model.BaseModel):
             explicit_action_reason,
             implicit_action_reason,
             interval_condition_strength=interval_condition_strength,
+            interval_condition_mode=interval_condition_mode,
         )
         return {
             "actions": actions,
@@ -2261,5 +2276,10 @@ class ACOT_VLA(_model.BaseModel):
             "ofp_interval_condition_strength": jnp.broadcast_to(
                 jnp.asarray(interval_condition_strength, dtype=jnp.float32),
                 (batch_size,),
+            ),
+            "ofp_interval_condition_mode_id": jnp.full(
+                (batch_size,),
+                1 if interval_condition_mode == "time_blend" else 0,
+                dtype=jnp.int32,
             ),
         }

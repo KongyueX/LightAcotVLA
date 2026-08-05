@@ -120,6 +120,7 @@ class Args:
     ofp_min_interval: float = 0.05
     ofp_contraction_power: float = 1.0
     ofp_interval_condition_strength: float = 1.0
+    ofp_interval_condition_mode: str = "half_concat"
     ofp_adapter_only: bool = False
     fsdp_devices: int = 1
     overwrite: bool = False
@@ -266,10 +267,16 @@ def _validate_args(args: Args) -> None:
             raise ValueError("--ofp-contraction-power must be positive.")
         if not 0.0 <= args.ofp_interval_condition_strength <= 1.0:
             raise ValueError("--ofp-interval-condition-strength must be in [0, 1].")
+        if args.ofp_interval_condition_mode not in {"half_concat", "time_blend"}:
+            raise ValueError(
+                "--ofp-interval-condition-mode must be half_concat or time_blend."
+            )
     elif args.ofp_endpoint_anchor_loss_weight != 0:
         raise ValueError("--ofp-endpoint-anchor-loss-weight requires --ofp-sc.")
     if not args.ofp_sc and args.ofp_interval_condition_strength != 1.0:
         raise ValueError("--ofp-interval-condition-strength requires --ofp-sc.")
+    if not args.ofp_sc and args.ofp_interval_condition_mode != "half_concat":
+        raise ValueError("--ofp-interval-condition-mode requires --ofp-sc.")
     if args.ofp_adapter_only and (not args.ofp_sc or args.stage != "final"):
         raise ValueError("--ofp-adapter-only requires --ofp-sc with --stage final.")
 
@@ -488,6 +495,7 @@ def _endpoint_train_step(
     ofp_min_interval: float,
     ofp_contraction_power: float,
     ofp_interval_condition_strength: float,
+    ofp_interval_condition_mode: str,
 ) -> tuple[training_utils.TrainState, dict[str, jax.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -520,6 +528,7 @@ def _endpoint_train_step(
                 min_interval=ofp_min_interval,
                 contraction_power=ofp_contraction_power,
                 interval_condition_strength=ofp_interval_condition_strength,
+                interval_condition_mode=ofp_interval_condition_mode,
                 compute_endpoint_metrics=False,
             )
         return candidate.compute_endpoint_distillation_loss(
@@ -596,6 +605,7 @@ def _endpoint_validation_step(
     ofp_min_interval: float,
     ofp_contraction_power: float,
     ofp_interval_condition_strength: float,
+    ofp_interval_condition_mode: str,
 ) -> dict[str, jax.Array]:
     if ofp_sc:
         if state.ema_params is None:
@@ -624,6 +634,7 @@ def _endpoint_validation_step(
             min_interval=ofp_min_interval,
             contraction_power=ofp_contraction_power,
             interval_condition_strength=ofp_interval_condition_strength,
+            interval_condition_mode=ofp_interval_condition_mode,
             compute_endpoint_metrics=True,
         )
         return metrics
@@ -863,6 +874,7 @@ def main(args: Args) -> None:
             ofp_min_interval=args.ofp_min_interval,
             ofp_contraction_power=args.ofp_contraction_power,
             ofp_interval_condition_strength=args.ofp_interval_condition_strength,
+            ofp_interval_condition_mode=args.ofp_interval_condition_mode,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=(state_sharding, replicated_sharding),
@@ -889,6 +901,7 @@ def main(args: Args) -> None:
             ofp_min_interval=args.ofp_min_interval,
             ofp_contraction_power=args.ofp_contraction_power,
             ofp_interval_condition_strength=args.ofp_interval_condition_strength,
+            ofp_interval_condition_mode=args.ofp_interval_condition_mode,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=replicated_sharding,
@@ -1048,6 +1061,7 @@ def main(args: Args) -> None:
         "ofp_min_interval": args.ofp_min_interval,
         "ofp_contraction_power": args.ofp_contraction_power,
         "ofp_interval_condition_strength": args.ofp_interval_condition_strength,
+        "ofp_interval_condition_mode": args.ofp_interval_condition_mode,
         "ofp_adapter_only": args.ofp_adapter_only,
         "ofp_self_guidance": False,
         "trainable_scope": trainable_scope,
