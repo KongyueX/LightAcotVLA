@@ -73,7 +73,7 @@ class HARPTemporalResidualHead(nn.Module):
 
 
 def align_ear_to_action_time(ear: jax.Array, action_horizon: int) -> jax.Array:
-    """Linearly align EAR samples to the final chunk's physical-time grid."""
+    """Align EAR samples at ticks 0,2,... to final-action ticks 0,1,... ."""
 
     ear = jnp.asarray(ear, dtype=jnp.float32)
     if ear.ndim != 3:
@@ -83,7 +83,12 @@ def align_ear_to_action_time(ear: jax.Array, action_horizon: int) -> jax.Array:
     coarse_horizon = ear.shape[1]
     if coarse_horizon <= 0:
         raise ValueError("EAR horizon must be positive.")
-    positions = jnp.linspace(0.0, float(coarse_horizon - 1), action_horizon)
+    last_position = 0.5 * float(action_horizon - 1)
+    if last_position > float(coarse_horizon - 1):
+        raise ValueError(
+            "EAR horizon is too short for two-action-ticks-per-EAR-sample alignment."
+        )
+    positions = 0.5 * jnp.arange(action_horizon, dtype=jnp.float32)
     lower = jnp.floor(positions).astype(jnp.int32)
     upper = jnp.minimum(lower + 1, coarse_horizon - 1)
     weight = (positions - lower.astype(jnp.float32))[None, :, None]
