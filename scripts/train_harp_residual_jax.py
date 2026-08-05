@@ -355,9 +355,9 @@ def main(args: Args) -> None:
     )
     params = model.init(jax.random.key(args.seed), init_features)["params"]
     parameter_count = harp.parameter_count(params)
-    if parameter_count >= 10_000:
+    if parameter_count >= 100_000:
         raise ValueError(
-            f"HARP configuration has {parameter_count} parameters; the pilot limit is 9999."
+            f"HARP configuration has {parameter_count} parameters; the pilot limit is 99999."
         )
     optimizer = optax.adamw(args.learning_rate, weight_decay=args.weight_decay)
     optimizer_state = optimizer.init(params)

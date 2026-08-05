@@ -30,8 +30,9 @@ import numpy as np
 
 SCHEMA_VERSION = 1
 CONTROL_DIM = 6
-IAR_SUMMARY_DIM = 4
-FEATURE_DIM = CONTROL_DIM * 7 + IAR_SUMMARY_DIM
+STATE_FEATURE_DIM = 8
+IAR_SUMMARY_DIM = 1024
+FEATURE_DIM = CONTROL_DIM * 6 + STATE_FEATURE_DIM + IAR_SUMMARY_DIM
 OUTPUT_DIM = CONTROL_DIM + 2
 PARAM_PREFIX = "param/"
 
@@ -108,13 +109,13 @@ def _iar_summary(iar: jax.Array) -> jax.Array:
     iar = jnp.asarray(iar, dtype=jnp.float32)
     if iar.ndim != 3:
         raise ValueError(f"IAR must have shape [B,N,D], got {iar.shape}.")
-    mean = jnp.mean(iar, axis=(1, 2))
-    centered = iar - mean[:, None, None]
-    std = jnp.sqrt(jnp.mean(jnp.square(centered), axis=(1, 2)) + 1e-6)
-    mean_abs = jnp.mean(jnp.abs(iar), axis=(1, 2))
-    token_rms = jnp.sqrt(jnp.mean(jnp.square(iar), axis=2) + 1e-6)
-    token_rms_std = jnp.std(token_rms, axis=1)
-    return jnp.stack([mean, std, mean_abs, token_rms_std], axis=-1)
+    if iar.shape[-1] != IAR_SUMMARY_DIM:
+        raise ValueError(
+            f"HARP expects {IAR_SUMMARY_DIM}-wide IAR tokens, got {iar.shape[-1]}."
+        )
+    # Preserve the semantic channel basis.  Four global moments erase which
+    # latent features are active and cannot condition the midpoint velocity.
+    return jnp.mean(iar, axis=1)
 
 
 def build_harp_features(
@@ -137,15 +138,17 @@ def build_harp_features(
         )
     if state.ndim != 2 or state.shape[0] != action_nfe1.shape[0]:
         raise ValueError(f"state must have shape [B,D], got {state.shape}.")
-    if min(action_nfe1.shape[-1], ear.shape[-1], state.shape[-1]) < CONTROL_DIM:
-        raise ValueError("HARP requires at least six continuous action/state dimensions.")
+    if min(action_nfe1.shape[-1], ear.shape[-1]) < CONTROL_DIM:
+        raise ValueError("HARP requires at least six continuous action dimensions.")
+    if state.shape[-1] < STATE_FEATURE_DIM:
+        raise ValueError(f"HARP requires at least {STATE_FEATURE_DIM} state dimensions.")
 
     action = action_nfe1[..., :CONTROL_DIM]
     aligned_ear = align_ear_to_action_time(ear, action_nfe1.shape[1])[..., :CONTROL_DIM]
     noise = action_noise[..., :CONTROL_DIM]
     state_features = jnp.broadcast_to(
-        state[:, None, :CONTROL_DIM],
-        (*action.shape[:2], CONTROL_DIM),
+        state[:, None, :STATE_FEATURE_DIM],
+        (*action.shape[:2], STATE_FEATURE_DIM),
     )
     iar_features = jnp.broadcast_to(
         _iar_summary(iar)[:, None, :],
