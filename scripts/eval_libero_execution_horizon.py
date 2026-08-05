@@ -81,6 +81,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--compact-alpha-router",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable the served state32+absolute-step outcome router. The server "
+            "must load its NPZ separately; this path hard-routes alpha in {0,.05} "
+            "and forces direct final NFE1."
+        ),
+    )
+    parser.add_argument(
         "--ofp-interval-flow",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -175,6 +185,7 @@ def _request(
     previous_horizon: int,
     budget_fraction: float,
     episode_progress: float,
+    absolute_decision_step: int,
     args: argparse.Namespace,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     request = {
@@ -197,6 +208,16 @@ def _request(
         request["action_cot_adaptive_final_time_warp"] = np.asarray(
             True,
             dtype=np.bool_,
+        )
+    if args.compact_alpha_router:
+        request.update(
+            {
+                "action_cot_compact_alpha_router": np.asarray(True, dtype=np.bool_),
+                "action_cot_absolute_decision_step": np.asarray(
+                    absolute_decision_step,
+                    dtype=np.int32,
+                ),
+            }
         )
     if args.ofp_interval_flow:
         request.update(
@@ -247,6 +268,9 @@ def _request(
         "server_ms": float(server_timing.get("infer_ms", wall_ms)),
         "predictor_ms": float(policy_timing.get("execution_horizon_predictor_ms", np.nan)),
         "batched_teacher_ms": float(policy_timing.get("batched_mc_teacher_ms", np.nan)),
+        "compact_alpha_router_ms": float(
+            policy_timing.get("compact_alpha_router_ms", np.nan)
+        ),
     }
 
 
@@ -408,8 +432,10 @@ def _warmup(
     try:
         env.reset()
         observation = env.set_init_state(states[args.initial_state_offset % len(states)])
+        absolute_step = 0
         for _ in range(args.num_steps_wait):
             observation, _, done, _ = env.step(libero_eval.LIBERO_DUMMY_ACTION)
+            absolute_step += 1
             if done:
                 break
         element = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
@@ -424,6 +450,7 @@ def _warmup(
                     previous_horizon=10,
                     budget_fraction=args.v2_initial_budget / args.v2_budget_capacity,
                     episode_progress=0.0,
+                    absolute_decision_step=absolute_step,
                     args=args,
                 )
     finally:
@@ -448,6 +475,8 @@ def _run_episode(
     timings: list[dict[str, float]] = []
     decisions: list[dict[str, Any]] = []
     horizons: list[int] = []
+    compact_alpha_router_scores: list[float] = []
+    compact_alpha_router_alphas: list[float] = []
     policy_calls = 0
     sampled_chunks = 0
     step = 0
@@ -482,6 +511,7 @@ def _run_episode(
                 previous_horizon=previous_horizon,
                 budget_fraction=budget_state.balance / args.v2_budget_capacity,
                 episode_progress=step / max(episode_step_limit, 1),
+                absolute_decision_step=step,
                 args=args,
             )
             policy_calls += 1
@@ -501,6 +531,44 @@ def _run_episode(
             if horizon <= 0:
                 break
             horizons.append(horizon)
+            compact_router_info: dict[str, Any] = {}
+            if args.compact_alpha_router:
+                required_router_outputs = {
+                    "compact_alpha_router_score",
+                    "compact_alpha_router_selected_alpha",
+                    "compact_alpha_router_absolute_decision_step",
+                }
+                missing_router_outputs = sorted(required_router_outputs.difference(result))
+                if missing_router_outputs:
+                    raise KeyError(
+                        "Compact alpha router response is missing outputs: "
+                        f"{missing_router_outputs}"
+                    )
+                router_score = float(np.asarray(result["compact_alpha_router_score"]).item())
+                router_alpha = float(
+                    np.asarray(result["compact_alpha_router_selected_alpha"]).item()
+                )
+                returned_step = int(
+                    np.asarray(result["compact_alpha_router_absolute_decision_step"]).item()
+                )
+                if returned_step != step:
+                    raise ValueError(
+                        f"Compact alpha router returned absolute step {returned_step}, requested {step}."
+                    )
+                if not np.isfinite(router_score):
+                    raise ValueError("Compact alpha router returned a non-finite score.")
+                if not (np.isclose(router_alpha, 0.0) or np.isclose(router_alpha, 0.05)):
+                    raise ValueError(
+                        f"Compact alpha router returned unsupported alpha {router_alpha}."
+                    )
+                router_alpha = 0.05 if np.isclose(router_alpha, 0.05) else 0.0
+                compact_alpha_router_scores.append(router_score)
+                compact_alpha_router_alphas.append(router_alpha)
+                compact_router_info = {
+                    "compact_alpha_router_score": router_score,
+                    "compact_alpha_router_selected_alpha": router_alpha,
+                    "compact_alpha_router_ms": timing["compact_alpha_router_ms"],
+                }
             decisions.append(
                 {
                     "mode": mode,
@@ -516,6 +584,7 @@ def _run_episode(
                     "predictor_ms": timing["predictor_ms"],
                     "batched_teacher_ms": timing["batched_teacher_ms"],
                     "selector_json": json.dumps(selector_info, separators=(",", ":")),
+                    **compact_router_info,
                 }
             )
             previous_actions = action_chunk
@@ -564,6 +633,27 @@ def _run_episode(
         "actual_predictor_total_ms": total("predictor_ms"),
         "actual_batched_teacher_total_ms": total("batched_teacher_ms"),
     }
+    if args.compact_alpha_router:
+        alpha_histogram = collections.Counter(
+            f"{alpha:.2f}" for alpha in compact_alpha_router_alphas
+        )
+        row.update(
+            {
+                "compact_alpha_router_decisions": len(compact_alpha_router_scores),
+                "compact_alpha_router_score_sum": float(np.sum(compact_alpha_router_scores)),
+                "compact_alpha_router_score_mean": (
+                    float(np.mean(compact_alpha_router_scores))
+                    if compact_alpha_router_scores
+                    else float("nan")
+                ),
+                "compact_alpha_router_alpha_distribution_json": json.dumps(
+                    dict(sorted(alpha_histogram.items()))
+                ),
+                "actual_compact_alpha_router_total_ms": total(
+                    "compact_alpha_router_ms"
+                ),
+            }
+        )
     return row, decisions
 
 
@@ -596,7 +686,7 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
         return float(sum(value for value, _ in pairs) / sum(calls for _, calls in pairs))
 
     histogram = collections.Counter(all_horizons)
-    return {
+    result = {
         "mode": mode,
         "task_id": task_id if task_id is not None else "overall",
         "episodes": len(subset),
@@ -627,6 +717,40 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
         "predictor_ms_per_call": per_call("actual_predictor_total_ms"),
         "batched_teacher_ms_per_episode": mean("actual_batched_teacher_total_ms"),
     }
+    if any("compact_alpha_router_alpha_distribution_json" in row for row in subset):
+        alpha_histogram: collections.Counter[str] = collections.Counter()
+        score_sum = 0.0
+        score_count = 0
+        for row in subset:
+            alpha_histogram.update(
+                {
+                    str(alpha): int(count)
+                    for alpha, count in json.loads(
+                        row.get("compact_alpha_router_alpha_distribution_json", "{}")
+                    ).items()
+                }
+            )
+            count = int(row.get("compact_alpha_router_decisions", 0))
+            score_sum += float(row.get("compact_alpha_router_score_sum", 0.0))
+            score_count += count
+        result.update(
+            {
+                "compact_alpha_router_decisions": score_count,
+                "compact_alpha_router_score_mean": (
+                    score_sum / score_count if score_count else float("nan")
+                ),
+                "compact_alpha_router_alpha_distribution": dict(
+                    sorted(alpha_histogram.items())
+                ),
+                "compact_alpha_router_ms_per_episode": mean(
+                    "actual_compact_alpha_router_total_ms"
+                ),
+                "compact_alpha_router_ms_per_call": per_call(
+                    "actual_compact_alpha_router_total_ms"
+                ),
+            }
+        )
+    return result
 
 
 def _write_csv(path: pathlib.Path, rows: list[dict[str, Any]]) -> None:
@@ -666,6 +790,7 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "steps",
         "policy_calls",
         "sampled_action_chunks",
+        "compact_alpha_router_decisions",
     }
     floats = {
         "avg_h",
@@ -676,6 +801,9 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "actual_server_total_ms",
         "actual_predictor_total_ms",
         "actual_batched_teacher_total_ms",
+        "compact_alpha_router_score_sum",
+        "compact_alpha_router_score_mean",
+        "actual_compact_alpha_router_total_ms",
     }
     converted = {
         key: int(value) if key in integers else float(value) if key in floats else value for key, value in row.items()
@@ -774,6 +902,39 @@ def main(args: argparse.Namespace) -> None:
             "final_denoising_steps cannot be evaluated with exact_batched_mc_v2; "
             "pass --modes without that batched-teacher mode."
         )
+    if args.compact_alpha_router:
+        if args.final_denoising_steps is not None:
+            raise ValueError(
+                "compact_alpha_router forces direct final NFE1; do not set final_denoising_steps."
+            )
+        if args.final_time_warp_alpha > 0.0:
+            raise ValueError(
+                "compact_alpha_router selects alpha itself; do not set final_time_warp_alpha."
+            )
+        if args.adaptive_final_time_warp or args.ofp_interval_flow:
+            raise ValueError(
+                "compact_alpha_router cannot be combined with adaptive time warp or OFP inference."
+            )
+        if list(args.modes) != ["fixed_h9"] or args.fixed_horizon != 10:
+            raise ValueError(
+                "The compact Task8 formal protocol requires --modes fixed_h9 --fixed-horizon 10."
+            )
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError(
+                "The compact router endpoint-student protocol requires --action-cot-denoising-steps 1."
+            )
+        expected_formal_episodes = list(range(10, 30))
+        if (
+            args.task_suite_name != "libero_10"
+            or args.task_start != 8
+            or args.max_tasks != 1
+            or args.initial_state_offset != 0
+            or args.episode_ids != expected_formal_episodes
+        ):
+            raise ValueError(
+                "The compact outcome router is Task8-specific and its one-shot formal evaluation "
+                "requires libero_10 Task8, initial-state offset 0, and explicit episode IDs 10..29."
+            )
     if not 0.0 < args.ofp_warm_start_time <= 1.0:
         raise ValueError("ofp_warm_start_time must be in (0, 1].")
     if not 0.0 <= args.ofp_interval_condition_strength <= 1.0:
@@ -827,9 +988,18 @@ def main(args: argparse.Namespace) -> None:
 
     per_task = [_aggregate(rows, mode, task_id) for mode in args.modes for task_id in range(args.task_start, task_end)]
     overall = {mode: _aggregate(rows, mode) for mode in args.modes}
-    flat_per_task = [
-        {**item, "h_distribution": json.dumps(item["h_distribution"], sort_keys=True)} for item in per_task
-    ]
+    flat_per_task = []
+    for item in per_task:
+        flat_item = {
+            **item,
+            "h_distribution": json.dumps(item["h_distribution"], sort_keys=True),
+        }
+        if "compact_alpha_router_alpha_distribution" in flat_item:
+            flat_item["compact_alpha_router_alpha_distribution"] = json.dumps(
+                flat_item["compact_alpha_router_alpha_distribution"],
+                sort_keys=True,
+            )
+        flat_per_task.append(flat_item)
     _write_csv(output_dir / "per_task_summary.csv", flat_per_task)
     summary = {
         "status": "complete",

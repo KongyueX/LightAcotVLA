@@ -11,6 +11,7 @@ import jax.numpy as jnp
 
 from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
 import openpi.models.model as _model
+from openpi.policies import compact_alpha_router as _compact_alpha_router
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
 from openpi.training import checkpoints as _checkpoints
@@ -94,6 +95,7 @@ def create_trained_policy(
     execution_horizon_predictor_params: pathlib.Path | str | None = None,
     acot_endpoint_student_params: pathlib.Path | str | None = None,
     acot_contextual_compiler_params: pathlib.Path | str | None = None,
+    acot_compact_alpha_router_params: pathlib.Path | str | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -114,6 +116,8 @@ def create_trained_policy(
             compiler sidecar. A directory is resolved to ``model_params.npz``.
             When present, the sequential Action-CoT path bypasses the final
             300M action expert and uses this compiler instead.
+        acot_compact_alpha_router_params: Optional compact ridge-router NPZ.
+            It remains inactive until a request explicitly enables it.
     """
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
@@ -256,6 +260,19 @@ def create_trained_policy(
         )
         logging.info("Loaded contextual Action-CoT compiler sidecar from %s", compiler_path)
 
+    compact_alpha_router = None
+    if acot_compact_alpha_router_params is not None:
+        if acot_endpoint_student_params is None:
+            raise ValueError(
+                "The compact alpha router was fit for the one-step endpoint student; "
+                "load acot_endpoint_student_params in the same server."
+            )
+        router_path = pathlib.Path(
+            download.maybe_download(str(acot_compact_alpha_router_params))
+        )
+        compact_alpha_router = _compact_alpha_router.load_compact_alpha_router(router_path)
+        logging.info("Loaded compact ACoT alpha router from %s", router_path)
+
     data_config = train_config.data.create(train_config.assets_dirs, model_config)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
@@ -285,4 +302,5 @@ def create_trained_policy(
         use_quantile_norm=data_config.use_quantile_norm,
         action_dim=model_config.action_dim,
         acot_contextual_compiler=contextual_compiler,
+        acot_compact_alpha_router=compact_alpha_router,
     )

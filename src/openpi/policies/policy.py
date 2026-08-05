@@ -15,6 +15,7 @@ from typing_extensions import override
 from openpi import transforms as _transforms
 from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
 from openpi.models import model as _model
+from openpi.policies import compact_alpha_router as _compact_alpha_router
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
 
@@ -43,6 +44,7 @@ class Policy(BasePolicy):
         use_quantile_norm: bool = False,
         action_dim: int | None = None,
         acot_contextual_compiler: _contextual_plan_compiler.ContextualPlanCompiler | None = None,
+        acot_compact_alpha_router: _compact_alpha_router.CompactAlphaRouter | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
         self._input_transform = _transforms.compose(transforms)
@@ -54,6 +56,7 @@ class Policy(BasePolicy):
         self._use_quantile_norm = use_quantile_norm
         self._action_dim = action_dim or model.action_dim
         self._acot_contextual_compiler = acot_contextual_compiler
+        self._acot_compact_alpha_router = acot_compact_alpha_router
         self._sample_actions_profile_prefix = None
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
@@ -105,6 +108,13 @@ class Policy(BasePolicy):
             raise ValueError(
                 "A contextual Action-CoT compiler requires the model's sequential profile entrypoints."
             )
+        if self._acot_compact_alpha_router is not None and (
+            not self._can_profile_sample_actions()
+            or self._sample_actions_profile_direct_one_step_expert is None
+        ):
+            raise ValueError(
+                "A compact alpha router requires the model's sequential direct one-step entrypoint."
+            )
 
     @override
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
@@ -115,6 +125,31 @@ class Policy(BasePolicy):
         action_cot_skip_segment = inputs.pop("action_cot_skip_segment", None)
         profile_policy_timing = _as_bool(inputs.pop("profile_policy_timing", False))
         export_acot_cache = _as_bool(inputs.pop("export_acot_cache", False))
+        compact_alpha_router_enabled = _as_bool(
+            inputs.pop("action_cot_compact_alpha_router", False)
+        )
+        absolute_decision_step_raw = inputs.pop(
+            "action_cot_absolute_decision_step",
+            None,
+        )
+        absolute_decision_step = None
+        if compact_alpha_router_enabled:
+            if self._acot_compact_alpha_router is None:
+                raise ValueError(
+                    "action_cot_compact_alpha_router=True requires a compact router NPZ at serve startup."
+                )
+            if absolute_decision_step_raw is None:
+                raise ValueError(
+                    "action_cot_compact_alpha_router=True requires action_cot_absolute_decision_step."
+                )
+            raw_step = np.asarray(absolute_decision_step_raw).item()
+            absolute_decision_step = int(raw_step)
+            if absolute_decision_step < 0 or float(absolute_decision_step) != float(raw_step):
+                raise ValueError("action_cot_absolute_decision_step must be a non-negative integer.")
+        elif absolute_decision_step_raw is not None:
+            raise ValueError(
+                "action_cot_absolute_decision_step is only valid when the compact alpha router is enabled."
+            )
         action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
         final_denoising_steps_raw = inputs.pop("action_cot_final_denoising_steps", None)
@@ -127,6 +162,7 @@ class Policy(BasePolicy):
         final_time_warp_alpha = float(
             np.asarray(inputs.pop("action_cot_final_time_warp_alpha", 0.0)).item()
         )
+        requested_final_time_warp_alpha = final_time_warp_alpha
         adaptive_final_time_warp = _as_bool(
             inputs.pop("action_cot_adaptive_final_time_warp", False)
         )
@@ -163,6 +199,8 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_skip_segment", None)
             override_inputs.pop("profile_policy_timing", None)
             override_inputs.pop("export_acot_cache", None)
+            override_inputs.pop("action_cot_compact_alpha_router", None)
+            override_inputs.pop("action_cot_absolute_decision_step", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             override_inputs.pop("action_cot_final_denoising_steps", None)
@@ -191,6 +229,33 @@ class Policy(BasePolicy):
             transformed_coarse_actions_override = override_inputs["coarse_actions"]
 
         inputs = self._input_transform(inputs)
+        compact_alpha_router_score = None
+        compact_alpha_router_selected_alpha = None
+        compact_alpha_router_ms = 0.0
+        if compact_alpha_router_enabled:
+            configured_final_time_warp_alpha = float(
+                np.asarray(self._sample_kwargs.get("final_time_warp_alpha", 0.0)).item()
+            )
+            if (
+                requested_final_time_warp_alpha != 0.0
+                or configured_final_time_warp_alpha != 0.0
+            ):
+                raise ValueError(
+                    "Compact alpha routing owns final_time_warp_alpha and cannot use a fixed alpha."
+                )
+            assert self._acot_compact_alpha_router is not None
+            assert absolute_decision_step is not None
+            router_started = time.monotonic()
+            compact_alpha_router_score, compact_alpha_router_selected_alpha = (
+                self._acot_compact_alpha_router.route(
+                    np.asarray(inputs["state"]),
+                    absolute_decision_step,
+                )
+            )
+            compact_alpha_router_ms = (time.monotonic() - router_started) * 1000
+            # The hard router owns this request's final endpoint. In
+            # particular alpha=0 still uses the direct one-step entrypoint.
+            final_time_warp_alpha = compact_alpha_router_selected_alpha
         if transformed_coarse_actions_override is not None:
             inputs["coarse_actions_override"] = transformed_coarse_actions_override
 
@@ -221,6 +286,23 @@ class Policy(BasePolicy):
             # transforms preserve the exact normalized predictor input.
             "execution_horizon_state_normalized": inputs["state"],
         }
+        if compact_alpha_router_enabled:
+            outputs.update(
+                {
+                    "compact_alpha_router_score": jnp.asarray(
+                        compact_alpha_router_score,
+                        dtype=jnp.float32,
+                    ).reshape((1,)),
+                    "compact_alpha_router_selected_alpha": jnp.asarray(
+                        compact_alpha_router_selected_alpha,
+                        dtype=jnp.float32,
+                    ).reshape((1,)),
+                    "compact_alpha_router_absolute_decision_step": jnp.asarray(
+                        absolute_decision_step,
+                        dtype=jnp.int32,
+                    ).reshape((1,)),
+                }
+            )
         # joint_coupled_sampler selects a separate jitted entrypoint and must
         # not be forwarded to the legacy sample_actions signature.
         sample_kwargs = {
@@ -253,7 +335,13 @@ class Policy(BasePolicy):
             }
         if not 0.0 <= final_time_warp_alpha < 1.0:
             raise ValueError("action_cot_final_time_warp_alpha must be in [0, 1).")
-        if final_time_warp_alpha > 0.0:
+        if compact_alpha_router_enabled:
+            sample_kwargs = {
+                **sample_kwargs,
+                "final_time_warp_alpha": final_time_warp_alpha,
+                "force_direct_one_step_expert": True,
+            }
+        elif final_time_warp_alpha > 0.0:
             sample_kwargs = {
                 **sample_kwargs,
                 # Keep this hashable so the direct endpoint JIT can specialize
@@ -292,6 +380,29 @@ class Policy(BasePolicy):
             }
         observation = _model.Observation.from_dict(inputs)
         detailed_timing = {}
+        if compact_alpha_router_enabled:
+            detailed_timing["compact_alpha_router_ms"] = compact_alpha_router_ms
+            if final_denoising_steps is not None or "final_denoising_steps" in self._sample_kwargs:
+                raise ValueError(
+                    "Compact alpha routing forces direct final NFE1 and cannot use final_denoising_steps."
+                )
+            if (
+                adaptive_final_time_warp
+                or ofp_interval_flow
+                or _as_bool(self._sample_kwargs.get("adaptive_final_time_warp", False))
+                or _as_bool(self._sample_kwargs.get("ofp_interval_flow", False))
+            ):
+                raise ValueError(
+                    "Compact alpha routing cannot be combined with adaptive time warp or OFP inference."
+                )
+            if joint_coupled_sampler or batched_mc_samples:
+                raise ValueError(
+                    "Compact alpha routing cannot be combined with coupled or batched-MC sampling."
+                )
+            if self._acot_contextual_compiler is not None:
+                raise ValueError(
+                    "Compact alpha routing cannot be combined with a contextual Action-CoT compiler."
+                )
         if joint_coupled_sampler and batched_mc_samples:
             raise ValueError("joint_coupled_sampler cannot be combined with batched_mc_samples.")
         if self._acot_contextual_compiler is not None and batched_mc_samples:
@@ -378,6 +489,7 @@ class Policy(BasePolicy):
             or final_denoising_steps is not None
             or final_time_warp_alpha > 0.0
             or adaptive_final_time_warp
+            or compact_alpha_router_enabled
             or profile_policy_timing
             or export_acot_cache
         ) and self._can_profile_sample_actions():
@@ -446,7 +558,7 @@ class Policy(BasePolicy):
                 )
                 transformed_candidates.append(np.asarray(candidate_outputs["actions"]))
             mc_actions = np.stack(transformed_candidates, axis=0)
-        model_time = time.monotonic() - start_time
+        model_time = time.monotonic() - start_time + compact_alpha_router_ms / 1000
         if detailed_timing:
             stage_total_ms = sum(
                 detailed_timing.get(key, 0.0)
@@ -459,6 +571,7 @@ class Policy(BasePolicy):
                     "coupled_action_cot_ms",
                     "batched_mc_teacher_ms",
                     "execution_horizon_predictor_ms",
+                    "compact_alpha_router_ms",
                 )
             )
             detailed_timing["profile_overhead_ms"] = max(0.0, model_time * 1000 - stage_total_ms)
@@ -554,8 +667,12 @@ class Policy(BasePolicy):
         prefix_feature = None
         explicit_final_steps = sample_kwargs.get("final_denoising_steps")
         final_time_warp_alpha = float(sample_kwargs.get("final_time_warp_alpha", 0.0))
+        force_direct_one_step = _as_bool(
+            sample_kwargs.get("force_direct_one_step_expert", False)
+        )
         use_direct_final_expert = (
-            explicit_final_steps is None and final_time_warp_alpha > 0.0
+            explicit_final_steps is None
+            and (final_time_warp_alpha > 0.0 or force_direct_one_step)
         ) or (
             explicit_final_steps is not None
             and int(np.asarray(explicit_final_steps).item()) == 1
