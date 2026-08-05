@@ -100,6 +100,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--final-hybrid-mode",
+        choices=("none", "control_nfe2", "gripper_nfe2"),
+        default="none",
+        help=(
+            "Opt-in final-expert ceiling diagnostic. Reuse one prefix/EAR/IAR/noise, "
+            "run direct NFE1 and legacy NFE2, then take either the first six control "
+            "dimensions or the remaining gripper dimensions from NFE2."
+        ),
+    )
+    parser.add_argument(
         "--ofp-interval-flow",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -230,6 +240,8 @@ def _request(
         )
     if args.harp_residual:
         request["action_cot_harp_residual"] = np.asarray(True, dtype=np.bool_)
+    if args.final_hybrid_mode != "none":
+        request["action_cot_final_hybrid_mode"] = args.final_hybrid_mode
     if args.ofp_interval_flow:
         request.update(
             {
@@ -919,6 +931,38 @@ def main(args: argparse.Namespace) -> None:
             "final_denoising_steps cannot be evaluated with exact_batched_mc_v2; "
             "pass --modes without that batched-teacher mode."
         )
+    if args.final_hybrid_mode != "none":
+        if args.final_denoising_steps is not None:
+            raise ValueError(
+                "final_hybrid_mode owns both final NFE1 and NFE2; do not set final_denoising_steps."
+            )
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError("final_hybrid_mode requires endpoint-student EAR NFE1.")
+        if (
+            args.harp_residual
+            or args.compact_alpha_router
+            or args.adaptive_final_time_warp
+            or args.ofp_interval_flow
+        ):
+            raise ValueError(
+                "final_hybrid_mode cannot be combined with HARP, compact routing, "
+                "adaptive time warp, or OFP inference."
+            )
+        if list(args.modes) != ["fixed_h9"] or args.fixed_horizon != 10:
+            raise ValueError(
+                "The final hybrid ceiling diagnostic requires --modes fixed_h9 --fixed-horizon 10."
+            )
+        if (
+            args.task_suite_name != "libero_10"
+            or args.task_start != 8
+            or args.max_tasks != 1
+            or args.initial_state_offset != 0
+            or args.episode_ids != [36, 37]
+        ):
+            raise ValueError(
+                "The final hybrid ceiling diagnostic is restricted to libero_10 Task8 "
+                "with initial-state offset 0 and --episode-ids 36 37."
+            )
     if args.compact_alpha_router:
         if args.final_denoising_steps is not None:
             raise ValueError(
@@ -957,9 +1001,9 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError("harp_residual forces direct final NFE1; do not set final_denoising_steps.")
         if args.action_cot_denoising_steps != 1:
             raise ValueError("harp_residual requires endpoint-student EAR NFE1.")
-        if args.final_time_warp_alpha > 0.0 or args.adaptive_final_time_warp or args.ofp_interval_flow:
+        if args.adaptive_final_time_warp or args.ofp_interval_flow:
             raise ValueError(
-                "harp_residual cannot be combined with fixed/adaptive time warp or OFP inference."
+                "harp_residual cannot be combined with adaptive time warp or OFP inference."
             )
         if args.compact_alpha_router:
             raise ValueError("harp_residual cannot be combined with compact_alpha_router.")

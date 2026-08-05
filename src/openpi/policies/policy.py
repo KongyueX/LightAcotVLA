@@ -150,6 +150,14 @@ class Policy(BasePolicy):
         harp_residual_enabled = _as_bool(
             inputs.pop("action_cot_harp_residual", False)
         )
+        final_hybrid_mode = str(
+            np.asarray(inputs.pop("action_cot_final_hybrid_mode", "none")).item()
+        )
+        if final_hybrid_mode not in {"none", "control_nfe2", "gripper_nfe2"}:
+            raise ValueError(
+                "action_cot_final_hybrid_mode must be one of "
+                "'none', 'control_nfe2', or 'gripper_nfe2'."
+            )
         absolute_decision_step_raw = inputs.pop(
             "action_cot_absolute_decision_step",
             None,
@@ -223,6 +231,7 @@ class Policy(BasePolicy):
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_compact_alpha_router", None)
             override_inputs.pop("action_cot_harp_residual", None)
+            override_inputs.pop("action_cot_final_hybrid_mode", None)
             override_inputs.pop("action_cot_absolute_decision_step", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
@@ -366,6 +375,11 @@ class Policy(BasePolicy):
                 "force_direct_one_step_expert": True,
                 "apply_harp_residual": True,
             }
+        if final_hybrid_mode != "none":
+            sample_kwargs = {
+                **sample_kwargs,
+                "final_hybrid_mode": final_hybrid_mode,
+            }
         if ofp_interval_flow:
             if not 0.0 < ofp_warm_start_time <= 1.0:
                 raise ValueError("action_cot_ofp_warm_start_time must be in (0, 1].")
@@ -416,6 +430,53 @@ class Policy(BasePolicy):
                 raise ValueError(
                     "Compact alpha routing cannot be combined with a contextual Action-CoT compiler."
                 )
+        if final_hybrid_mode != "none":
+            if self._sample_actions_profile_direct_one_step_expert is None:
+                raise ValueError(
+                    "Final hybrid diagnostics require the static direct one-step final expert."
+                )
+            if final_denoising_steps is not None or "final_denoising_steps" in self._sample_kwargs:
+                raise ValueError(
+                    "Final hybrid diagnostics own both NFE1 and NFE2 paths; "
+                    "do not set final_denoising_steps."
+                )
+            if (
+                compact_alpha_router_enabled
+                or harp_residual_enabled
+                or adaptive_final_time_warp
+                or ofp_interval_flow
+                or _as_bool(self._sample_kwargs.get("apply_harp_residual", False))
+                or _as_bool(self._sample_kwargs.get("adaptive_final_time_warp", False))
+                or _as_bool(self._sample_kwargs.get("ofp_interval_flow", False))
+            ):
+                raise ValueError(
+                    "Final hybrid diagnostics cannot be combined with HARP, compact routing, "
+                    "adaptive time warp, or OFP inference."
+                )
+            if joint_coupled_sampler or batched_mc_samples or run_execution_horizon_predictor:
+                raise ValueError(
+                    "Final hybrid diagnostics cannot be combined with coupled sampling, "
+                    "batched MC, or execution-horizon prediction."
+                )
+            if self._acot_contextual_compiler is not None:
+                raise ValueError(
+                    "Final hybrid diagnostics cannot be combined with a contextual Action-CoT compiler."
+                )
+            if _as_bool(sample_kwargs.get("dynamic_denoising_steps", False)):
+                raise ValueError("Final hybrid diagnostics require a fixed one-step EAR.")
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            if coarse_steps != 1:
+                raise ValueError(
+                    "Final hybrid diagnostics require endpoint-student EAR NFE1; "
+                    f"got EAR NFE={coarse_steps}."
+                )
         if harp_residual_enabled:
             if self._apply_harp_residual is None:
                 raise ValueError(
@@ -434,8 +495,16 @@ class Policy(BasePolicy):
             configured_final_time_warp_alpha = float(
                 np.asarray(sample_kwargs.get("final_time_warp_alpha", 0.0)).item()
             )
-            if final_time_warp_alpha > 0.0 or configured_final_time_warp_alpha > 0.0:
-                raise ValueError("HARP requires the unwarped deployed IR NFE1 draft.")
+            expected_final_time_warp_alpha = self._acot_harp_residual.draft_final_time_warp_alpha
+            if (
+                abs(final_time_warp_alpha - expected_final_time_warp_alpha) > 1e-7
+                or abs(configured_final_time_warp_alpha - expected_final_time_warp_alpha) > 1e-7
+            ):
+                raise ValueError(
+                    "HARP request/config final_time_warp_alpha must match its sidecar: "
+                    f"request={final_time_warp_alpha}, config={configured_final_time_warp_alpha}, "
+                    f"sidecar={expected_final_time_warp_alpha}."
+                )
             if joint_coupled_sampler or batched_mc_samples:
                 raise ValueError("HARP cannot be combined with coupled or batched-MC sampling.")
             if self._acot_contextual_compiler is not None:
@@ -549,6 +618,7 @@ class Policy(BasePolicy):
             or adaptive_final_time_warp
             or compact_alpha_router_enabled
             or harp_residual_enabled
+            or final_hybrid_mode != "none"
             or profile_policy_timing
             or export_acot_cache
         ) and self._can_profile_sample_actions():
@@ -750,6 +820,7 @@ class Policy(BasePolicy):
         prefix_feature = None
         explicit_final_steps = sample_kwargs.get("final_denoising_steps")
         final_time_warp_alpha = float(sample_kwargs.get("final_time_warp_alpha", 0.0))
+        final_hybrid_mode = str(sample_kwargs.get("final_hybrid_mode", "none"))
         force_direct_one_step = _as_bool(
             sample_kwargs.get("force_direct_one_step_expert", False)
         )
@@ -782,6 +853,43 @@ class Policy(BasePolicy):
                     coarse_outputs["explicit_action_reason"],
                     implicit_outputs["implicit_action_reason"],
                 )
+            elif final_hybrid_mode != "none":
+                if self._sample_actions_profile_direct_one_step_expert is None:
+                    raise ValueError(
+                        "Final hybrid diagnostics require the direct one-step final expert."
+                    )
+                direct_outputs = self._sample_actions_profile_direct_one_step_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    final_time_warp_alpha,
+                )
+                nfe2_outputs = self._sample_actions_profile_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    num_steps=2,
+                    final_time_warp_alpha=final_time_warp_alpha,
+                )
+                action_nfe1 = direct_outputs["actions"]
+                action_nfe2 = nfe2_outputs["actions"]
+                if final_hybrid_mode == "control_nfe2":
+                    hybrid_actions = jnp.concatenate(
+                        [action_nfe2[..., :6], action_nfe1[..., 6:]],
+                        axis=-1,
+                    )
+                elif final_hybrid_mode == "gripper_nfe2":
+                    hybrid_actions = jnp.concatenate(
+                        [action_nfe1[..., :6], action_nfe2[..., 6:]],
+                        axis=-1,
+                    )
+                else:
+                    raise AssertionError(f"Unexpected final hybrid mode: {final_hybrid_mode}")
+                expert_outputs = {
+                    "actions": hybrid_actions,
+                    "final_hybrid_action_nfe1_normalized": action_nfe1,
+                    "final_hybrid_action_nfe2_normalized": action_nfe2,
+                }
             elif use_direct_final_expert:
                 if self._sample_actions_profile_direct_one_step_expert is None:
                     raise ValueError("The loaded policy does not implement direct one-step final inference.")
@@ -846,10 +954,15 @@ class Policy(BasePolicy):
                         "actions": harp_outputs["actions"],
                         "harp_action_nfe1_normalized": action_nfe1,
                         "harp_raw_residual": harp_outputs["raw_residual"],
+                        "harp_candidate_residual": harp_outputs["candidate_residual"],
                         "harp_applied_residual": harp_outputs["applied_residual"],
-                        "harp_log_variance": harp_outputs["log_variance"],
-                        "harp_confidence": harp_outputs["confidence"],
-                        "harp_ear_reliability": harp_outputs["ear_reliability"],
+                        "harp_margin_mean": harp_outputs["margin_mean"],
+                        "harp_margin_log_variance": harp_outputs[
+                            "margin_log_variance"
+                        ],
+                        "harp_margin_std": harp_outputs["margin_std"],
+                        "harp_margin_lcb": harp_outputs["margin_lcb"],
+                        "harp_margin_gate": harp_outputs["margin_gate"],
                     }
                 )
         else:

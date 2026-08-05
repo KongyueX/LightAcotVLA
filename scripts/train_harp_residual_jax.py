@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import math
 import pathlib
 import time
 from typing import Any
@@ -36,10 +37,12 @@ class Args:
     hidden_dim: int = 32
     temporal_layers: int = 2
     kernel_size: int = 3
-    gaussian_nll_weight: float = 1.0
-    residual_mse_weight: float = 0.25
-    reliability_weight: float = 0.1
+    residual_mse_weight: float = 1.0
     temporal_delta_weight: float = 0.05
+    margin_nll_weight: float = 0.25
+    margin_train_fraction: float = 0.33
+    conformal_alpha: float = 0.1
+    margin_threshold: float = 0.0
     log_interval: int = 50
     latency_warmup: int = 10
     latency_runs: int = 100
@@ -57,8 +60,8 @@ def _gpu() -> jax.Device:
 def _validate_args(args: Args) -> None:
     if not 0.0 < args.validation_fraction < 0.5:
         raise ValueError("--validation-fraction must be in (0, .5).")
-    if not 0 < args.train_steps < 10_000:
-        raise ValueError("--train-steps must be in [1, 9999] for the minimal HARP pilot.")
+    if not 1 < args.train_steps < 10_000:
+        raise ValueError("--train-steps must be in [2, 9999] for two-stage HARP training.")
     for name in (
         "batch_size",
         "hidden_dim",
@@ -74,13 +77,14 @@ def _validate_args(args: Args) -> None:
         raise ValueError("--kernel-size must be odd for same-time alignment.")
     if args.learning_rate <= 0 or args.weight_decay < 0:
         raise ValueError("Invalid optimizer settings.")
-    if min(
-        args.gaussian_nll_weight,
-        args.residual_mse_weight,
-        args.reliability_weight,
-        args.temporal_delta_weight,
-    ) < 0:
+    if min(args.residual_mse_weight, args.temporal_delta_weight, args.margin_nll_weight) < 0:
         raise ValueError("Loss weights must be non-negative.")
+    if not 0.0 < args.margin_train_fraction < 1.0:
+        raise ValueError("--margin-train-fraction must lie in (0, 1).")
+    if not 0.0 < args.conformal_alpha < 1.0:
+        raise ValueError("--conformal-alpha must lie in (0, 1).")
+    if not np.isfinite(args.margin_threshold):
+        raise ValueError("--margin-threshold must be finite.")
 
 
 def _output_paths(args: Args) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
@@ -119,8 +123,8 @@ def _load_pairs(
     }
     with h5py.File(resolved, "r") as handle:
         schema = int(handle.attrs.get("schema_version", -1))
-        if schema != 2:
-            raise ValueError(f"Unsupported HARP pair schema {schema}; expected 2.")
+        if schema != 3:
+            raise ValueError(f"Unsupported HARP pair schema {schema}; expected 3.")
         missing = sorted(required.difference(handle.keys()))
         if missing:
             raise KeyError(f"HARP pair file is missing fields: {missing}")
@@ -131,9 +135,13 @@ def _load_pairs(
             )
             for name, value in handle.attrs.items()
         }
-        for name in ("ear_normalization_scale", "ear_normalization_bias"):
+        for name in (
+            "ear_normalization_scale",
+            "ear_normalization_bias",
+            "final_time_warp_alpha",
+        ):
             if name not in handle.attrs:
-                raise KeyError(f"HARP-v2 pair file is missing attribute {name!r}.")
+                raise KeyError(f"HARP-v3 pair file is missing attribute {name!r}.")
         ear_normalization_scale = np.asarray(
             handle.attrs["ear_normalization_scale"], dtype=np.float32
         )
@@ -163,24 +171,36 @@ def _load_pairs(
         raise ValueError("HARP-v2 ear_normalization_scale must be finite and positive.")
     if not np.all(np.isfinite(ear_normalization_bias)):
         raise ValueError("HARP-v2 ear_normalization_bias must be finite.")
+    draft_final_time_warp_alpha = float(metadata["final_time_warp_alpha"])
+    if not 0.0 <= draft_final_time_warp_alpha < 1.0:
+        raise ValueError(
+            "HARP-v3 final_time_warp_alpha must lie in [0, 1); "
+            f"got {draft_final_time_warp_alpha}."
+        )
     return arrays, metadata, ear_normalization_scale, ear_normalization_bias
 
 
 def _episode_split(
-    arrays: dict[str, np.ndarray], *, validation_fraction: float, seed: int
+    arrays: dict[str, np.ndarray],
+    *,
+    validation_fraction: float,
+    conformal_alpha: float,
+    seed: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     task = np.asarray(arrays["task_id"], dtype=np.int64)
     episode = np.asarray(arrays["episode_id"], dtype=np.int64)
     groups = task * np.int64(1_000_000_000) + episode
     unique_groups = np.unique(groups)
-    if unique_groups.size < 2:
+    minimum_validation_groups = max(1, math.ceil(1.0 / conformal_alpha) - 1)
+    if unique_groups.size <= minimum_validation_groups:
         raise ValueError(
-            "HARP calibration requires at least two task/episode groups; record-level fallback is forbidden."
+            "HARP grouped conformal calibration needs more episode groups than its "
+            f"minimum calibration count ({minimum_validation_groups}); got {unique_groups.size}."
         )
     rng = np.random.default_rng(seed)
     rng.shuffle(unique_groups)
     validation_count = min(
-        max(1, round(unique_groups.size * validation_fraction)),
+        max(minimum_validation_groups, round(unique_groups.size * validation_fraction)),
         unique_groups.size - 1,
     )
     validation_groups = unique_groups[:validation_count]
@@ -198,7 +218,7 @@ def _prepare_examples(
     device: jax.Device,
     ear_normalization_scale: np.ndarray,
     ear_normalization_bias: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     raw_ear = jnp.asarray(arrays["ear"], dtype=jnp.float32)
     mapped_ear = jax.jit(harp.map_ear_to_action_normalization, device=device)(
         raw_ear,
@@ -213,10 +233,6 @@ def _prepare_examples(
         jnp.asarray(arrays["action_noise"], dtype=jnp.float32),
         jnp.asarray(arrays["state"], dtype=jnp.float32),
     )
-    aligned_ear = jax.jit(harp.align_ear_to_action_time, static_argnums=(1,), device=device)(
-        mapped_ear,
-        arrays["action_nfe1"].shape[1],
-    )
     action_nfe1 = jax.device_put(
         jnp.asarray(arrays["action_nfe1"][..., : harp.CONTROL_DIM], dtype=jnp.float32),
         device,
@@ -226,14 +242,9 @@ def _prepare_examples(
         device,
     )
     residual = action_nfe2 - action_nfe1
-    a1_error = jnp.mean(jnp.square(action_nfe1 - action_nfe2), axis=-1)
-    ear_error = jnp.mean(
-        jnp.square(aligned_ear[..., : harp.CONTROL_DIM] - action_nfe2), axis=-1
-    )
-    reliability = (ear_error < a1_error).astype(jnp.float32)
     return tuple(
         np.asarray(value, dtype=np.float32)
-        for value in jax.device_get((features, residual, reliability))
+        for value in jax.device_get((features, residual))
     )
 
 
@@ -242,80 +253,128 @@ def _loss_and_metrics(
     params: Any,
     features: jax.Array,
     residual_target: jax.Array,
-    reliability_target: jax.Array,
     *,
-    gaussian_nll_weight: float,
+    target_scale: jax.Array,
+    residual_gain: jax.Array,
+    margin_center: jax.Array,
+    margin_scale: jax.Array,
     residual_mse_weight: float,
-    reliability_weight: float,
     temporal_delta_weight: float,
+    margin_nll_weight: float,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
     output = model.apply({"params": params}, features)
     predicted_residual = output[..., : harp.CONTROL_DIM]
-    log_variance = jnp.clip(output[..., harp.CONTROL_DIM], -8.0, 8.0)
-    reliability_logit = output[..., harp.CONTROL_DIM + 1]
     residual_error = jnp.mean(jnp.square(predicted_residual - residual_target), axis=-1)
-    gaussian_nll = jnp.mean(0.5 * (jnp.exp(-log_variance) * residual_error + log_variance))
     residual_mse = jnp.mean(residual_error)
-    reliability_bce = jnp.mean(
-        optax.sigmoid_binary_cross_entropy(reliability_logit, reliability_target)
-    )
     predicted_delta = predicted_residual[:, 1:] - predicted_residual[:, :-1]
     target_delta = residual_target[:, 1:] - residual_target[:, :-1]
     temporal_delta_mse = jnp.mean(jnp.square(predicted_delta - target_delta))
-    loss = (
-        gaussian_nll_weight * gaussian_nll
-        + residual_mse_weight * residual_mse
-        + reliability_weight * reliability_bce
-        + temporal_delta_weight * temporal_delta_mse
+
+    raw_target = residual_target * target_scale
+    candidate_residual = predicted_residual * target_scale * residual_gain
+    margin_target = jax.lax.stop_gradient(
+        jnp.sum(
+            jnp.square(raw_target) - jnp.square(raw_target - candidate_residual),
+            axis=-1,
+        )
     )
-    reliability_prediction = reliability_logit >= 0.0
-    reliability_accuracy = jnp.mean(
-        reliability_prediction == (reliability_target >= 0.5)
+    normalized_margin_target = (margin_target - margin_center) / margin_scale
+    predicted_margin = output[..., harp.CONTROL_DIM]
+    margin_log_variance = jnp.clip(output[..., harp.CONTROL_DIM + 1], -8.0, 8.0)
+    margin_error = jnp.square(predicted_margin - normalized_margin_target)
+    margin_nll = jnp.mean(
+        0.5 * (jnp.exp(-margin_log_variance) * margin_error + margin_log_variance)
+    )
+    loss = (
+        residual_mse_weight * residual_mse
+        + temporal_delta_weight * temporal_delta_mse
+        + margin_nll_weight * margin_nll
     )
     return loss, {
         "loss": loss,
-        "gaussian_nll": gaussian_nll,
         "residual_mse_normalized": residual_mse,
-        "reliability_bce": reliability_bce,
-        "reliability_accuracy": reliability_accuracy,
         "temporal_delta_mse": temporal_delta_mse,
-        "mean_log_variance": jnp.mean(log_variance),
+        "margin_nll": margin_nll,
+        "margin_mse_normalized": jnp.mean(margin_error),
+        "mean_margin_target": jnp.mean(margin_target),
+        "mean_margin_log_variance": jnp.mean(margin_log_variance),
     }
 
 
-def _sigmoid(value: np.ndarray) -> np.ndarray:
-    positive = value >= 0
-    result = np.empty_like(value, dtype=np.float64)
-    result[positive] = 1.0 / (1.0 + np.exp(-value[positive]))
-    exponential = np.exp(value[~positive])
-    result[~positive] = exponential / (1.0 + exponential)
-    return result
-
-
-def _calibrated_residual(
-    raw_residual: np.ndarray,
-    log_variance: np.ndarray,
+def _predict_outputs(
+    model: harp.HARPTemporalResidualHead,
+    params: Any,
+    features: np.ndarray,
+    indices: np.ndarray,
     *,
-    residual_gain: np.ndarray,
-    residual_abs_limit: np.ndarray,
-    residual_norm_limit: float,
-    confidence_temperature: float,
-    confidence_bias: float,
-    trust_scale: float,
+    device: jax.Device,
+    batch_size: int,
 ) -> np.ndarray:
-    confidence = _sigmoid(
-        (confidence_bias - log_variance) / max(confidence_temperature, 1e-3)
+    @jax.jit
+    def apply(current_params: Any, batch: jax.Array) -> jax.Array:
+        return model.apply({"params": current_params}, batch)
+
+    chunks = []
+    for start in range(0, indices.size, batch_size):
+        selected = indices[start : start + batch_size]
+        batch = jax.device_put(jnp.asarray(features[selected], dtype=jnp.float32), device)
+        chunks.append(np.asarray(jax.device_get(apply(params, batch)), dtype=np.float32))
+    return np.concatenate(chunks, axis=0)
+
+
+def _fit_residual_gain(raw_residual: np.ndarray, target: np.ndarray) -> np.ndarray:
+    numerator = np.sum(
+        raw_residual.astype(np.float64) * target.astype(np.float64), axis=(0, 1)
     )
-    gained_residual = raw_residual * residual_gain
-    projected = np.clip(
-        gained_residual,
-        -residual_abs_limit * trust_scale,
-        residual_abs_limit * trust_scale,
+    denominator = np.sum(np.square(raw_residual.astype(np.float64)), axis=(0, 1))
+    return np.clip(numerator / (denominator + 1e-8), 0.0, 1.0).astype(np.float32)
+
+
+def _margin_target(
+    target_residual: np.ndarray,
+    predicted_residual: np.ndarray,
+    residual_gain: np.ndarray,
+) -> np.ndarray:
+    candidate = predicted_residual * residual_gain
+    return np.sum(
+        np.square(target_residual) - np.square(target_residual - candidate), axis=-1
+    ).astype(np.float32)
+
+
+def _grouped_conformal_quantile(
+    predicted_margin: np.ndarray,
+    predicted_std: np.ndarray,
+    target_margin: np.ndarray,
+    task_id: np.ndarray,
+    episode_id: np.ndarray,
+    *,
+    alpha: float,
+) -> tuple[float, int, int, np.ndarray]:
+    if predicted_margin.shape != target_margin.shape or predicted_std.shape != target_margin.shape:
+        raise ValueError("Conformal margin arrays must have identical [N,T] shapes.")
+    if not np.all(np.isfinite(predicted_margin)) or not np.all(np.isfinite(target_margin)):
+        raise ValueError("Conformal margins contain non-finite values.")
+    if not np.all(np.isfinite(predicted_std)) or np.any(predicted_std <= 0.0):
+        raise ValueError("Conformal margin standard deviations must be finite and positive.")
+    groups = (
+        np.asarray(task_id, dtype=np.int64) * np.int64(1_000_000_000)
+        + np.asarray(episode_id, dtype=np.int64)
     )
-    norm = np.linalg.norm(projected, axis=-1, keepdims=True)
-    limit = max(residual_norm_limit * trust_scale, 1e-6)
-    projected *= np.minimum(1.0, limit / (norm + 1e-6))
-    return projected * confidence[..., None]
+    scores = (predicted_margin - target_margin) / np.maximum(predicted_std, 1e-8)
+    unique_groups = np.unique(groups)
+    group_scores = np.asarray(
+        [np.max(scores[groups == group]) for group in unique_groups], dtype=np.float64
+    )
+    rank = math.ceil((unique_groups.size + 1) * (1.0 - alpha))
+    if rank > unique_groups.size:
+        raise ValueError(
+            "Too few validation episode groups for the requested finite-sample conformal alpha: "
+            f"groups={unique_groups.size}, alpha={alpha}."
+        )
+    quantile = float(np.partition(group_scores, rank - 1)[rank - 1])
+    if not np.isfinite(quantile):
+        raise ValueError("Grouped conformal quantile is non-finite.")
+    return quantile, int(unique_groups.size), rank, group_scores
 
 
 def _save_sidecar(
@@ -329,11 +388,14 @@ def _save_sidecar(
     ear_normalization_scale: np.ndarray,
     ear_normalization_bias: np.ndarray,
     residual_gain: np.ndarray,
-    residual_abs_limit: np.ndarray,
-    residual_norm_limit: float,
-    confidence_temperature: float,
-    confidence_bias: float,
-    trust_scale: float,
+    margin_center: float,
+    margin_scale: float,
+    conformal_quantile: float,
+    conformal_alpha: float,
+    conformal_group_count: int,
+    conformal_rank: int,
+    margin_threshold: float,
+    draft_final_time_warp_alpha: float,
     metadata: dict[str, Any],
 ) -> None:
     flat_params = traverse_util.flatten_dict(params)
@@ -352,11 +414,16 @@ def _save_sidecar(
         "ear_normalization_scale": np.asarray(ear_normalization_scale, dtype=np.float32),
         "ear_normalization_bias": np.asarray(ear_normalization_bias, dtype=np.float32),
         "residual_gain": np.asarray(residual_gain, dtype=np.float32),
-        "residual_abs_limit": np.asarray(residual_abs_limit, dtype=np.float32),
-        "residual_norm_limit": np.asarray(residual_norm_limit, dtype=np.float32),
-        "confidence_temperature": np.asarray(confidence_temperature, dtype=np.float32),
-        "confidence_bias": np.asarray(confidence_bias, dtype=np.float32),
-        "trust_scale": np.asarray(trust_scale, dtype=np.float32),
+        "margin_center": np.asarray(margin_center, dtype=np.float32),
+        "margin_scale": np.asarray(margin_scale, dtype=np.float32),
+        "conformal_quantile": np.asarray(conformal_quantile, dtype=np.float32),
+        "conformal_alpha": np.asarray(conformal_alpha, dtype=np.float32),
+        "conformal_group_count": np.asarray(conformal_group_count, dtype=np.int32),
+        "conformal_rank": np.asarray(conformal_rank, dtype=np.int32),
+        "margin_threshold": np.asarray(margin_threshold, dtype=np.float32),
+        "draft_final_time_warp_alpha": np.asarray(
+            draft_final_time_warp_alpha, dtype=np.float32
+        ),
         "metadata_json": np.asarray(json.dumps(metadata, sort_keys=True)),
     }
     for path, value in flat_params.items():
@@ -379,9 +446,12 @@ def main(args: Args) -> None:
         ear_normalization_bias,
     ) = _load_pairs(args.pairs)
     train_indices, validation_indices = _episode_split(
-        arrays, validation_fraction=args.validation_fraction, seed=args.seed
+        arrays,
+        validation_fraction=args.validation_fraction,
+        conformal_alpha=args.conformal_alpha,
+        seed=args.seed,
     )
-    features, residual, reliability = _prepare_examples(
+    features, residual = _prepare_examples(
         arrays,
         device,
         ear_normalization_scale,
@@ -413,13 +483,7 @@ def main(args: Args) -> None:
         )
     optimizer = optax.adamw(args.learning_rate, weight_decay=args.weight_decay)
     optimizer_state = optimizer.init(params)
-
-    loss_kwargs = {
-        "gaussian_nll_weight": args.gaussian_nll_weight,
-        "residual_mse_weight": args.residual_mse_weight,
-        "reliability_weight": args.reliability_weight,
-        "temporal_delta_weight": args.temporal_delta_weight,
-    }
+    target_scale_device = jax.device_put(jnp.asarray(target_scale), device)
 
     @jax.jit
     def train_step(
@@ -427,7 +491,10 @@ def main(args: Args) -> None:
         current_optimizer_state: Any,
         batch_features: jax.Array,
         batch_residual: jax.Array,
-        batch_reliability: jax.Array,
+        residual_gain: jax.Array,
+        margin_center: jax.Array,
+        margin_scale: jax.Array,
+        margin_nll_weight: jax.Array,
     ) -> tuple[Any, Any, dict[str, jax.Array]]:
         def objective(candidate: Any) -> tuple[jax.Array, dict[str, jax.Array]]:
             return _loss_and_metrics(
@@ -435,8 +502,13 @@ def main(args: Args) -> None:
                 candidate,
                 batch_features,
                 batch_residual,
-                batch_reliability,
-                **loss_kwargs,
+                target_scale=target_scale_device,
+                residual_gain=residual_gain,
+                margin_center=margin_center,
+                margin_scale=margin_scale,
+                residual_mse_weight=args.residual_mse_weight,
+                temporal_delta_weight=args.temporal_delta_weight,
+                margin_nll_weight=margin_nll_weight,
             )
 
         (_, metrics), gradients = jax.value_and_grad(objective, has_aux=True)(current_params)
@@ -449,159 +521,273 @@ def main(args: Args) -> None:
             "gradient_norm": optax.global_norm(gradients),
         }
 
+    validation_features_device = jax.device_put(
+        jnp.asarray(normalized_features[validation_indices], dtype=jnp.float32), device
+    )
+    validation_residual_device = jax.device_put(
+        jnp.asarray(normalized_residual[validation_indices], dtype=jnp.float32), device
+    )
+
     @jax.jit
-    def validation_step(current_params: Any) -> tuple[dict[str, jax.Array], jax.Array]:
-        validation_features = jnp.asarray(normalized_features[validation_indices], dtype=jnp.float32)
-        validation_residual = jnp.asarray(normalized_residual[validation_indices], dtype=jnp.float32)
-        validation_reliability = jnp.asarray(reliability[validation_indices], dtype=jnp.float32)
+    def validation_step(
+        current_params: Any,
+        residual_gain: jax.Array,
+        margin_center: jax.Array,
+        margin_scale: jax.Array,
+        margin_nll_weight: jax.Array,
+    ) -> tuple[dict[str, jax.Array], jax.Array]:
         _, metrics = _loss_and_metrics(
             model,
             current_params,
-            validation_features,
-            validation_residual,
-            validation_reliability,
-            **loss_kwargs,
+            validation_features_device,
+            validation_residual_device,
+            target_scale=target_scale_device,
+            residual_gain=residual_gain,
+            margin_center=margin_center,
+            margin_scale=margin_scale,
+            residual_mse_weight=args.residual_mse_weight,
+            temporal_delta_weight=args.temporal_delta_weight,
+            margin_nll_weight=margin_nll_weight,
         )
-        output = model.apply({"params": current_params}, validation_features)
+        output = model.apply({"params": current_params}, validation_features_device)
         return metrics, output
 
+    margin_steps = max(1, round(args.train_steps * args.margin_train_fraction))
+    residual_steps = args.train_steps - margin_steps
+    if residual_steps <= 0:
+        raise ValueError("--margin-train-fraction leaves no residual-only training steps.")
     LOGGER.info(
-        "Initialized HARP: train=%s validation=%s episode-disjoint params=%s",
+        "Initialized HARP-v3: train=%s calibration=%s params=%s residual_steps=%s margin_steps=%s",
         train_indices.size,
         validation_indices.size,
         parameter_count,
+        residual_steps,
+        margin_steps,
     )
     rng = np.random.default_rng(args.seed)
     metrics_mode = "w" if args.overwrite else "a"
     started = time.monotonic()
     last_validation_metrics: dict[str, float] = {}
+    unit_gain_device = jax.device_put(jnp.ones((harp.CONTROL_DIM,), dtype=jnp.float32), device)
+    zero_device = jax.device_put(jnp.asarray(0.0, dtype=jnp.float32), device)
+    one_device = jax.device_put(jnp.asarray(1.0, dtype=jnp.float32), device)
+
+    def log_metrics(
+        metrics_file: Any,
+        *,
+        step: int,
+        phase: str,
+        train_metrics: dict[str, jax.Array],
+        validation_metrics: dict[str, jax.Array],
+    ) -> None:
+        nonlocal last_validation_metrics
+        train_values = {
+            f"train/{name}": float(value)
+            for name, value in jax.device_get(train_metrics).items()
+        }
+        last_validation_metrics = {
+            f"validation/{name}": float(value)
+            for name, value in jax.device_get(validation_metrics).items()
+        }
+        metrics_file.write(
+            json.dumps(
+                {
+                    "step": step,
+                    "phase": phase,
+                    "elapsed_seconds": time.monotonic() - started,
+                    **train_values,
+                    **last_validation_metrics,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        metrics_file.flush()
+        LOGGER.info(
+            "step=%s phase=%s train_loss=%.6f validation_loss=%.6f",
+            step,
+            phase,
+            train_values["train/loss"],
+            last_validation_metrics["validation/loss"],
+        )
+
     with metrics_path.open(metrics_mode, encoding="utf-8") as metrics_file:
-        for step in range(1, args.train_steps + 1):
+        for step in range(1, residual_steps + 1):
             selected = rng.choice(
                 train_indices,
                 size=args.batch_size,
                 replace=train_indices.size < args.batch_size,
             )
-            batch_features = jax.device_put(
-                jnp.asarray(normalized_features[selected], dtype=jnp.float32), device
+            params, optimizer_state, train_metrics = train_step(
+                params,
+                optimizer_state,
+                jax.device_put(jnp.asarray(normalized_features[selected]), device),
+                jax.device_put(jnp.asarray(normalized_residual[selected]), device),
+                unit_gain_device,
+                zero_device,
+                one_device,
+                zero_device,
             )
-            batch_residual = jax.device_put(
-                jnp.asarray(normalized_residual[selected], dtype=jnp.float32), device
-            )
-            batch_reliability = jax.device_put(
-                jnp.asarray(reliability[selected], dtype=jnp.float32), device
+            if step == 1 or step % args.log_interval == 0 or step == residual_steps:
+                validation_metrics, _ = validation_step(
+                    params, unit_gain_device, zero_device, one_device, zero_device
+                )
+                log_metrics(
+                    metrics_file,
+                    step=step,
+                    phase="residual",
+                    train_metrics=train_metrics,
+                    validation_metrics=validation_metrics,
+                )
+
+        stage1_train_output = _predict_outputs(
+            model,
+            params,
+            normalized_features,
+            train_indices,
+            device=device,
+            batch_size=args.batch_size,
+        )
+        stage1_train_residual = (
+            stage1_train_output[..., : harp.CONTROL_DIM] * target_scale
+        )
+        residual_gain = _fit_residual_gain(
+            stage1_train_residual, residual[train_indices]
+        )
+        training_margin = _margin_target(
+            residual[train_indices], stage1_train_residual, residual_gain
+        )
+        margin_center = float(np.mean(training_margin, dtype=np.float64))
+        margin_scale = max(float(np.std(training_margin, dtype=np.float64)), 1e-6)
+        gain_device = jax.device_put(jnp.asarray(residual_gain), device)
+        margin_center_device = jax.device_put(jnp.asarray(margin_center, dtype=jnp.float32), device)
+        margin_scale_device = jax.device_put(jnp.asarray(margin_scale, dtype=jnp.float32), device)
+        margin_weight_device = jax.device_put(
+            jnp.asarray(args.margin_nll_weight, dtype=jnp.float32), device
+        )
+
+        for margin_step in range(1, margin_steps + 1):
+            step = residual_steps + margin_step
+            selected = rng.choice(
+                train_indices,
+                size=args.batch_size,
+                replace=train_indices.size < args.batch_size,
             )
             params, optimizer_state, train_metrics = train_step(
                 params,
                 optimizer_state,
-                batch_features,
-                batch_residual,
-                batch_reliability,
+                jax.device_put(jnp.asarray(normalized_features[selected]), device),
+                jax.device_put(jnp.asarray(normalized_residual[selected]), device),
+                gain_device,
+                margin_center_device,
+                margin_scale_device,
+                margin_weight_device,
             )
-            if step == 1 or step % args.log_interval == 0 or step == args.train_steps:
-                validation_metrics, _ = validation_step(params)
-                train_values = {
-                    f"train/{name}": float(value)
-                    for name, value in jax.device_get(train_metrics).items()
-                }
-                last_validation_metrics = {
-                    f"validation/{name}": float(value)
-                    for name, value in jax.device_get(validation_metrics).items()
-                }
-                record = {
-                    "step": step,
-                    "elapsed_seconds": time.monotonic() - started,
-                    **train_values,
-                    **last_validation_metrics,
-                }
-                metrics_file.write(json.dumps(record, sort_keys=True) + "\n")
-                metrics_file.flush()
-                LOGGER.info(
-                    "step=%s train_loss=%.6f validation_loss=%.6f",
-                    step,
-                    train_values["train/loss"],
-                    last_validation_metrics["validation/loss"],
+            if margin_step == 1 or step % args.log_interval == 0 or step == args.train_steps:
+                validation_metrics, _ = validation_step(
+                    params,
+                    gain_device,
+                    margin_center_device,
+                    margin_scale_device,
+                    margin_weight_device,
+                )
+                log_metrics(
+                    metrics_file,
+                    step=step,
+                    phase="margin",
+                    train_metrics=train_metrics,
+                    validation_metrics=validation_metrics,
                 )
 
-    _, validation_output_device = validation_step(params)
-    validation_output = np.asarray(jax.device_get(validation_output_device), dtype=np.float32)
-    raw_validation_residual = (
-        validation_output[..., : harp.CONTROL_DIM] * target_scale
+    validation_output = _predict_outputs(
+        model,
+        params,
+        normalized_features,
+        validation_indices,
+        device=device,
+        batch_size=args.batch_size,
     )
-    validation_log_variance = validation_output[..., harp.CONTROL_DIM]
-    validation_reliability = _sigmoid(
-        validation_output[..., harp.CONTROL_DIM + 1].astype(np.float64)
-    )
-    training_residual = residual[train_indices]
-    residual_abs_limit = np.maximum(
-        np.quantile(np.abs(training_residual), 0.95, axis=(0, 1)).astype(np.float32),
-        1e-4,
-    )
-    residual_norm_limit = max(
-        float(np.quantile(np.linalg.norm(training_residual, axis=-1), 0.95)),
-        1e-4,
-    )
+    raw_validation_residual = validation_output[..., : harp.CONTROL_DIM] * target_scale
     validation_target = residual[validation_indices]
-    gain_numerator = np.sum(
-        raw_validation_residual.astype(np.float64)
-        * validation_target.astype(np.float64),
-        axis=(0, 1),
+    validation_margin_target = _margin_target(
+        validation_target, raw_validation_residual, residual_gain
     )
-    gain_denominator = np.sum(
-        np.square(raw_validation_residual.astype(np.float64)), axis=(0, 1)
+    validation_margin_mean = (
+        validation_output[..., harp.CONTROL_DIM] * margin_scale + margin_center
     )
-    residual_gain = np.clip(
-        gain_numerator / (gain_denominator + 1e-8), 0.0, 1.0
+    validation_margin_log_variance = np.clip(
+        validation_output[..., harp.CONTROL_DIM + 1], -8.0, 8.0
+    )
+    validation_margin_std = (
+        np.exp(0.5 * validation_margin_log_variance.astype(np.float64)) * margin_scale
     ).astype(np.float32)
-    best: tuple[float, float, float, float] | None = None
-    for temperature in (0.5, 0.75, 1.0, 1.5, 2.0):
-        for bias in (-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0):
-            for trust_scale in (0.25, 0.5, 0.75, 1.0, 1.25, 1.5):
-                applied = _calibrated_residual(
-                    raw_validation_residual,
-                    validation_log_variance,
-                    residual_gain=residual_gain,
-                    residual_abs_limit=residual_abs_limit,
-                    residual_norm_limit=residual_norm_limit,
-                    confidence_temperature=temperature,
-                    confidence_bias=bias,
-                    trust_scale=trust_scale,
-                )
-                mse = float(np.mean(np.square(applied - validation_target)))
-                candidate = (mse, temperature, bias, trust_scale)
-                if best is None or candidate < best:
-                    best = candidate
-    assert best is not None
-    calibrated_mse, confidence_temperature, confidence_bias, trust_scale = best
-    baseline_mse = float(np.mean(np.square(validation_target)))
-    raw_head_mse = float(
-        np.mean(np.square(raw_validation_residual - validation_target))
-    )
-    gain_head_mse = float(
-        np.mean(
-            np.square(
-                raw_validation_residual * residual_gain - validation_target
-            )
+    conformal_quantile, conformal_group_count, conformal_rank, group_scores = (
+        _grouped_conformal_quantile(
+            validation_margin_mean,
+            validation_margin_std,
+            validation_margin_target,
+            arrays["task_id"][validation_indices],
+            arrays["episode_id"][validation_indices],
+            alpha=args.conformal_alpha,
         )
     )
-    validation_reliability_target = reliability[validation_indices] >= 0.5
-    reliability_accuracy = float(
-        np.mean((validation_reliability >= 0.5) == validation_reliability_target)
+    validation_margin_lcb = (
+        validation_margin_mean - conformal_quantile * validation_margin_std
+    )
+    validation_gate = validation_margin_lcb > args.margin_threshold
+    candidate_validation_residual = raw_validation_residual * residual_gain
+    applied_validation_residual = np.where(
+        validation_gate[..., None], candidate_validation_residual, 0.0
     )
 
+    baseline_mse = float(np.mean(np.square(validation_target)))
+    raw_head_mse = float(np.mean(np.square(raw_validation_residual - validation_target)))
+    gain_head_mse = float(
+        np.mean(np.square(candidate_validation_residual - validation_target))
+    )
+    gated_mse = float(
+        np.mean(np.square(applied_validation_residual - validation_target))
+    )
+    groups = (
+        np.asarray(arrays["task_id"][validation_indices], dtype=np.int64)
+        * np.int64(1_000_000_000)
+        + np.asarray(arrays["episode_id"][validation_indices], dtype=np.int64)
+    )
+    margin_covered = validation_margin_target >= validation_margin_lcb
+    episode_coverage = float(
+        np.mean(
+            [
+                np.all(margin_covered[groups == group])
+                for group in np.unique(groups)
+            ]
+        )
+    )
+    accepted_count = int(np.count_nonzero(validation_gate))
+    accepted_harmful_rate = (
+        float(np.mean(validation_margin_target[validation_gate] <= 0.0))
+        if accepted_count
+        else 0.0
+    )
+    draft_final_time_warp_alpha = float(pair_metadata["final_time_warp_alpha"])
+
     metadata = {
-        "method": "HARP",
+        "method": "HARP-v3-margin",
         "pair_path": str(pathlib.Path(args.pairs).resolve()),
         "pair_contract": pair_metadata.get("contract", "unknown"),
+        "draft_final_time_warp_alpha": draft_final_time_warp_alpha,
+        "draft_sampler": pair_metadata.get("draft_sampler", "unknown"),
+        "teacher_sampler": pair_metadata.get("teacher_sampler", "unknown"),
         "seed": args.seed,
         "train_records": int(train_indices.size),
         "validation_records": int(validation_indices.size),
         "episode_disjoint_calibration": True,
+        "gain_fit_partition": "train_only_after_residual_stage",
+        "margin_formula": "||r_star||^2 - ||r_star - gain * mu||^2",
+        "group_score": "max_episode((margin_mean-margin_target)/(margin_std+eps))",
         "gripper_unchanged": True,
         "ear_normalization_scale": ear_normalization_scale.tolist(),
         "ear_normalization_bias": ear_normalization_bias.tolist(),
         "residual_gain": residual_gain.tolist(),
-        "ear_reliability_use": "diagnostic_only",
     }
     _save_sidecar(
         model_path,
@@ -613,11 +799,14 @@ def main(args: Args) -> None:
         ear_normalization_scale=ear_normalization_scale,
         ear_normalization_bias=ear_normalization_bias,
         residual_gain=residual_gain,
-        residual_abs_limit=residual_abs_limit,
-        residual_norm_limit=residual_norm_limit,
-        confidence_temperature=confidence_temperature,
-        confidence_bias=confidence_bias,
-        trust_scale=trust_scale,
+        margin_center=margin_center,
+        margin_scale=margin_scale,
+        conformal_quantile=conformal_quantile,
+        conformal_alpha=args.conformal_alpha,
+        conformal_group_count=conformal_group_count,
+        conformal_rank=conformal_rank,
+        margin_threshold=args.margin_threshold,
+        draft_final_time_warp_alpha=draft_final_time_warp_alpha,
         metadata=metadata,
     )
 
@@ -646,38 +835,51 @@ def main(args: Args) -> None:
     summary = {
         **metadata,
         "model_params_path": str(model_path),
+        "schema_version": harp.SCHEMA_VERSION,
         "parameter_count": parameter_count,
         "train_steps": args.train_steps,
+        "residual_train_steps": residual_steps,
+        "margin_train_steps": margin_steps,
         "feature_dim": harp.FEATURE_DIM,
+        "margin_center": margin_center,
+        "margin_scale": margin_scale,
+        "conformal_alpha": args.conformal_alpha,
+        "conformal_quantile": conformal_quantile,
+        "conformal_group_count": conformal_group_count,
+        "conformal_rank": conformal_rank,
+        "conformal_group_score_min": float(np.min(group_scores)),
+        "conformal_group_score_max": float(np.max(group_scores)),
+        "margin_threshold": args.margin_threshold,
+        "calibration_timestep_coverage": float(np.mean(margin_covered)),
+        "calibration_episode_simultaneous_coverage": episode_coverage,
+        "calibration_gate_rate": float(np.mean(validation_gate)),
+        "calibration_accepted_count": accepted_count,
+        "calibration_accepted_harmful_margin_rate": accepted_harmful_rate,
         "validation_nfe1_to_nfe2_mse_first6": baseline_mse,
         "validation_raw_head_mse_first6": raw_head_mse,
         "validation_gain_head_mse_first6": gain_head_mse,
-        "validation_calibrated_mse_first6": calibrated_mse,
+        "validation_margin_gated_mse_first6": gated_mse,
         "validation_relative_mse_reduction": (
-            (baseline_mse - calibrated_mse) / baseline_mse if baseline_mse > 0 else 0.0
+            (baseline_mse - gated_mse) / baseline_mse if baseline_mse > 0 else 0.0
         ),
-        "validation_ear_reliability_accuracy": reliability_accuracy,
-        "confidence_temperature": confidence_temperature,
-        "confidence_bias": confidence_bias,
-        "trust_scale": trust_scale,
-        "residual_norm_limit": residual_norm_limit,
         "sidecar_latency_p95_ms_batch1": latency_p95_ms,
         "latency_runs": args.latency_runs,
         "last_validation_metrics": last_validation_metrics,
         "elapsed_seconds": time.monotonic() - started,
         "serving_contract": (
-            "strict opt-in after direct final IR NFE1; raw EAR is mapped to action "
-            "normalization; held-out residual gain + confidence shrink + trust projection "
-            "on device; EAR reliability is diagnostic only; first six dimensions only"
+            "strict opt-in after direct final IR NFE1; apply gain*mu only when the "
+            "episode-grouped conformal lower confidence bound exceeds the margin "
+            "threshold; otherwise select A1 exactly; first six dimensions only"
         ),
     }
     (output_dir / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     LOGGER.info(
-        "HARP complete: validation MSE %.6f -> %.6f, params=%s, p95=%.4fms",
+        "HARP-v3 complete: calibration MSE %.6f -> %.6f, gate=%.2f%%, params=%s, p95=%.4fms",
         baseline_mse,
-        calibrated_mse,
+        gated_mse,
+        100.0 * float(np.mean(validation_gate)),
         parameter_count,
         latency_p95_ms,
     )

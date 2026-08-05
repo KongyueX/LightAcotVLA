@@ -28,7 +28,7 @@ import jax.numpy as jnp
 import numpy as np
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CONTROL_DIM = 6
 STATE_FEATURE_DIM = 8
 IAR_SUMMARY_DIM = 1024
@@ -47,7 +47,7 @@ class HARPHeadConfig:
 
 
 class HARPTemporalResidualHead(nn.Module):
-    """Sub-100k temporal residual, heteroscedasticity, and EAR-reliability head."""
+    """Sub-100k temporal residual and no-harm margin head."""
 
     config: HARPHeadConfig
 
@@ -202,14 +202,17 @@ class HARPResidualSidecar:
     feature_mean: jax.Array
     feature_std: jax.Array
     target_scale: jax.Array
-    residual_abs_limit: jax.Array
-    residual_norm_limit: jax.Array
-    confidence_temperature: jax.Array
-    confidence_bias: jax.Array
-    trust_scale: jax.Array
     ear_normalization_scale: jax.Array
     ear_normalization_bias: jax.Array
     residual_gain: jax.Array
+    margin_center: jax.Array
+    margin_scale: jax.Array
+    conformal_quantile: jax.Array
+    conformal_alpha: float
+    conformal_group_count: int
+    conformal_rank: int
+    margin_threshold: jax.Array
+    draft_final_time_warp_alpha: float
     parameter_count: int
     metadata: Mapping[str, Any]
 
@@ -221,7 +224,7 @@ class HARPResidualSidecar:
         action_noise: jax.Array,
         state: jax.Array,
     ) -> dict[str, jax.Array]:
-        """Apply confidence shrink and a calibrated trust projection on device."""
+        """Apply a residual only when its grouped-conformal margin LCB is positive."""
 
         ear_action_normalized = map_ear_to_action_normalization(
             ear,
@@ -240,40 +243,39 @@ class HARPResidualSidecar:
             {"params": self.params}, normalized
         )
         raw_residual = head_output[..., :CONTROL_DIM] * self.target_scale
-        log_variance = jnp.clip(head_output[..., CONTROL_DIM], -8.0, 8.0)
-        ear_reliability = jax.nn.sigmoid(head_output[..., CONTROL_DIM + 1])
-
-        confidence = jax.nn.sigmoid(
-            (self.confidence_bias - log_variance)
-            / jnp.maximum(self.confidence_temperature, 1e-3)
+        candidate_residual = raw_residual * self.residual_gain
+        margin_mean = head_output[..., CONTROL_DIM] * self.margin_scale + self.margin_center
+        margin_log_variance = jnp.clip(head_output[..., CONTROL_DIM + 1], -8.0, 8.0)
+        margin_std = jnp.exp(0.5 * margin_log_variance) * self.margin_scale
+        margin_lcb = margin_mean - self.conformal_quantile * margin_std
+        margin_gate = margin_lcb > self.margin_threshold
+        applied_residual = jnp.where(
+            margin_gate[..., None], candidate_residual, jnp.zeros_like(candidate_residual)
         )
-        # The reliability head is diagnostic only.  A held-out, per-dimension
-        # least-squares gain calibrates residual direction without turning a
-        # class-imbalanced auxiliary label into a multiplicative action gate.
-        gained_residual = raw_residual * self.residual_gain
 
-        coordinate_limit = jnp.maximum(
-            self.residual_abs_limit * self.trust_scale,
-            1e-6,
+        original_control = action_nfe1[..., :CONTROL_DIM]
+        candidate_control = (
+            jnp.asarray(original_control, dtype=jnp.float32) + candidate_residual
+        ).astype(original_control.dtype)
+        # The false branch directly selects A1, rather than relying on A1 + 0,
+        # so a rejected correction is an exact fallback in the action tensor.
+        corrected_control = jnp.where(
+            margin_gate[..., None], candidate_control, original_control
         )
-        projected = jnp.clip(gained_residual, -coordinate_limit, coordinate_limit)
-        residual_norm = jnp.linalg.norm(projected, axis=-1, keepdims=True)
-        norm_limit = jnp.maximum(self.residual_norm_limit * self.trust_scale, 1e-6)
-        projected = projected * jnp.minimum(1.0, norm_limit / (residual_norm + 1e-6))
-        applied_residual = projected * confidence[..., None]
-
-        corrected_control = jnp.asarray(action_nfe1[..., :CONTROL_DIM], dtype=jnp.float32) + applied_residual
         corrected_actions = jnp.concatenate(
-            [corrected_control.astype(action_nfe1.dtype), action_nfe1[..., CONTROL_DIM:]],
+            [corrected_control, action_nfe1[..., CONTROL_DIM:]],
             axis=-1,
         )
         return {
             "actions": corrected_actions,
             "raw_residual": raw_residual,
+            "candidate_residual": candidate_residual,
             "applied_residual": applied_residual,
-            "log_variance": log_variance,
-            "confidence": confidence,
-            "ear_reliability": ear_reliability,
+            "margin_mean": margin_mean,
+            "margin_log_variance": margin_log_variance,
+            "margin_std": margin_std,
+            "margin_lcb": margin_lcb,
+            "margin_gate": margin_gate,
         }
 
 
@@ -302,6 +304,10 @@ def load_harp_residual_sidecar(path: pathlib.Path | str) -> HARPResidualSidecar:
 
     schema_version = _scalar(data, "schema_version", int)
     if schema_version != SCHEMA_VERSION:
+        if schema_version == 2:
+            raise ValueError(
+                "HARP schema 2 has no conformal no-harm margin gate; retrain a schema-3 sidecar."
+            )
         raise ValueError(
             f"Unsupported HARP schema {schema_version}; expected {SCHEMA_VERSION}."
         )
@@ -344,6 +350,12 @@ def load_harp_residual_sidecar(path: pathlib.Path | str) -> HARPResidualSidecar:
             raise ValueError(f"Invalid HARP {name}: shape={value.shape}.")
         return jnp.asarray(value)
 
+    def finite_scalar(name: str) -> float:
+        value = _scalar(data, name, float)
+        if not np.isfinite(value):
+            raise ValueError(f"Invalid non-finite HARP {name}: {value}.")
+        return value
+
     metadata: Mapping[str, Any] = {}
     if "metadata_json" in data:
         metadata = json.loads(str(np.asarray(data["metadata_json"]).reshape(()).item()))
@@ -353,26 +365,52 @@ def load_harp_residual_sidecar(path: pathlib.Path | str) -> HARPResidualSidecar:
     residual_gain = vector("residual_gain", CONTROL_DIM)
     if np.any((np.asarray(residual_gain) < 0.0) | (np.asarray(residual_gain) > 1.0)):
         raise ValueError("HARP residual_gain must lie in [0, 1].")
+    feature_std = vector("feature_std", FEATURE_DIM)
+    target_scale = vector("target_scale", CONTROL_DIM)
+    if np.any(np.asarray(feature_std) <= 0.0):
+        raise ValueError("HARP feature_std must be strictly positive.")
+    if np.any(np.asarray(target_scale) <= 0.0):
+        raise ValueError("HARP target_scale must be strictly positive.")
+    margin_scale = finite_scalar("margin_scale")
+    if margin_scale <= 0.0:
+        raise ValueError("HARP margin_scale must be strictly positive.")
+    conformal_alpha = finite_scalar("conformal_alpha")
+    if not 0.0 < conformal_alpha < 1.0:
+        raise ValueError("HARP conformal_alpha must lie in (0, 1).")
+    conformal_group_count = _scalar(data, "conformal_group_count", int)
+    conformal_rank = _scalar(data, "conformal_rank", int)
+    if conformal_group_count <= 0 or not 1 <= conformal_rank <= conformal_group_count:
+        raise ValueError(
+            "Invalid HARP conformal group/rank calibration: "
+            f"groups={conformal_group_count}, rank={conformal_rank}."
+        )
+    draft_final_time_warp_alpha = finite_scalar("draft_final_time_warp_alpha")
+    if not 0.0 <= draft_final_time_warp_alpha < 1.0:
+        raise ValueError(
+            "HARP draft_final_time_warp_alpha must lie in [0, 1); "
+            f"got {draft_final_time_warp_alpha}."
+        )
     return HARPResidualSidecar(
         config=config,
         params=params,
         feature_mean=vector("feature_mean", FEATURE_DIM),
-        feature_std=jnp.maximum(vector("feature_std", FEATURE_DIM), 1e-6),
-        target_scale=jnp.maximum(vector("target_scale", CONTROL_DIM), 1e-6),
-        residual_abs_limit=jnp.maximum(vector("residual_abs_limit", CONTROL_DIM), 1e-6),
-        residual_norm_limit=jnp.asarray(
-            max(_scalar(data, "residual_norm_limit", float), 1e-6),
-            dtype=jnp.float32,
-        ),
-        confidence_temperature=jnp.asarray(
-            max(_scalar(data, "confidence_temperature", float), 1e-3),
-            dtype=jnp.float32,
-        ),
-        confidence_bias=jnp.asarray(_scalar(data, "confidence_bias", float), dtype=jnp.float32),
-        trust_scale=jnp.asarray(max(_scalar(data, "trust_scale", float), 1e-3), dtype=jnp.float32),
+        feature_std=feature_std,
+        target_scale=target_scale,
         ear_normalization_scale=ear_normalization_scale,
         ear_normalization_bias=vector("ear_normalization_bias", CONTROL_DIM),
         residual_gain=residual_gain,
+        margin_center=jnp.asarray(finite_scalar("margin_center"), dtype=jnp.float32),
+        margin_scale=jnp.asarray(margin_scale, dtype=jnp.float32),
+        conformal_quantile=jnp.asarray(
+            finite_scalar("conformal_quantile"), dtype=jnp.float32
+        ),
+        conformal_alpha=conformal_alpha,
+        conformal_group_count=conformal_group_count,
+        conformal_rank=conformal_rank,
+        margin_threshold=jnp.asarray(
+            finite_scalar("margin_threshold"), dtype=jnp.float32
+        ),
+        draft_final_time_warp_alpha=draft_final_time_warp_alpha,
         parameter_count=loaded_parameter_count,
         metadata=metadata,
     )
