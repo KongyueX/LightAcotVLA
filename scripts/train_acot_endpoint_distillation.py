@@ -110,6 +110,7 @@ class Args:
     ofp_ema_decay: float = 0.999
     ofp_min_interval: float = 0.05
     ofp_contraction_power: float = 1.0
+    ofp_interval_condition_strength: float = 1.0
     fsdp_devices: int = 1
     overwrite: bool = False
     allow_failed_audit: bool = False
@@ -233,8 +234,12 @@ def _validate_args(args: Args) -> None:
             raise ValueError("--ofp-min-interval must be in (0, 1).")
         if args.ofp_contraction_power <= 0:
             raise ValueError("--ofp-contraction-power must be positive.")
+        if not 0.0 <= args.ofp_interval_condition_strength <= 1.0:
+            raise ValueError("--ofp-interval-condition-strength must be in [0, 1].")
     elif args.ofp_endpoint_anchor_loss_weight != 0:
         raise ValueError("--ofp-endpoint-anchor-loss-weight requires --ofp-sc.")
+    if not args.ofp_sc and args.ofp_interval_condition_strength != 1.0:
+        raise ValueError("--ofp-interval-condition-strength requires --ofp-sc.")
 
 
 def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
@@ -450,6 +455,7 @@ def _endpoint_train_step(
     ofp_endpoint_anchor_loss_weight: float,
     ofp_min_interval: float,
     ofp_contraction_power: float,
+    ofp_interval_condition_strength: float,
 ) -> tuple[training_utils.TrainState, dict[str, jax.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
@@ -481,6 +487,7 @@ def _endpoint_train_step(
                 endpoint_anchor_loss_weight=ofp_endpoint_anchor_loss_weight,
                 min_interval=ofp_min_interval,
                 contraction_power=ofp_contraction_power,
+                interval_condition_strength=ofp_interval_condition_strength,
                 compute_endpoint_metrics=False,
             )
         return candidate.compute_endpoint_distillation_loss(
@@ -556,6 +563,7 @@ def _endpoint_validation_step(
     ofp_endpoint_anchor_loss_weight: float,
     ofp_min_interval: float,
     ofp_contraction_power: float,
+    ofp_interval_condition_strength: float,
 ) -> dict[str, jax.Array]:
     if ofp_sc:
         if state.ema_params is None:
@@ -583,6 +591,7 @@ def _endpoint_validation_step(
             endpoint_anchor_loss_weight=ofp_endpoint_anchor_loss_weight,
             min_interval=ofp_min_interval,
             contraction_power=ofp_contraction_power,
+            interval_condition_strength=ofp_interval_condition_strength,
             compute_endpoint_metrics=True,
         )
         return metrics
@@ -812,6 +821,7 @@ def main(args: Args) -> None:
             ofp_endpoint_anchor_loss_weight=args.ofp_endpoint_anchor_loss_weight,
             ofp_min_interval=args.ofp_min_interval,
             ofp_contraction_power=args.ofp_contraction_power,
+            ofp_interval_condition_strength=args.ofp_interval_condition_strength,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=(state_sharding, replicated_sharding),
@@ -837,6 +847,7 @@ def main(args: Args) -> None:
             ofp_endpoint_anchor_loss_weight=args.ofp_endpoint_anchor_loss_weight,
             ofp_min_interval=args.ofp_min_interval,
             ofp_contraction_power=args.ofp_contraction_power,
+            ofp_interval_condition_strength=args.ofp_interval_condition_strength,
         ),
         in_shardings=(state_sharding, data_sharding),
         out_shardings=replicated_sharding,
@@ -993,6 +1004,7 @@ def main(args: Args) -> None:
         "ofp_ema_decay": args.ofp_ema_decay if args.ofp_sc else None,
         "ofp_min_interval": args.ofp_min_interval,
         "ofp_contraction_power": args.ofp_contraction_power,
+        "ofp_interval_condition_strength": args.ofp_interval_condition_strength,
         "ofp_self_guidance": False,
         "saved_parameter_source": "ema" if args.ofp_sc else "online",
         "validation_parameter_source": "ema" if args.ofp_sc else "online",

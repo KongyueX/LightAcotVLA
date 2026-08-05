@@ -64,6 +64,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Previous-chunk noising time in (0,1]; 1 disables its influence.",
     )
+    parser.add_argument(
+        "--ofp-interval-condition-strength",
+        type=float,
+        default=1.0,
+        help=(
+            "Blend in [0,1] between the pretrained start-time embedding (0) and "
+            "the OFP start/end half-concatenated embedding (1). Must match training."
+        ),
+    )
     parser.add_argument("--original-horizon", type=int, default=5)
     parser.add_argument("--fixed-horizon", type=int, default=9)
     parser.add_argument("--teacher-samples", type=int, choices=(10, 20, 32), default=20)
@@ -149,6 +158,10 @@ def _request(
                 "action_cot_ofp_warm_start_valid": np.asarray(previous_actions is not None),
                 "action_cot_ofp_warm_start_time": np.asarray(
                     args.ofp_warm_start_time,
+                    dtype=np.float32,
+                ),
+                "action_cot_ofp_interval_condition_strength": np.asarray(
+                    args.ofp_interval_condition_strength,
                     dtype=np.float32,
                 ),
             }
@@ -684,6 +697,8 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("action_cot_denoising_steps must be positive.")
     if not 0.0 < args.ofp_warm_start_time <= 1.0:
         raise ValueError("ofp_warm_start_time must be in (0, 1].")
+    if not 0.0 <= args.ofp_interval_condition_strength <= 1.0:
+        raise ValueError("ofp_interval_condition_strength must be in [0, 1].")
     if args.v2_budget_capacity <= 0 or args.v2_initial_budget > args.v2_budget_capacity:
         raise ValueError("Invalid V2 budget configuration.")
     if args.selector_temperature <= 0:

@@ -110,6 +110,9 @@ class Policy(BasePolicy):
         ofp_warm_start_time = float(
             np.asarray(inputs.pop("action_cot_ofp_warm_start_time", 1.0)).item()
         )
+        ofp_interval_condition_strength = float(
+            np.asarray(inputs.pop("action_cot_ofp_interval_condition_strength", 1.0)).item()
+        )
         joint_coupled_sampler = _as_bool(
             inputs.pop("joint_coupled_sampler", self._sample_kwargs.get("joint_coupled_sampler", False))
         )
@@ -134,6 +137,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_ofp_warm_start_actions", None)
             override_inputs.pop("action_cot_ofp_warm_start_valid", None)
             override_inputs.pop("action_cot_ofp_warm_start_time", None)
+            override_inputs.pop("action_cot_ofp_interval_condition_strength", None)
             override_inputs.pop("joint_coupled_sampler", None)
             override_inputs.pop("batched_mc_samples", None)
             override_inputs.pop("run_execution_horizon_predictor", None)
@@ -209,6 +213,10 @@ class Policy(BasePolicy):
         if ofp_interval_flow:
             if not 0.0 < ofp_warm_start_time <= 1.0:
                 raise ValueError("action_cot_ofp_warm_start_time must be in (0, 1].")
+            if not 0.0 <= ofp_interval_condition_strength <= 1.0:
+                raise ValueError(
+                    "action_cot_ofp_interval_condition_strength must be in [0, 1]."
+                )
             sample_kwargs = {
                 **sample_kwargs,
                 "ofp_interval_flow": True,
@@ -217,6 +225,9 @@ class Policy(BasePolicy):
                 )[None, ...],
                 "ofp_warm_start_valid": jnp.asarray(ofp_warm_start_valid, dtype=jnp.bool_).reshape((1,)),
                 "ofp_warm_start_time": jnp.asarray(ofp_warm_start_time, dtype=jnp.float32).reshape((1,)),
+                "ofp_interval_condition_strength": jnp.asarray(
+                    ofp_interval_condition_strength, dtype=jnp.float32
+                ).reshape((1,)),
             }
         observation = _model.Observation.from_dict(inputs)
         detailed_timing = {}
@@ -462,6 +473,7 @@ class Policy(BasePolicy):
                     sample_kwargs["ofp_warm_start_actions"],
                     sample_kwargs["ofp_warm_start_valid"],
                     sample_kwargs["ofp_warm_start_time"],
+                    sample_kwargs["ofp_interval_condition_strength"],
                 )
             else:
                 expert_outputs = self._sample_actions_profile_expert(
