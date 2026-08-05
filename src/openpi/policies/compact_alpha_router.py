@@ -64,6 +64,8 @@ class CompactAlphaRouter:
     feature_scale: float
     target_mean: float
     weights: np.ndarray
+    raw_score_kernel: np.ndarray
+    raw_score_bias: float
     ridge_lambda: float
     training_class: str
 
@@ -165,6 +167,8 @@ def load_compact_alpha_router(path: pathlib.Path | str) -> CompactAlphaRouter:
         feature_scale=feature_scale,
         target_mean=target_mean,
         weights=weights,
+        raw_score_kernel=raw_kernel,
+        raw_score_bias=raw_bias,
         ridge_lambda=ridge_lambda,
         training_class=training_class,
     )

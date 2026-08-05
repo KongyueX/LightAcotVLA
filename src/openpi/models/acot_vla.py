@@ -2360,6 +2360,63 @@ class ACOT_VLA(_model.BaseModel):
         )
         return {"actions": expert_action_noise - velocity}
 
+    def sample_actions_profile_compact_routed_one_step_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+        absolute_decision_step: jax.Array,
+        router_kernel: jax.Array,
+        router_bias: jax.Array,
+    ) -> dict[str, Any]:
+        """Fuse compact alpha routing into the endpoint-student JAX graph.
+
+        ``router_kernel`` is the validated affine over normalized ``state32``
+        followed by the absolute environment step. Keeping both the score and
+        the selected flow time on device avoids a state device-to-host barrier,
+        and the dynamic alpha shares one compiled executable for both outcomes.
+        """
+
+        observation = prefix_state["observation"]
+        expert_action_noise = prefix_state["expert_action_noise"]
+        batch_size = observation.state.shape[0]
+        state_kernel = router_kernel[:-1]
+        step_kernel = router_kernel[-1]
+        step = jnp.asarray(absolute_decision_step, dtype=jnp.float32).reshape(())
+        score = (
+            jnp.einsum("bd,d->b", observation.state, state_kernel)
+            + step * step_kernel
+            + jnp.asarray(router_bias, dtype=jnp.float32).reshape(())
+        )
+        alpha = jnp.where(
+            score > 0.0,
+            jnp.asarray(0.05, dtype=jnp.float32),
+            jnp.asarray(0.0, dtype=jnp.float32),
+        )
+        conditioned_time = jnp.ones((batch_size,), dtype=jnp.float32) - alpha
+        velocity = self._action_velocity_at_time(
+            prefix_state,
+            expert_action_noise,
+            conditioned_time,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        # Pack diagnostics so serving performs one tiny device-to-host copy
+        # instead of three independent scalar transfers. Policy.infer restores
+        # the stable public field names after unbatching on the host.
+        diagnostics = jnp.stack(
+            [
+                score,
+                alpha,
+                jnp.broadcast_to(step, (batch_size,)),
+            ],
+            axis=-1,
+        )
+        return {
+            "actions": expert_action_noise - velocity,
+            "compact_alpha_router_diagnostics": diagnostics,
+        }
+
     def sample_actions_profile_adaptive_one_step_expert(
         self,
         prefix_state: dict[str, Any],

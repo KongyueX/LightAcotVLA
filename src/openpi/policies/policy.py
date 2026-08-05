@@ -62,6 +62,7 @@ class Policy(BasePolicy):
         self._sample_actions_profile_coarse = None
         self._sample_actions_profile_expert = None
         self._sample_actions_profile_direct_one_step_expert = None
+        self._sample_actions_profile_compact_routed_one_step_expert = None
         self._sample_actions_profile_adaptive_one_step_expert = None
         self._sample_actions_profile_ofp_expert = None
         self._sample_actions_joint_coupled = None
@@ -92,6 +93,26 @@ class Policy(BasePolicy):
                 # module_jit prepends module state: alpha is argument four.
                 static_argnums=(4,),
             )
+        self._acot_compact_alpha_router_kernel = None
+        self._acot_compact_alpha_router_bias = None
+        if self._acot_compact_alpha_router is not None and hasattr(
+            model,
+            "sample_actions_profile_compact_routed_one_step_expert",
+        ):
+            self._sample_actions_profile_compact_routed_one_step_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_compact_routed_one_step_expert
+            )
+            # Upload the tiny validated affine once at policy construction.
+            # Reusing these device buffers avoids a host-to-device copy on
+            # every routed request.
+            self._acot_compact_alpha_router_kernel = jnp.asarray(
+                self._acot_compact_alpha_router.raw_score_kernel,
+                dtype=jnp.float32,
+            )
+            self._acot_compact_alpha_router_bias = jnp.asarray(
+                self._acot_compact_alpha_router.raw_score_bias,
+                dtype=jnp.float32,
+            )
         if getattr(model, "adaptive_final_time_warp", False):
             self._sample_actions_profile_adaptive_one_step_expert = nnx_utils.module_jit(
                 model.sample_actions_profile_adaptive_one_step_expert
@@ -110,10 +131,10 @@ class Policy(BasePolicy):
             )
         if self._acot_compact_alpha_router is not None and (
             not self._can_profile_sample_actions()
-            or self._sample_actions_profile_direct_one_step_expert is None
+            or self._sample_actions_profile_compact_routed_one_step_expert is None
         ):
             raise ValueError(
-                "A compact alpha router requires the model's sequential direct one-step entrypoint."
+                "A compact alpha router requires the model's fused routed one-step entrypoint."
             )
 
     @override
@@ -229,8 +250,9 @@ class Policy(BasePolicy):
             transformed_coarse_actions_override = override_inputs["coarse_actions"]
 
         inputs = self._input_transform(inputs)
-        compact_alpha_router_score = None
-        compact_alpha_router_selected_alpha = None
+        # The compact router is fused into the final endpoint-student JAX
+        # graph. Its standalone measured time is therefore zero rather than a
+        # separate host-side synchronization/dispatch interval.
         compact_alpha_router_ms = 0.0
         if compact_alpha_router_enabled:
             configured_final_time_warp_alpha = float(
@@ -243,19 +265,7 @@ class Policy(BasePolicy):
                 raise ValueError(
                     "Compact alpha routing owns final_time_warp_alpha and cannot use a fixed alpha."
                 )
-            assert self._acot_compact_alpha_router is not None
             assert absolute_decision_step is not None
-            router_started = time.monotonic()
-            compact_alpha_router_score, compact_alpha_router_selected_alpha = (
-                self._acot_compact_alpha_router.route(
-                    np.asarray(inputs["state"]),
-                    absolute_decision_step,
-                )
-            )
-            compact_alpha_router_ms = (time.monotonic() - router_started) * 1000
-            # The hard router owns this request's final endpoint. In
-            # particular alpha=0 still uses the direct one-step entrypoint.
-            final_time_warp_alpha = compact_alpha_router_selected_alpha
         if transformed_coarse_actions_override is not None:
             inputs["coarse_actions_override"] = transformed_coarse_actions_override
 
@@ -286,23 +296,6 @@ class Policy(BasePolicy):
             # transforms preserve the exact normalized predictor input.
             "execution_horizon_state_normalized": inputs["state"],
         }
-        if compact_alpha_router_enabled:
-            outputs.update(
-                {
-                    "compact_alpha_router_score": jnp.asarray(
-                        compact_alpha_router_score,
-                        dtype=jnp.float32,
-                    ).reshape((1,)),
-                    "compact_alpha_router_selected_alpha": jnp.asarray(
-                        compact_alpha_router_selected_alpha,
-                        dtype=jnp.float32,
-                    ).reshape((1,)),
-                    "compact_alpha_router_absolute_decision_step": jnp.asarray(
-                        absolute_decision_step,
-                        dtype=jnp.int32,
-                    ).reshape((1,)),
-                }
-            )
         # joint_coupled_sampler selects a separate jitted entrypoint and must
         # not be forwarded to the legacy sample_actions signature.
         sample_kwargs = {
@@ -336,10 +329,17 @@ class Policy(BasePolicy):
         if not 0.0 <= final_time_warp_alpha < 1.0:
             raise ValueError("action_cot_final_time_warp_alpha must be in [0, 1).")
         if compact_alpha_router_enabled:
+            assert absolute_decision_step is not None
+            assert self._acot_compact_alpha_router_kernel is not None
+            assert self._acot_compact_alpha_router_bias is not None
             sample_kwargs = {
                 **sample_kwargs,
-                "final_time_warp_alpha": final_time_warp_alpha,
-                "force_direct_one_step_expert": True,
+                "compact_alpha_router_absolute_decision_step": np.asarray(
+                    absolute_decision_step,
+                    dtype=np.int32,
+                ),
+                "compact_alpha_router_kernel": self._acot_compact_alpha_router_kernel,
+                "compact_alpha_router_bias": self._acot_compact_alpha_router_bias,
             }
         elif final_time_warp_alpha > 0.0:
             sample_kwargs = {
@@ -540,6 +540,26 @@ class Policy(BasePolicy):
 
         # Unbatch and convert to np.ndarray.
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+        if compact_alpha_router_enabled:
+            diagnostics = np.asarray(
+                outputs.pop("compact_alpha_router_diagnostics"),
+                dtype=np.float32,
+            )
+            if diagnostics.shape != (3,):
+                raise ValueError(
+                    "Fused compact alpha router diagnostics must have shape (3,), "
+                    f"got {diagnostics.shape}."
+                )
+            outputs.update(
+                {
+                    "compact_alpha_router_score": diagnostics[0],
+                    "compact_alpha_router_selected_alpha": diagnostics[1],
+                    "compact_alpha_router_absolute_decision_step": np.asarray(
+                        diagnostics[2],
+                        dtype=np.int32,
+                    ),
+                }
+            )
         mc_actions = None
         if "mc_actions_normalized" in outputs:
             # The regular output pipeline only knows how to transform one
@@ -667,18 +687,28 @@ class Policy(BasePolicy):
         prefix_feature = None
         explicit_final_steps = sample_kwargs.get("final_denoising_steps")
         final_time_warp_alpha = float(sample_kwargs.get("final_time_warp_alpha", 0.0))
-        force_direct_one_step = _as_bool(
-            sample_kwargs.get("force_direct_one_step_expert", False)
-        )
         use_direct_final_expert = (
-            explicit_final_steps is None
-            and (final_time_warp_alpha > 0.0 or force_direct_one_step)
+            explicit_final_steps is None and final_time_warp_alpha > 0.0
         ) or (
             explicit_final_steps is not None
             and int(np.asarray(explicit_final_steps).item()) == 1
         )
         if self._acot_contextual_compiler is None:
-            if _as_bool(sample_kwargs.get("ofp_interval_flow", False)):
+            compact_router_step = sample_kwargs.get(
+                "compact_alpha_router_absolute_decision_step"
+            )
+            if compact_router_step is not None:
+                if self._sample_actions_profile_compact_routed_one_step_expert is None:
+                    raise ValueError("The loaded policy does not implement fused compact alpha routing.")
+                expert_outputs = self._sample_actions_profile_compact_routed_one_step_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    compact_router_step,
+                    sample_kwargs["compact_alpha_router_kernel"],
+                    sample_kwargs["compact_alpha_router_bias"],
+                )
+            elif _as_bool(sample_kwargs.get("ofp_interval_flow", False)):
                 if self._sample_actions_profile_ofp_expert is None:
                     raise ValueError("The loaded policy does not implement OFP interval inference.")
                 expert_outputs = self._sample_actions_profile_ofp_expert(
