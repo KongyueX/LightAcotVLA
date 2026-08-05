@@ -295,9 +295,9 @@ def load_harp_residual_sidecar(path: pathlib.Path | str) -> HARPResidualSidecar:
         raise ValueError(
             f"HARP parameter count mismatch: loaded={loaded_parameter_count}, saved={saved_parameter_count}."
         )
-    if loaded_parameter_count >= 10_000:
+    if loaded_parameter_count >= 100_000:
         raise ValueError(
-            f"HARP pilot must remain below 10k parameters, got {loaded_parameter_count}."
+            f"HARP pilot must remain below 100k parameters, got {loaded_parameter_count}."
         )
 
     def vector(name: str, width: int) -> jax.Array:
