@@ -57,6 +57,7 @@ class Args:
     config_name: str = "acot_libero_action_cot_explicit_implicit_co_fusion"
     batch_size: int = 8
     seed: int = 7
+    final_time_warp_alpha: float = 0.0
     overwrite: bool = False
 
 
@@ -222,6 +223,8 @@ def main(args: Args) -> None:
         raise ValueError("At least one --dataset path is required.")
     if args.batch_size <= 0:
         raise ValueError("--batch-size must be positive.")
+    if not 0.0 <= args.final_time_warp_alpha < 1.0:
+        raise ValueError("--final-time-warp-alpha must be in [0, 1).")
     device = _gpu()
     target, temporary = _prepare_output(args)
     (
@@ -261,6 +264,7 @@ def main(args: Args) -> None:
         handle.attrs["source_dataset_json"] = json.dumps(list(args.dataset))
         handle.attrs["config_name"] = args.config_name
         handle.attrs["seed"] = args.seed
+        handle.attrs["final_time_warp_alpha"] = args.final_time_warp_alpha
         handle.attrs["ear_normalization_contract"] = (
             "action_normalized = coarse_normalized * scale + bias"
         )
@@ -307,7 +311,12 @@ def main(args: Args) -> None:
             )["explicit_action_reason"]
             if coarse is None:
                 raise ValueError("The selected ACoT config does not expose an explicit EAR.")
-            pair = pair_fn(prefix_state, coarse, implicit)
+            pair = pair_fn(
+                prefix_state,
+                coarse,
+                implicit,
+                jnp.asarray(args.final_time_warp_alpha, dtype=jnp.float32),
+            )
             action_nfe1 = pair["action_nfe1"]
             action_nfe2 = pair["action_nfe2"]
             state = jnp.asarray(prefix_state["observation"].state, dtype=jnp.float32)
@@ -374,6 +383,7 @@ def main(args: Args) -> None:
         "pair_path": str(target),
         "records": count,
         "endpoint_student_params": str(sidecar_path),
+        "final_time_warp_alpha": args.final_time_warp_alpha,
         "continuous_nfe1_nfe2_mse": continuous_mse,
         "gripper_nfe1_nfe2_mse": gripper_mse,
         "ear_normalization_scale": ear_normalization_scale.tolist(),

@@ -2365,10 +2365,12 @@ class ACOT_VLA(_model.BaseModel):
         prefix_state: dict[str, Any],
         explicit_action_reason: _model.CoarseActions | None,
         implicit_action_reason: jax.Array | None,
+        final_time_warp_alpha: jax.Array | float = 0.0,
     ) -> dict[str, Any]:
         """Export exact shared-context NFE1/NFE2 endpoints in two suffix calls.
 
-        This opt-in offline entrypoint evaluates the velocity at ``t=1`` once
+        This opt-in offline entrypoint evaluates the velocity at the warped
+        first time ``1-alpha`` once
         and reuses it for both endpoints.  With ``z`` denoting the stored final
         noise, the deployed draft is ``A1 = z - v(z, 1)``.  The NFE2 target is
         the exact two-step Euler path ``x_.5 = z - .5 v(z, 1)`` followed by
@@ -2382,7 +2384,12 @@ class ACOT_VLA(_model.BaseModel):
 
         expert_action_noise = prefix_state["expert_action_noise"]
         batch_size = expert_action_noise.shape[0]
-        time_one = jnp.ones((batch_size,), dtype=jnp.float32)
+        alpha = jnp.clip(
+            jnp.asarray(final_time_warp_alpha, dtype=jnp.float32),
+            0.0,
+            1.0,
+        )
+        time_one = jnp.ones((batch_size,), dtype=jnp.float32) * (1.0 - alpha)
         velocity_one = self._action_velocity_at_time(
             prefix_state,
             expert_action_noise,
@@ -2392,7 +2399,7 @@ class ACOT_VLA(_model.BaseModel):
         )
         action_nfe1 = expert_action_noise - velocity_one
         action_middle = expert_action_noise - 0.5 * velocity_one
-        time_middle = jnp.full((batch_size,), 0.5, dtype=jnp.float32)
+        time_middle = jnp.full((batch_size,), 0.5, dtype=jnp.float32) * (1.0 - alpha)
         velocity_middle = self._action_velocity_at_time(
             prefix_state,
             action_middle,
