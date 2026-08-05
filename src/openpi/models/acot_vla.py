@@ -2360,6 +2360,39 @@ class ACOT_VLA(_model.BaseModel):
         )
         return {"actions": expert_action_noise - velocity}
 
+    def sample_actions_profile_second_half_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+        action_nfe1: _model.Actions,
+        final_time_warp_alpha: float = 0.0,
+    ) -> dict[str, Any]:
+        """Complete only the second Euler half-step from an existing direct A1.
+
+        The deployed direct graph remains the source of ``action_nfe1``.  With
+        its original noise ``z``, reconstruct the NFE2 midpoint as
+        ``x_.5 = .5 * (z + A1)`` and evaluate only the remaining suffix at
+        ``.5 * (1 - alpha)``.  This avoids recomputing the first velocity.
+        """
+
+        expert_action_noise = prefix_state["expert_action_noise"]
+        batch_size = expert_action_noise.shape[0]
+        action_middle = 0.5 * (
+            expert_action_noise + jnp.asarray(action_nfe1, dtype=expert_action_noise.dtype)
+        )
+        time_middle = jnp.full((batch_size,), 0.5, dtype=jnp.float32) * (
+            1.0 - jnp.asarray(final_time_warp_alpha, dtype=jnp.float32)
+        )
+        velocity_middle = self._action_velocity_at_time(
+            prefix_state,
+            action_middle,
+            time_middle,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        return {"actions": action_middle - 0.5 * velocity_middle}
+
     def sample_actions_profile_harp_pair(
         self,
         prefix_state: dict[str, Any],

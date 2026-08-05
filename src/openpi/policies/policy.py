@@ -14,6 +14,7 @@ from typing_extensions import override
 
 from openpi import transforms as _transforms
 from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
+from openpi.models import es_harp_gripper_event as _es_harp_gripper_event
 from openpi.models import harp_temporal_residual as _harp_temporal_residual
 from openpi.models import model as _model
 from openpi.policies import compact_alpha_router as _compact_alpha_router
@@ -47,6 +48,7 @@ class Policy(BasePolicy):
         acot_contextual_compiler: _contextual_plan_compiler.ContextualPlanCompiler | None = None,
         acot_compact_alpha_router: _compact_alpha_router.CompactAlphaRouter | None = None,
         acot_harp_residual: _harp_temporal_residual.HARPResidualSidecar | None = None,
+        acot_harp_gripper_event: _es_harp_gripper_event.GripperEventSidecar | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
         self._input_transform = _transforms.compose(transforms)
@@ -65,11 +67,18 @@ class Policy(BasePolicy):
             if acot_harp_residual is not None
             else None
         )
+        self._acot_harp_gripper_event = acot_harp_gripper_event
+        self._apply_harp_gripper_event = (
+            jax.jit(acot_harp_gripper_event.predict_and_correct)
+            if acot_harp_gripper_event is not None
+            else None
+        )
         self._sample_actions_profile_prefix = None
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
         self._sample_actions_profile_expert = None
         self._sample_actions_profile_direct_one_step_expert = None
+        self._sample_actions_profile_second_half_expert = None
         self._sample_actions_profile_adaptive_one_step_expert = None
         self._sample_actions_profile_ofp_expert = None
         self._sample_actions_joint_coupled = None
@@ -99,6 +108,12 @@ class Policy(BasePolicy):
                 model.sample_actions_profile_direct_one_step_expert,
                 # module_jit prepends module state: alpha is argument four.
                 static_argnums=(4,),
+            )
+        if hasattr(model, "sample_actions_profile_second_half_expert"):
+            self._sample_actions_profile_second_half_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_second_half_expert,
+                # module_jit prepends module state: alpha is argument five.
+                static_argnums=(5,),
             )
         # Compact routing deliberately keeps the original two static endpoint
         # graphs. The first routed request warms both so a later alpha switch
@@ -134,6 +149,13 @@ class Policy(BasePolicy):
             raise ValueError(
                 "A HARP sidecar requires the sequential direct one-step Action-CoT entrypoint."
             )
+        if self._acot_harp_gripper_event is not None and (
+            not self._can_profile_sample_actions()
+            or self._sample_actions_profile_direct_one_step_expert is None
+        ):
+            raise ValueError(
+                "An ES-HARP gripper sidecar requires the sequential direct one-step Action-CoT entrypoint."
+            )
 
     @override
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
@@ -150,6 +172,9 @@ class Policy(BasePolicy):
         harp_residual_enabled = _as_bool(
             inputs.pop("action_cot_harp_residual", False)
         )
+        harp_gripper_event_enabled = _as_bool(
+            inputs.pop("action_cot_harp_gripper_event", False)
+        )
         final_hybrid_mode = str(
             np.asarray(inputs.pop("action_cot_final_hybrid_mode", "none")).item()
         )
@@ -158,6 +183,14 @@ class Policy(BasePolicy):
                 "action_cot_final_hybrid_mode must be one of "
                 "'none', 'control_nfe2', or 'gripper_nfe2'."
             )
+        selective_gripper_refinement_enabled = _as_bool(
+            inputs.pop("action_cot_selective_gripper_refinement", False)
+        )
+        selective_gripper_tau = float(
+            np.asarray(inputs.pop("action_cot_selective_gripper_tau", 0.15)).item()
+        )
+        if not np.isfinite(selective_gripper_tau) or not 0.0 <= selective_gripper_tau <= 1.0:
+            raise ValueError("action_cot_selective_gripper_tau must be finite and in [0, 1].")
         absolute_decision_step_raw = inputs.pop(
             "action_cot_absolute_decision_step",
             None,
@@ -231,7 +264,10 @@ class Policy(BasePolicy):
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_compact_alpha_router", None)
             override_inputs.pop("action_cot_harp_residual", None)
+            override_inputs.pop("action_cot_harp_gripper_event", None)
             override_inputs.pop("action_cot_final_hybrid_mode", None)
+            override_inputs.pop("action_cot_selective_gripper_refinement", None)
+            override_inputs.pop("action_cot_selective_gripper_tau", None)
             override_inputs.pop("action_cot_absolute_decision_step", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
@@ -375,10 +411,23 @@ class Policy(BasePolicy):
                 "force_direct_one_step_expert": True,
                 "apply_harp_residual": True,
             }
+        if harp_gripper_event_enabled:
+            sample_kwargs = {
+                **sample_kwargs,
+                "force_direct_one_step_expert": True,
+                "apply_harp_gripper_event": True,
+            }
         if final_hybrid_mode != "none":
             sample_kwargs = {
                 **sample_kwargs,
                 "final_hybrid_mode": final_hybrid_mode,
+            }
+        if selective_gripper_refinement_enabled:
+            sample_kwargs = {
+                **sample_kwargs,
+                "force_direct_one_step_expert": True,
+                "selective_gripper_refinement": True,
+                "selective_gripper_tau": selective_gripper_tau,
             }
         if ofp_interval_flow:
             if not 0.0 < ofp_warm_start_time <= 1.0:
@@ -443,15 +492,18 @@ class Policy(BasePolicy):
             if (
                 compact_alpha_router_enabled
                 or harp_residual_enabled
+                or harp_gripper_event_enabled
+                or selective_gripper_refinement_enabled
                 or adaptive_final_time_warp
                 or ofp_interval_flow
                 or _as_bool(self._sample_kwargs.get("apply_harp_residual", False))
+                or _as_bool(self._sample_kwargs.get("apply_harp_gripper_event", False))
                 or _as_bool(self._sample_kwargs.get("adaptive_final_time_warp", False))
                 or _as_bool(self._sample_kwargs.get("ofp_interval_flow", False))
             ):
                 raise ValueError(
                     "Final hybrid diagnostics cannot be combined with HARP, compact routing, "
-                    "adaptive time warp, or OFP inference."
+                    "selective gripper refinement, adaptive time warp, or OFP inference."
                 )
             if joint_coupled_sampler or batched_mc_samples or run_execution_horizon_predictor:
                 raise ValueError(
@@ -477,6 +529,61 @@ class Policy(BasePolicy):
                     "Final hybrid diagnostics require endpoint-student EAR NFE1; "
                     f"got EAR NFE={coarse_steps}."
                 )
+        if selective_gripper_refinement_enabled:
+            if (
+                self._sample_actions_profile_direct_one_step_expert is None
+                or self._sample_actions_profile_second_half_expert is None
+            ):
+                raise ValueError(
+                    "Selective gripper refinement requires direct A1 and second-half final experts."
+                )
+            if self._action_dim <= 6:
+                raise ValueError("Selective gripper refinement requires a gripper action dimension.")
+            if final_denoising_steps is not None or "final_denoising_steps" in self._sample_kwargs:
+                raise ValueError(
+                    "Selective gripper refinement owns direct A1 and conditional NFE2; "
+                    "do not set final_denoising_steps."
+                )
+            if (
+                final_hybrid_mode != "none"
+                or compact_alpha_router_enabled
+                or harp_residual_enabled
+                or harp_gripper_event_enabled
+                or adaptive_final_time_warp
+                or ofp_interval_flow
+                or _as_bool(self._sample_kwargs.get("apply_harp_residual", False))
+                or _as_bool(self._sample_kwargs.get("apply_harp_gripper_event", False))
+                or _as_bool(self._sample_kwargs.get("adaptive_final_time_warp", False))
+                or _as_bool(self._sample_kwargs.get("ofp_interval_flow", False))
+            ):
+                raise ValueError(
+                    "Selective gripper refinement cannot be combined with HARP, a gripper-event "
+                    "student, hybrid diagnostics, compact routing, adaptive time warp, or OFP."
+                )
+            if joint_coupled_sampler or batched_mc_samples or run_execution_horizon_predictor:
+                raise ValueError(
+                    "Selective gripper refinement cannot be combined with coupled sampling, "
+                    "batched MC, or execution-horizon prediction."
+                )
+            if self._acot_contextual_compiler is not None:
+                raise ValueError(
+                    "Selective gripper refinement cannot be combined with a contextual compiler."
+                )
+            if _as_bool(sample_kwargs.get("dynamic_denoising_steps", False)):
+                raise ValueError("Selective gripper refinement requires a fixed one-step EAR.")
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            if coarse_steps != 1:
+                raise ValueError(
+                    "Selective gripper refinement requires endpoint-student EAR NFE1; "
+                    f"got EAR NFE={coarse_steps}."
+                )
         if harp_residual_enabled:
             if self._apply_harp_residual is None:
                 raise ValueError(
@@ -484,13 +591,15 @@ class Policy(BasePolicy):
                 )
             if (
                 compact_alpha_router_enabled
+                or harp_gripper_event_enabled
                 or adaptive_final_time_warp
                 or ofp_interval_flow
                 or _as_bool(self._sample_kwargs.get("adaptive_final_time_warp", False))
                 or _as_bool(self._sample_kwargs.get("ofp_interval_flow", False))
+                or _as_bool(self._sample_kwargs.get("apply_harp_gripper_event", False))
             ):
                 raise ValueError(
-                    "HARP cannot be combined with compact routing, adaptive time warp, or OFP inference."
+                    "HARP cannot be combined with ES-HARP, compact routing, adaptive time warp, or OFP inference."
                 )
             configured_final_time_warp_alpha = float(
                 np.asarray(sample_kwargs.get("final_time_warp_alpha", 0.0)).item()
@@ -528,6 +637,70 @@ class Policy(BasePolicy):
             if coarse_steps != 1 or final_steps != 1:
                 raise ValueError(
                     "HARP was calibrated for endpoint-student EAR NFE1 and direct final NFE1; "
+                    f"got EAR NFE={coarse_steps}, final NFE={final_steps}."
+                )
+        if harp_gripper_event_enabled:
+            if self._apply_harp_gripper_event is None:
+                raise ValueError(
+                    "action_cot_harp_gripper_event=True requires an ES-HARP NPZ at serve startup."
+                )
+            if self._action_dim <= _es_harp_gripper_event.GRIPPER_INDEX:
+                raise ValueError("ES-HARP requires a seventh gripper action dimension.")
+            if final_denoising_steps is not None or "final_denoising_steps" in self._sample_kwargs:
+                raise ValueError(
+                    "ES-HARP forces direct final NFE1; do not set final_denoising_steps."
+                )
+            if (
+                final_hybrid_mode != "none"
+                or selective_gripper_refinement_enabled
+                or compact_alpha_router_enabled
+                or harp_residual_enabled
+                or adaptive_final_time_warp
+                or ofp_interval_flow
+                or _as_bool(self._sample_kwargs.get("apply_harp_residual", False))
+                or _as_bool(self._sample_kwargs.get("adaptive_final_time_warp", False))
+                or _as_bool(self._sample_kwargs.get("ofp_interval_flow", False))
+            ):
+                raise ValueError(
+                    "ES-HARP cannot be combined with continuous HARP, selective refinement, "
+                    "hybrid diagnostics, compact routing, adaptive time warp, or OFP."
+                )
+            configured_alpha = float(
+                np.asarray(sample_kwargs.get("final_time_warp_alpha", 0.0)).item()
+            )
+            expected_alpha = self._acot_harp_gripper_event.draft_final_time_warp_alpha
+            if (
+                abs(final_time_warp_alpha - expected_alpha) > 1e-7
+                or abs(configured_alpha - expected_alpha) > 1e-7
+            ):
+                raise ValueError(
+                    "ES-HARP request/config final_time_warp_alpha must match its sidecar: "
+                    f"request={final_time_warp_alpha}, config={configured_alpha}, "
+                    f"sidecar={expected_alpha}."
+                )
+            if joint_coupled_sampler or batched_mc_samples:
+                raise ValueError("ES-HARP cannot be combined with coupled or batched-MC sampling.")
+            if self._acot_contextual_compiler is not None:
+                raise ValueError("ES-HARP cannot be combined with a contextual compiler.")
+            if _as_bool(sample_kwargs.get("dynamic_denoising_steps", False)):
+                raise ValueError("ES-HARP requires a fixed one-step EAR.")
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps", sample_kwargs.get("num_steps", 10)
+                    )
+                ).item()
+            )
+            final_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "final_denoising_steps", sample_kwargs.get("num_steps", 10)
+                    )
+                ).item()
+            )
+            if coarse_steps != 1 or final_steps != 1:
+                raise ValueError(
+                    "ES-HARP was calibrated for EAR NFE1 and direct final NFE1; "
                     f"got EAR NFE={coarse_steps}, final NFE={final_steps}."
                 )
         if joint_coupled_sampler and batched_mc_samples:
@@ -618,7 +791,9 @@ class Policy(BasePolicy):
             or adaptive_final_time_warp
             or compact_alpha_router_enabled
             or harp_residual_enabled
+            or harp_gripper_event_enabled
             or final_hybrid_mode != "none"
+            or selective_gripper_refinement_enabled
             or profile_policy_timing
             or export_acot_cache
         ) and self._can_profile_sample_actions():
@@ -725,6 +900,7 @@ class Policy(BasePolicy):
                     "execution_horizon_predictor_ms",
                     "compact_alpha_router_ms",
                     "harp_residual_ms",
+                    "harp_gripper_event_ms",
                 )
             )
             detailed_timing["profile_overhead_ms"] = max(0.0, model_time * 1000 - stage_total_ms)
@@ -821,6 +997,10 @@ class Policy(BasePolicy):
         explicit_final_steps = sample_kwargs.get("final_denoising_steps")
         final_time_warp_alpha = float(sample_kwargs.get("final_time_warp_alpha", 0.0))
         final_hybrid_mode = str(sample_kwargs.get("final_hybrid_mode", "none"))
+        selective_gripper_refinement = _as_bool(
+            sample_kwargs.get("selective_gripper_refinement", False)
+        )
+        selective_gripper_tau = float(sample_kwargs.get("selective_gripper_tau", 0.15))
         force_direct_one_step = _as_bool(
             sample_kwargs.get("force_direct_one_step_expert", False)
         )
@@ -852,6 +1032,79 @@ class Policy(BasePolicy):
                     prefix_state,
                     coarse_outputs["explicit_action_reason"],
                     implicit_outputs["implicit_action_reason"],
+                )
+            elif selective_gripper_refinement:
+                if (
+                    self._sample_actions_profile_direct_one_step_expert is None
+                    or self._sample_actions_profile_second_half_expert is None
+                ):
+                    raise ValueError(
+                        "Selective gripper refinement requires direct A1 and second-half experts."
+                    )
+                direct_outputs = self._sample_actions_profile_direct_one_step_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    final_time_warp_alpha,
+                )
+                _block_until_ready(direct_outputs)
+                action_nfe1 = direct_outputs["actions"]
+
+                verifier_started = time.monotonic()
+                # Index 6 is the LIBERO gripper; dimensions 7+ are padding and
+                # must not make the uncertainty detector trigger permanently.
+                gripper_nfe1 = np.asarray(action_nfe1)[..., 6:7]
+                trigger_min_abs = float(np.min(np.abs(gripper_nfe1)))
+                trigger_sign_transition = bool(
+                    np.any(
+                        np.signbit(gripper_nfe1[:, 1:, :])
+                        != np.signbit(gripper_nfe1[:, :-1, :])
+                    )
+                )
+                trigger = trigger_min_abs < selective_gripper_tau or trigger_sign_transition
+                timing["selective_gripper_verifier_ms"] = (
+                    time.monotonic() - verifier_started
+                ) * 1000
+                timing["selective_gripper_refinement_ms"] = 0.0
+
+                expert_outputs = dict(direct_outputs)
+                if trigger:
+                    refinement_started = time.monotonic()
+                    second_half_outputs = self._sample_actions_profile_second_half_expert(
+                        prefix_state,
+                        coarse_outputs["explicit_action_reason"],
+                        implicit_outputs["implicit_action_reason"],
+                        action_nfe1,
+                        final_time_warp_alpha,
+                    )
+                    _block_until_ready(second_half_outputs)
+                    timing["selective_gripper_refinement_ms"] = (
+                        time.monotonic() - refinement_started
+                    ) * 1000
+                    expert_outputs["actions"] = jnp.concatenate(
+                        [
+                            action_nfe1[..., :6],
+                            second_half_outputs["actions"][..., 6:7],
+                            action_nfe1[..., 7:],
+                        ],
+                        axis=-1,
+                    )
+                batch_size = action_nfe1.shape[0]
+                expert_outputs.update(
+                    {
+                        "selective_gripper_triggered": jnp.full(
+                            (batch_size,), trigger, dtype=jnp.bool_
+                        ),
+                        "selective_gripper_trigger_min_abs": jnp.full(
+                            (batch_size,), trigger_min_abs, dtype=jnp.float32
+                        ),
+                        "selective_gripper_trigger_sign_transition": jnp.full(
+                            (batch_size,), trigger_sign_transition, dtype=jnp.bool_
+                        ),
+                        "selective_gripper_tau": jnp.full(
+                            (batch_size,), selective_gripper_tau, dtype=jnp.float32
+                        ),
+                    }
                 )
             elif final_hybrid_mode != "none":
                 if self._sample_actions_profile_direct_one_step_expert is None:
@@ -963,6 +1216,53 @@ class Policy(BasePolicy):
                         "harp_margin_std": harp_outputs["margin_std"],
                         "harp_margin_lcb": harp_outputs["margin_lcb"],
                         "harp_margin_gate": harp_outputs["margin_gate"],
+                    }
+                )
+            if _as_bool(sample_kwargs.get("apply_harp_gripper_event", False)):
+                if self._apply_harp_gripper_event is None:
+                    raise ValueError(
+                        "ES-HARP was requested but no gripper-event sidecar is loaded."
+                    )
+                explicit_action_reason = coarse_outputs.get("explicit_action_reason")
+                implicit_action_reason = implicit_outputs.get("implicit_action_reason")
+                if explicit_action_reason is None or implicit_action_reason is None:
+                    raise ValueError(
+                        "ES-HARP requires both EAR and IAR from the current Action-CoT pass."
+                    )
+                action_nfe1 = expert_outputs["actions"]
+                event_started = time.monotonic()
+                event_outputs = self._apply_harp_gripper_event(
+                    action_nfe1,
+                    explicit_action_reason,
+                    implicit_action_reason,
+                    prefix_state["expert_action_noise"],
+                    prefix_state["observation"].state,
+                )
+                _block_until_ready(event_outputs)
+                timing["harp_gripper_event_ms"] = (
+                    time.monotonic() - event_started
+                ) * 1000
+                result.update(
+                    {
+                        "actions": event_outputs["actions"],
+                        "harp_gripper_action_nfe1_normalized": action_nfe1,
+                        "harp_gripper_sign_probability": event_outputs[
+                            "sign_probability"
+                        ],
+                        "harp_gripper_flip_probability": event_outputs[
+                            "flip_probability"
+                        ],
+                        "harp_gripper_predicted_positive": event_outputs[
+                            "predicted_positive"
+                        ],
+                        "harp_gripper_flip_consistent": event_outputs[
+                            "flip_consistent"
+                        ],
+                        "harp_gripper_event_gate": event_outputs["event_gate"],
+                        "harp_gripper_original": event_outputs["original_gripper"],
+                        "harp_gripper_corrected": event_outputs[
+                            "corrected_gripper"
+                        ],
                     }
                 )
         else:

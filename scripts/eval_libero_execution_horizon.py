@@ -100,6 +100,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--harp-gripper-event",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Apply the separately loaded ES-HARP gripper event student after matched "
+            "direct IR NFE1. Only action dimension seven may change."
+        ),
+    )
+    parser.add_argument(
         "--final-hybrid-mode",
         choices=("none", "control_nfe2", "gripper_nfe2"),
         default="none",
@@ -107,6 +116,24 @@ def build_parser() -> argparse.ArgumentParser:
             "Opt-in final-expert ceiling diagnostic. Reuse one prefix/EAR/IAR/noise, "
             "run direct NFE1 and legacy NFE2, then take either the first six control "
             "dimensions or the remaining gripper dimensions from NFE2."
+        ),
+    )
+    parser.add_argument(
+        "--selective-gripper-refinement",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Keep the deployed direct A1, but conditionally run one exact midpoint "
+            "suffix and replace only its gripper dimensions."
+        ),
+    )
+    parser.add_argument(
+        "--selective-gripper-tau",
+        type=float,
+        default=0.15,
+        help=(
+            "Normalized A1 gripper uncertainty threshold. Refinement triggers when "
+            "the chunk minimum absolute gripper value is below tau or its sign changes."
         ),
     )
     parser.add_argument(
@@ -240,8 +267,20 @@ def _request(
         )
     if args.harp_residual:
         request["action_cot_harp_residual"] = np.asarray(True, dtype=np.bool_)
+    if args.harp_gripper_event:
+        request["action_cot_harp_gripper_event"] = np.asarray(True, dtype=np.bool_)
     if args.final_hybrid_mode != "none":
         request["action_cot_final_hybrid_mode"] = args.final_hybrid_mode
+    if args.selective_gripper_refinement:
+        request.update(
+            {
+                "action_cot_selective_gripper_refinement": np.asarray(True, dtype=np.bool_),
+                "action_cot_selective_gripper_tau": np.asarray(
+                    args.selective_gripper_tau,
+                    dtype=np.float32,
+                ),
+            }
+        )
     if args.ofp_interval_flow:
         request.update(
             {
@@ -295,6 +334,26 @@ def _request(
             policy_timing.get("compact_alpha_router_ms", np.nan)
         ),
         "harp_residual_ms": float(policy_timing.get("harp_residual_ms", np.nan)),
+        "harp_gripper_event_ms": float(
+            policy_timing.get("harp_gripper_event_ms", np.nan)
+        ),
+        "selective_gripper_verifier_ms": float(
+            policy_timing.get("selective_gripper_verifier_ms", np.nan)
+        ),
+        "selective_gripper_refinement_ms": float(
+            policy_timing.get("selective_gripper_refinement_ms", np.nan)
+        ),
+        "selective_gripper_triggered": float(
+            np.asarray(result.get("selective_gripper_triggered", np.nan)).item()
+        ),
+        "selective_gripper_trigger_min_abs": float(
+            np.asarray(result.get("selective_gripper_trigger_min_abs", np.nan)).item()
+        ),
+        "selective_gripper_trigger_sign_transition": float(
+            np.asarray(
+                result.get("selective_gripper_trigger_sign_transition", np.nan)
+            ).item()
+        ),
     }
 
 
@@ -501,6 +560,8 @@ def _run_episode(
     horizons: list[int] = []
     compact_alpha_router_scores: list[float] = []
     compact_alpha_router_alphas: list[float] = []
+    selective_gripper_decisions = 0
+    selective_gripper_triggers = 0
     policy_calls = 0
     sampled_chunks = 0
     step = 0
@@ -593,6 +654,30 @@ def _run_episode(
                     "compact_alpha_router_selected_alpha": router_alpha,
                     "compact_alpha_router_ms": timing["compact_alpha_router_ms"],
                 }
+            selective_gripper_info: dict[str, Any] = {}
+            if args.selective_gripper_refinement:
+                triggered = int(timing["selective_gripper_triggered"])
+                sign_transition = int(
+                    timing["selective_gripper_trigger_sign_transition"]
+                )
+                trigger_min_abs = timing["selective_gripper_trigger_min_abs"]
+                if triggered not in {0, 1} or sign_transition not in {0, 1}:
+                    raise ValueError("Selective gripper diagnostics must be binary.")
+                if not np.isfinite(trigger_min_abs):
+                    raise ValueError("Selective gripper trigger minimum must be finite.")
+                selective_gripper_decisions += 1
+                selective_gripper_triggers += triggered
+                selective_gripper_info = {
+                    "selective_gripper_triggered": triggered,
+                    "selective_gripper_trigger_min_abs": trigger_min_abs,
+                    "selective_gripper_trigger_sign_transition": sign_transition,
+                    "selective_gripper_verifier_ms": timing[
+                        "selective_gripper_verifier_ms"
+                    ],
+                    "selective_gripper_refinement_ms": timing[
+                        "selective_gripper_refinement_ms"
+                    ],
+                }
             decisions.append(
                 {
                     "mode": mode,
@@ -608,8 +693,10 @@ def _run_episode(
                     "predictor_ms": timing["predictor_ms"],
                     "batched_teacher_ms": timing["batched_teacher_ms"],
                     "harp_residual_ms": timing["harp_residual_ms"],
+                    "harp_gripper_event_ms": timing["harp_gripper_event_ms"],
                     "selector_json": json.dumps(selector_info, separators=(",", ":")),
                     **compact_router_info,
+                    **selective_gripper_info,
                 }
             )
             previous_actions = action_chunk
@@ -658,6 +745,7 @@ def _run_episode(
         "actual_predictor_total_ms": total("predictor_ms"),
         "actual_batched_teacher_total_ms": total("batched_teacher_ms"),
         "actual_harp_residual_total_ms": total("harp_residual_ms"),
+        "actual_harp_gripper_event_total_ms": total("harp_gripper_event_ms"),
     }
     if args.compact_alpha_router:
         alpha_histogram = collections.Counter(
@@ -677,6 +765,24 @@ def _run_episode(
                 ),
                 "actual_compact_alpha_router_total_ms": total(
                     "compact_alpha_router_ms"
+                ),
+            }
+        )
+    if args.selective_gripper_refinement:
+        row.update(
+            {
+                "selective_gripper_decisions": selective_gripper_decisions,
+                "selective_gripper_triggers": selective_gripper_triggers,
+                "selective_gripper_trigger_rate": (
+                    selective_gripper_triggers / selective_gripper_decisions
+                    if selective_gripper_decisions
+                    else float("nan")
+                ),
+                "actual_selective_gripper_verifier_total_ms": total(
+                    "selective_gripper_verifier_ms"
+                ),
+                "actual_selective_gripper_refinement_total_ms": total(
+                    "selective_gripper_refinement_ms"
                 ),
             }
         )
@@ -744,6 +850,12 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
         "batched_teacher_ms_per_episode": mean("actual_batched_teacher_total_ms"),
         "harp_residual_ms_per_episode": mean("actual_harp_residual_total_ms"),
         "harp_residual_ms_per_call": per_call("actual_harp_residual_total_ms"),
+        "harp_gripper_event_ms_per_episode": mean(
+            "actual_harp_gripper_event_total_ms"
+        ),
+        "harp_gripper_event_ms_per_call": per_call(
+            "actual_harp_gripper_event_total_ms"
+        ),
     }
     if any("compact_alpha_router_alpha_distribution_json" in row for row in subset):
         alpha_histogram: collections.Counter[str] = collections.Counter()
@@ -775,6 +887,36 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
                 ),
                 "compact_alpha_router_ms_per_call": per_call(
                     "actual_compact_alpha_router_total_ms"
+                ),
+            }
+        )
+    if any("selective_gripper_decisions" in row for row in subset):
+        selective_decisions = sum(
+            int(row.get("selective_gripper_decisions", 0)) for row in subset
+        )
+        selective_triggers = sum(
+            int(row.get("selective_gripper_triggers", 0)) for row in subset
+        )
+        result.update(
+            {
+                "selective_gripper_decisions": selective_decisions,
+                "selective_gripper_triggers": selective_triggers,
+                "selective_gripper_trigger_rate": (
+                    selective_triggers / selective_decisions
+                    if selective_decisions
+                    else float("nan")
+                ),
+                "selective_gripper_verifier_ms_per_episode": mean(
+                    "actual_selective_gripper_verifier_total_ms"
+                ),
+                "selective_gripper_verifier_ms_per_call": per_call(
+                    "actual_selective_gripper_verifier_total_ms"
+                ),
+                "selective_gripper_refinement_ms_per_episode": mean(
+                    "actual_selective_gripper_refinement_total_ms"
+                ),
+                "selective_gripper_refinement_ms_per_call": per_call(
+                    "actual_selective_gripper_refinement_total_ms"
                 ),
             }
         )
@@ -819,6 +961,8 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "policy_calls",
         "sampled_action_chunks",
         "compact_alpha_router_decisions",
+        "selective_gripper_decisions",
+        "selective_gripper_triggers",
     }
     floats = {
         "avg_h",
@@ -830,9 +974,13 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "actual_predictor_total_ms",
         "actual_batched_teacher_total_ms",
         "actual_harp_residual_total_ms",
+        "actual_harp_gripper_event_total_ms",
         "compact_alpha_router_score_sum",
         "compact_alpha_router_score_mean",
         "actual_compact_alpha_router_total_ms",
+        "selective_gripper_trigger_rate",
+        "actual_selective_gripper_verifier_total_ms",
+        "actual_selective_gripper_refinement_total_ms",
     }
     converted = {
         key: int(value) if key in integers else float(value) if key in floats else value for key, value in row.items()
@@ -909,6 +1057,8 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("final_denoising_steps must be positive when set.")
     if not 0.0 <= args.final_time_warp_alpha < 1.0:
         raise ValueError("final_time_warp_alpha must be in [0, 1).")
+    if not np.isfinite(args.selective_gripper_tau) or not 0.0 <= args.selective_gripper_tau <= 1.0:
+        raise ValueError("selective_gripper_tau must be finite and in [0, 1].")
     if args.final_time_warp_alpha > 0.0 and args.ofp_interval_flow:
         raise ValueError("final_time_warp_alpha and ofp_interval_flow are mutually exclusive.")
     if args.adaptive_final_time_warp and (
@@ -940,13 +1090,15 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError("final_hybrid_mode requires endpoint-student EAR NFE1.")
         if (
             args.harp_residual
+            or args.harp_gripper_event
+            or args.selective_gripper_refinement
             or args.compact_alpha_router
             or args.adaptive_final_time_warp
             or args.ofp_interval_flow
         ):
             raise ValueError(
                 "final_hybrid_mode cannot be combined with HARP, compact routing, "
-                "adaptive time warp, or OFP inference."
+                "selective gripper refinement, adaptive time warp, or OFP inference."
             )
         if list(args.modes) != ["fixed_h9"] or args.fixed_horizon != 10:
             raise ValueError(
@@ -962,6 +1114,33 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError(
                 "The final hybrid ceiling diagnostic is restricted to libero_10 Task8 "
                 "with initial-state offset 0 and --episode-ids 36 37."
+            )
+    if args.selective_gripper_refinement:
+        if args.final_denoising_steps is not None:
+            raise ValueError(
+                "selective_gripper_refinement owns direct A1 and conditional NFE2; "
+                "do not set final_denoising_steps."
+            )
+        if args.final_hybrid_mode != "none":
+            raise ValueError(
+                "selective_gripper_refinement cannot be combined with final_hybrid_mode."
+            )
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError("selective_gripper_refinement requires endpoint-student EAR NFE1.")
+        if (
+            args.harp_residual
+            or getattr(args, "harp_gripper_event", False)
+            or args.compact_alpha_router
+            or args.adaptive_final_time_warp
+            or args.ofp_interval_flow
+        ):
+            raise ValueError(
+                "selective_gripper_refinement cannot be combined with HARP, a gripper-event "
+                "student, compact routing, adaptive time warp, or OFP inference."
+            )
+        if list(args.modes) != ["fixed_h9"] or args.fixed_horizon != 10:
+            raise ValueError(
+                "Selective gripper refinement requires --modes fixed_h9 --fixed-horizon 10."
             )
     if args.compact_alpha_router:
         if args.final_denoising_steps is not None:
@@ -1009,6 +1188,30 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError("harp_residual cannot be combined with compact_alpha_router.")
         if "exact_batched_mc_v2" in args.modes:
             raise ValueError("harp_residual cannot be evaluated with exact_batched_mc_v2.")
+        if args.harp_gripper_event:
+            raise ValueError("Continuous HARP and ES-HARP gripper event are separate evaluations.")
+    if args.harp_gripper_event:
+        if args.final_denoising_steps is not None:
+            raise ValueError(
+                "harp_gripper_event forces direct final NFE1; do not set final_denoising_steps."
+            )
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError("harp_gripper_event requires endpoint-student EAR NFE1.")
+        if abs(args.final_time_warp_alpha - 0.05) > 1e-7:
+            raise ValueError("harp_gripper_event requires matched --final-time-warp-alpha 0.05.")
+        if (
+            args.final_hybrid_mode != "none"
+            or args.selective_gripper_refinement
+            or args.compact_alpha_router
+            or args.adaptive_final_time_warp
+            or args.ofp_interval_flow
+        ):
+            raise ValueError(
+                "harp_gripper_event cannot be combined with hybrid/selective refinement, "
+                "compact routing, adaptive time warp, or OFP."
+            )
+        if "exact_batched_mc_v2" in args.modes:
+            raise ValueError("harp_gripper_event cannot be evaluated with exact_batched_mc_v2.")
     if not 0.0 < args.ofp_warm_start_time <= 1.0:
         raise ValueError("ofp_warm_start_time must be in (0, 1].")
     if not 0.0 <= args.ofp_interval_condition_strength <= 1.0:

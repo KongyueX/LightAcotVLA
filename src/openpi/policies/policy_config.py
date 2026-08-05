@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 
 from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
+from openpi.models import es_harp_gripper_event as _es_harp_gripper_event
 from openpi.models import harp_temporal_residual as _harp_temporal_residual
 import openpi.models.model as _model
 from openpi.policies import compact_alpha_router as _compact_alpha_router
@@ -98,6 +99,7 @@ def create_trained_policy(
     acot_contextual_compiler_params: pathlib.Path | str | None = None,
     acot_compact_alpha_router_params: pathlib.Path | str | None = None,
     acot_harp_residual_params: pathlib.Path | str | None = None,
+    acot_harp_gripper_event_params: pathlib.Path | str | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -123,6 +125,9 @@ def create_trained_policy(
         acot_harp_residual_params: Optional tiny temporal residual NPZ. Loading
             it is inert; each request must additionally set
             ``action_cot_harp_residual=True``.
+        acot_harp_gripper_event_params: Optional independent ES-HARP gripper
+            event NPZ. Loading it is inert; each request must additionally set
+            ``action_cot_harp_gripper_event=True``.
     """
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
@@ -295,6 +300,25 @@ def create_trained_policy(
             harp_residual.parameter_count,
         )
 
+    harp_gripper_event = None
+    if acot_harp_gripper_event_params is not None:
+        if acot_endpoint_student_params is None:
+            raise ValueError(
+                "ES-HARP was trained on deployed one-step IR endpoints; load "
+                "acot_endpoint_student_params in the same server."
+            )
+        gripper_path = pathlib.Path(
+            download.maybe_download(str(acot_harp_gripper_event_params))
+        )
+        harp_gripper_event = _es_harp_gripper_event.load_gripper_event_sidecar(
+            gripper_path
+        )
+        logging.info(
+            "Loaded inert ES-HARP gripper-event sidecar from %s (%s parameters)",
+            gripper_path,
+            harp_gripper_event.parameter_count,
+        )
+
     data_config = train_config.data.create(train_config.assets_dirs, model_config)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
@@ -326,4 +350,5 @@ def create_trained_policy(
         acot_contextual_compiler=contextual_compiler,
         acot_compact_alpha_router=compact_alpha_router,
         acot_harp_residual=harp_residual,
+        acot_harp_gripper_event=harp_gripper_event,
     )
