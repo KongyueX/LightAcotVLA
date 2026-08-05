@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - supports python -m scripts...
 
 
 LOGGER = logging.getLogger("export_harp_ir_pairs")
-PAIR_SCHEMA_VERSION = 2
+PAIR_SCHEMA_VERSION = 3
 
 
 @dataclasses.dataclass(frozen=True)
@@ -270,6 +270,13 @@ def main(args: Args) -> None:
         handle.attrs["config_name"] = args.config_name
         handle.attrs["seed"] = args.seed
         handle.attrs["final_time_warp_alpha"] = args.final_time_warp_alpha
+        handle.attrs["draft_sampler"] = "sample_actions_profile_direct_one_step_expert"
+        handle.attrs["teacher_sampler"] = "sample_actions_profile_expert"
+        handle.attrs["teacher_num_steps"] = 2
+        handle.attrs["teacher_conditioned_times"] = np.asarray(
+            [1.0 - args.final_time_warp_alpha, 0.5 * (1.0 - args.final_time_warp_alpha)],
+            dtype=np.float32,
+        )
         handle.attrs["ear_normalization_contract"] = (
             "action_normalized = coarse_normalized * scale + bias"
         )
