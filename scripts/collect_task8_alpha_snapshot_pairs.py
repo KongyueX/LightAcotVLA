@@ -391,6 +391,9 @@ def _index_row(path: pathlib.Path, output_dir: pathlib.Path) -> dict[str, Any]:
             ),
             "terminal_success_difference": int(_scalar(data, "terminal_success_difference")),
             "action_rmse": float(_scalar(data, "action_rmse")),
+            "coarse_max_abs_difference": float(
+                _scalar(data, "coarse_max_abs_difference")
+            ),
             "npz_file": str(path.relative_to(output_dir)),
         }
 
@@ -680,6 +683,11 @@ def _summary(
         },
         "mean_action_rmse": (
             float(np.mean([float(row["action_rmse"]) for row in records]))
+            if records
+            else None
+        ),
+        "max_coarse_abs_difference": (
+            float(max(float(row["coarse_max_abs_difference"]) for row in records))
             if records
             else None
         ),
