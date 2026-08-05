@@ -243,7 +243,12 @@ def main(args: Args) -> None:
     prefix_fn = nnx_utils.module_jit(model.sample_actions_profile_prefix)
     implicit_fn = nnx_utils.module_jit(model.sample_actions_profile_implicit)
     coarse_fn = nnx_utils.module_jit(model.sample_actions_profile_coarse)
-    pair_fn = nnx_utils.module_jit(model.sample_actions_profile_harp_pair)
+    direct_fn = nnx_utils.module_jit(
+        model.sample_actions_profile_direct_one_step_expert,
+        # module_jit prepends module state: alpha is argument four.
+        static_argnums=(4,),
+    )
+    expert_fn = nnx_utils.module_jit(model.sample_actions_profile_expert)
 
     started = time.monotonic()
     rng = np.random.default_rng(args.seed)
@@ -257,7 +262,7 @@ def main(args: Args) -> None:
         handle.attrs["schema_version"] = PAIR_SCHEMA_VERSION
         handle.attrs["contract"] = (
             "same transformed observation, prefix, NFE1 EAR, IAR, coarse/action noise; "
-            "deployed direct IR NFE1 versus same-model IR NFE2"
+            "deployed static-direct IR NFE1 versus deployed legacy-loop IR NFE2"
         )
         handle.attrs["endpoint_student_params"] = str(sidecar_path)
         handle.attrs["checkpoint_dir"] = str(pathlib.Path(args.checkpoint_dir))
@@ -311,14 +316,21 @@ def main(args: Args) -> None:
             )["explicit_action_reason"]
             if coarse is None:
                 raise ValueError("The selected ACoT config does not expose an explicit EAR.")
-            pair = pair_fn(
+            direct = direct_fn(
                 prefix_state,
                 coarse,
                 implicit,
-                jnp.asarray(args.final_time_warp_alpha, dtype=jnp.float32),
+                args.final_time_warp_alpha,
             )
-            action_nfe1 = pair["action_nfe1"]
-            action_nfe2 = pair["action_nfe2"]
+            teacher = expert_fn(
+                prefix_state,
+                coarse,
+                implicit,
+                num_steps=2,
+                final_time_warp_alpha=args.final_time_warp_alpha,
+            )
+            action_nfe1 = direct["actions"]
+            action_nfe2 = teacher["actions"]
             state = jnp.asarray(prefix_state["observation"].state, dtype=jnp.float32)
             state, coarse, implicit, action_noise_device, action_nfe1, action_nfe2 = jax.device_get(
                 (state, coarse, implicit, action_noise, action_nfe1, action_nfe2)
@@ -391,9 +403,11 @@ def main(args: Args) -> None:
         "ear_normalization_norm_stats_path": str(norm_stats_path),
         "elapsed_seconds": elapsed,
         "contract": (
-            "exact deployed IR NFE1 and same-model NFE2 share observation, prefix, "
-            "student EAR NFE1, IAR, and stored flow noises"
+            "deployed static-direct IR NFE1 and deployed legacy-loop IR NFE2 share "
+            "observation, prefix, student EAR NFE1, IAR, and stored flow noises"
         ),
+        "draft_sampler": "sample_actions_profile_direct_one_step_expert",
+        "teacher_sampler": "sample_actions_profile_expert(num_steps=2)",
         "gripper_policy": "exported for audit; HARP serving never modifies gripper",
     }
     (target.parent / "export_summary.json").write_text(
