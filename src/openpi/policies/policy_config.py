@@ -9,6 +9,7 @@ import flax.traverse_util as traverse_util
 import jax
 import jax.numpy as jnp
 
+from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
 import openpi.models.model as _model
 import openpi.policies.policy as _policy
 import openpi.shared.download as download
@@ -91,6 +92,7 @@ def create_trained_policy(
     norm_stats: dict[str, transforms.NormStats] | None = None,
     execution_horizon_predictor_params: pathlib.Path | str | None = None,
     acot_endpoint_student_params: pathlib.Path | str | None = None,
+    acot_contextual_compiler_params: pathlib.Path | str | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -107,6 +109,10 @@ def create_trained_policy(
         acot_endpoint_student_params: Optional delta sidecar containing the
             one-step EAR/final endpoint student. When present, inference
             defaults to one EAR step and one final-action step.
+        acot_contextual_compiler_params: Optional independent contextual
+            compiler sidecar. A directory is resolved to ``model_params.npz``.
+            When present, the sequential Action-CoT path bypasses the final
+            300M action expert and uses this compiler instead.
     """
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
@@ -190,6 +196,20 @@ def create_trained_policy(
         logging.info("Loaded one-step ACoT endpoint student sidecar from %s", sidecar_path)
     model = model_config.load(base_params)
 
+    contextual_compiler = None
+    if acot_contextual_compiler_params is not None:
+        if not hasattr(model_config, "adopt_explicit_action_reasoner"):
+            raise ValueError("Contextual compiler sidecars are only supported by ACOTConfig.")
+        compiler_path = pathlib.Path(
+            download.maybe_download(str(acot_contextual_compiler_params))
+        )
+        if compiler_path.is_dir():
+            compiler_path = compiler_path / "model_params.npz"
+        contextual_compiler = _contextual_plan_compiler.load_contextual_plan_compiler(
+            compiler_path
+        )
+        logging.info("Loaded contextual Action-CoT compiler sidecar from %s", compiler_path)
+
     data_config = train_config.data.create(train_config.assets_dirs, model_config)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
@@ -218,4 +238,5 @@ def create_trained_policy(
         norm_stats=norm_stats,
         use_quantile_norm=data_config.use_quantile_norm,
         action_dim=model_config.action_dim,
+        acot_contextual_compiler=contextual_compiler,
     )

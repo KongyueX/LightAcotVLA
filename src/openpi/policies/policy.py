@@ -13,6 +13,7 @@ from openpi_client import base_policy as _base_policy
 from typing_extensions import override
 
 from openpi import transforms as _transforms
+from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
@@ -41,6 +42,7 @@ class Policy(BasePolicy):
         norm_stats: dict[str, _transforms.NormStats] | None = None,
         use_quantile_norm: bool = False,
         action_dim: int | None = None,
+        acot_contextual_compiler: _contextual_plan_compiler.ContextualPlanCompiler | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
         self._input_transform = _transforms.compose(transforms)
@@ -51,6 +53,7 @@ class Policy(BasePolicy):
         self._norm_stats = norm_stats
         self._use_quantile_norm = use_quantile_norm
         self._action_dim = action_dim or model.action_dim
+        self._acot_contextual_compiler = acot_contextual_compiler
         self._sample_actions_profile_prefix = None
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
@@ -77,6 +80,10 @@ class Policy(BasePolicy):
             self._sample_actions_profile_implicit = nnx_utils.module_jit(model.sample_actions_profile_implicit)
             self._sample_actions_profile_coarse = nnx_utils.module_jit(model.sample_actions_profile_coarse)
             self._sample_actions_profile_expert = nnx_utils.module_jit(model.sample_actions_profile_expert)
+        if self._acot_contextual_compiler is not None and not self._can_profile_sample_actions():
+            raise ValueError(
+                "A contextual Action-CoT compiler requires the model's sequential profile entrypoints."
+            )
 
     @override
     def infer(self, obs: dict) -> dict:  # type: ignore[misc]
@@ -185,6 +192,10 @@ class Policy(BasePolicy):
         detailed_timing = {}
         if joint_coupled_sampler and batched_mc_samples:
             raise ValueError("joint_coupled_sampler cannot be combined with batched_mc_samples.")
+        if self._acot_contextual_compiler is not None and batched_mc_samples:
+            raise ValueError("A contextual Action-CoT compiler cannot be combined with batched MC sampling.")
+        if self._acot_contextual_compiler is not None and joint_coupled_sampler:
+            raise ValueError("A contextual Action-CoT compiler cannot be combined with joint coupled sampling.")
         if joint_coupled_sampler and export_acot_cache:
             raise ValueError("joint_coupled_sampler does not yet support export_acot_cache.")
         if batched_mc_samples:
@@ -227,7 +238,11 @@ class Policy(BasePolicy):
             if profile_policy_timing:
                 _block_until_ready(result)
                 detailed_timing["coupled_action_cot_ms"] = (time.monotonic() - stage_start) * 1000
-        elif (profile_policy_timing or export_acot_cache) and self._can_profile_sample_actions():
+        elif (
+            self._acot_contextual_compiler is not None
+            or profile_policy_timing
+            or export_acot_cache
+        ) and self._can_profile_sample_actions():
             result, detailed_timing = self._profile_sample_actions(
                 sample_rng,
                 observation,
@@ -302,6 +317,7 @@ class Policy(BasePolicy):
                     "implicit_action_reasoner_ms",
                     "coarse_action_expert_ms",
                     "action_expert_ms",
+                    "contextual_compiler_ms",
                     "coupled_action_cot_ms",
                     "batched_mc_teacher_ms",
                     "execution_horizon_predictor_ms",
@@ -397,16 +413,43 @@ class Policy(BasePolicy):
         timing["coarse_action_expert_ms"] = (time.monotonic() - stage_start) * 1000
 
         stage_start = time.monotonic()
-        expert_outputs = self._sample_actions_profile_expert(
-            prefix_state,
-            coarse_outputs["explicit_action_reason"],
-            implicit_outputs["implicit_action_reason"],
-            num_steps=sample_kwargs.get("num_steps", 10),
-        )
-        _block_until_ready(expert_outputs)
-        timing["action_expert_ms"] = (time.monotonic() - stage_start) * 1000
-
-        result = dict(expert_outputs)
+        prefix_feature = None
+        if self._acot_contextual_compiler is None:
+            expert_outputs = self._sample_actions_profile_expert(
+                prefix_state,
+                coarse_outputs["explicit_action_reason"],
+                implicit_outputs["implicit_action_reason"],
+                num_steps=sample_kwargs.get("num_steps", 10),
+            )
+            _block_until_ready(expert_outputs)
+            timing["action_expert_ms"] = (time.monotonic() - stage_start) * 1000
+            result = dict(expert_outputs)
+        else:
+            explicit_action_reason = coarse_outputs.get("explicit_action_reason")
+            implicit_action_reason = implicit_outputs.get("implicit_action_reason")
+            expert_action_noise = prefix_state.get("expert_action_noise")
+            if explicit_action_reason is None:
+                raise ValueError("Contextual compiler inference requires an explicit Action-CoT trajectory.")
+            if implicit_action_reason is None:
+                raise ValueError("Contextual compiler inference requires IAR tokens.")
+            if expert_action_noise is None:
+                raise ValueError("Contextual compiler inference requires final-action flow noise.")
+            prefix_mask = prefix_state["prefix_mask"].astype(prefix_state["prefix_out"].dtype)
+            prefix_feature = jnp.asarray(
+                jnp.sum(prefix_state["prefix_out"] * prefix_mask[..., None], axis=1)
+                / jnp.maximum(jnp.sum(prefix_mask, axis=1, keepdims=True), 1.0),
+                dtype=jnp.float32,
+            )
+            compiled_actions = self._acot_contextual_compiler.predict_batch(
+                explicit_action_reason,
+                expert_action_noise,
+                prefix_feature,
+                implicit_action_reason,
+                observation.state,
+            )
+            _block_until_ready(compiled_actions)
+            timing["contextual_compiler_ms"] = (time.monotonic() - stage_start) * 1000
+            result = {"actions": compiled_actions}
         if coarse_outputs.get("explicit_action_reason") is not None:
             result["coarse_actions"] = coarse_outputs["explicit_action_reason"]
             result["action_cot_denoising_steps"] = coarse_outputs["action_cot_denoising_steps"]
@@ -424,12 +467,14 @@ class Policy(BasePolicy):
             # This pooled prefix is derived from the same current-observation
             # VLM pass that deployment already executes.  It is exposed only
             # for opt-in teacher export and contains no future/outcome data.
-            prefix_mask = prefix_state["prefix_mask"].astype(prefix_state["prefix_out"].dtype)
-            result["acot_prefix_feature"] = jnp.asarray(
-                jnp.sum(prefix_state["prefix_out"] * prefix_mask[..., None], axis=1)
-                / jnp.maximum(jnp.sum(prefix_mask, axis=1, keepdims=True), 1.0),
-                dtype=jnp.float32,
-            )
+            if prefix_feature is None:
+                prefix_mask = prefix_state["prefix_mask"].astype(prefix_state["prefix_out"].dtype)
+                prefix_feature = jnp.asarray(
+                    jnp.sum(prefix_state["prefix_out"] * prefix_mask[..., None], axis=1)
+                    / jnp.maximum(jnp.sum(prefix_mask, axis=1, keepdims=True), 1.0),
+                    dtype=jnp.float32,
+                )
+            result["acot_prefix_feature"] = prefix_feature
         return result, timing
 
     def post_process(self, obs: dict, outputs: dict) -> dict:

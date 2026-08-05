@@ -53,6 +53,7 @@ PROFILE_TIMING_FIELDS = (
     "implicit_action_reasoner_ms",
     "coarse_action_expert_ms",
     "action_expert_ms",
+    "contextual_compiler_ms",
     "profile_overhead_ms",
 )
 
