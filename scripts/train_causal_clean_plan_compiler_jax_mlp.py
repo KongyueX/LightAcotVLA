@@ -974,6 +974,10 @@ def main(args: ProbeArgs) -> None:
     started = time.monotonic()
     metrics_mode = "w" if args.overwrite else "a"
     last_record: dict[str, Any] = {}
+    best_record: dict[str, Any] = {}
+    best_params: ArrayTree | None = None
+    best_score: tuple[float, float] | None = None
+    best_step = 0
     with metrics_path.open(metrics_mode, encoding="utf-8") as metrics_file:
         for step in range(1, args.steps + 1):
             rows = rng.choice(
@@ -1018,28 +1022,45 @@ def main(args: ProbeArgs) -> None:
             train_values = jax.device_get(train_metrics)
             validation_values = jax.device_get(validation_metrics)
             learning_rate = float(learning_rate_schedule(jnp.asarray(step - 1)))
+            candidate_score = (
+                float(validation_values["response_mse_active7"]),
+                float(validation_values["clean_action_mse_active7"]),
+            )
+            selected_as_best = best_score is None or candidate_score < best_score
             last_record = {
                 "phase": "train",
                 "step": step,
                 "elapsed_seconds": time.monotonic() - started,
                 "learning_rate": learning_rate,
+                "selected_as_best_checkpoint": selected_as_best,
                 **{f"train/{name}": float(value) for name, value in train_values.items()},
                 **{
                     f"validation_sample/{name}": float(value)
                     for name, value in validation_values.items()
                 },
             }
+            if selected_as_best:
+                # JAX arrays are immutable and this training step does not donate
+                # parameter buffers, so retaining this pytree preserves the exact
+                # device-resident checkpoint without a CPU round trip.
+                best_params = params
+                best_score = candidate_score
+                best_step = step
+                best_record = dict(last_record)
             metrics_file.write(json.dumps(last_record, sort_keys=True) + "\n")
             metrics_file.flush()
             print(
                 f"step={step} train_total={last_record['train/total_loss']:.6f} "
                 f"val_clean7={last_record['validation_sample/clean_action_mse_active7']:.6f} "
-                f"val_response7={last_record['validation_sample/response_mse_active7']:.6f}",
+                f"val_response7={last_record['validation_sample/response_mse_active7']:.6f} "
+                f"best={selected_as_best}",
                 flush=True,
             )
 
+        if best_params is None:
+            raise RuntimeError("Training completed without selecting a validation checkpoint.")
         full_metrics, evaluation_arrays = _full_evaluation(
-            params,
+            best_params,
             arrays,
             validation_indices,
             active_action_dim=args.active_action_dim,
@@ -1048,7 +1069,7 @@ def main(args: ProbeArgs) -> None:
             device=device,
         )
         latency_metrics = _latency_metrics(
-            params,
+            best_params,
             arrays,
             validation_indices,
             active_action_dim=args.active_action_dim,
@@ -1060,6 +1081,7 @@ def main(args: ProbeArgs) -> None:
         final_record = {
             "phase": "full_validation",
             "step": args.steps,
+            "evaluated_checkpoint_step": best_step,
             "elapsed_seconds": time.monotonic() - started,
             **full_metrics,
         }
@@ -1067,10 +1089,12 @@ def main(args: ProbeArgs) -> None:
         metrics_file.flush()
 
     checkpoint_values = {
-        **_tree_to_npz(jax.device_get(params)),
+        **_tree_to_npz(jax.device_get(best_params)),
         "train_indices": train_indices,
         "validation_indices": validation_indices,
         "completed_steps": np.asarray(args.steps, dtype=np.int32),
+        "best_step": np.asarray(best_step, dtype=np.int32),
+        "last_step": np.asarray(args.steps, dtype=np.int32),
         "active_action_dim": np.asarray(args.active_action_dim, dtype=np.int32),
         "plan_horizon": np.asarray(plan_horizon, dtype=np.int32),
         "action_horizon": np.asarray(action_horizon, dtype=np.int32),
@@ -1131,8 +1155,29 @@ def main(args: ProbeArgs) -> None:
         "train_task_counts": _task_counts(arrays, train_indices),
         "validation_task_counts": _task_counts(arrays, validation_indices),
         "completed_steps": args.steps,
+        "checkpoint_selection": {
+            "primary_metric": "validation_sample/response_mse_active7",
+            "tie_break_metric": "validation_sample/clean_action_mse_active7",
+            "mode": "min",
+            "best_step": best_step,
+            "last_step": args.steps,
+            "best_validation_sample_metrics": {
+                name.removeprefix("validation_sample/"): value
+                for name, value in best_record.items()
+                if name.startswith("validation_sample/")
+            },
+            "last_validation_sample_metrics": {
+                name.removeprefix("validation_sample/"): value
+                for name, value in last_record.items()
+                if name.startswith("validation_sample/")
+            },
+        },
+        "best_step": best_step,
+        "last_step": args.steps,
+        "best_training_record": best_record,
         "last_training_record": last_record,
         "full_validation_metrics": full_metrics,
+        "full_validation_checkpoint_step": best_step,
         "device": {
             "platform": device.platform,
             "kind": device.device_kind,
