@@ -25,7 +25,7 @@ import optax
 
 try:
     from scripts import train_causal_clean_plan_compiler_jax as protocol
-except ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     import train_causal_clean_plan_compiler_jax as protocol
 
 from openpi.action_cot import endpoint_dataset
