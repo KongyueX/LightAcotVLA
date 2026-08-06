@@ -4,10 +4,12 @@ The frozen base+IR policy supplies an immutable anchor prefix and a privileged
 current top-8 visual representation.  ``block16`` evidence pools each selected
 4x4 block into one absolute-current token and one current-minus-anchor token;
 ``selected128`` instead preserves all 128 current pre-Gemma visual tokens in
-selector rank order.  Two independent ReZero cross-attention adapters inject
-the selected evidence into the action suffix *before* the frozen 18-layer EAR
-and final experts.  The original coarse/final output projections stay frozen,
-and there is no action residual head.
+selector rank order.  ``selected128_pair`` preserves the same tokens and
+concatenates each current token with its current-minus-anchor delta.  Two
+independent ReZero cross-attention adapters inject the selected evidence into
+the action suffix *before* the frozen 18-layer EAR and final experts.  The
+original coarse/final output projections stay frozen, and there is no action
+residual head.
 
 Training is deliberately staged.  Stage 1 learns only the exact top-8
 direct-splice EAR response.  Stage 2 freezes Stage 1 and learns only the final
@@ -67,6 +69,7 @@ TOP_K = 8
 EVIDENCE_TOKENS_BY_MODE = {
     "block16": TOP_K * 2,
     "selected128": TOP_K * mrr_block_selector.TOKENS_PER_BLOCK,
+    "selected128_pair": TOP_K * mrr_block_selector.TOKENS_PER_BLOCK,
 }
 
 
@@ -251,6 +254,21 @@ def _top8_evidence(
             fresh_visual.shape[0],
             EVIDENCE_TOKENS_BY_MODE[mode],
             fresh_visual.shape[-1],
+        ).astype(fresh_visual.dtype)
+
+    if mode == "selected128_pair":
+        anchor_blocks = jax.vmap(gather)(anchor_visual, token_indices)
+        paired_blocks = jnp.concatenate(
+            [
+                fresh_blocks.astype(jnp.float32),
+                fresh_blocks.astype(jnp.float32) - anchor_blocks.astype(jnp.float32),
+            ],
+            axis=-1,
+        )
+        return paired_blocks.reshape(
+            fresh_visual.shape[0],
+            EVIDENCE_TOKENS_BY_MODE[mode],
+            fresh_visual.shape[-1] * 2,
         ).astype(fresh_visual.dtype)
 
     if mode != "block16":
@@ -1052,7 +1070,9 @@ def main(args: Args) -> None:
     base_model = nnx.merge(base_graphdef, base_state)
     query_dim = int(base_model.action_in_proj.out_features)
     coarse_query_dim = int(base_model.coarse_action_in_proj.out_features)
-    evidence_dim = int(mrr_block_selector.TOKEN_EMBEDDING_DIM)
+    evidence_dim = int(mrr_block_selector.TOKEN_EMBEDDING_DIM) * (
+        2 if args.evidence_mode == "selected128_pair" else 1
+    )
     evidence_tokens = EVIDENCE_TOKENS_BY_MODE[args.evidence_mode]
     if query_dim != coarse_query_dim:
         raise ValueError(f"EAR/final suffix widths differ: {coarse_query_dim} vs {query_dim}.")
@@ -1330,7 +1350,14 @@ def main(args: Args) -> None:
             "token_contract": (
                 "one absolute-current mean plus one current-minus-anchor mean per block"
                 if args.evidence_mode == "block16"
-                else "all current pre-Gemma visual tokens, grouped in selector top-8 rank order"
+                else (
+                    "all current pre-Gemma visual tokens, grouped in selector top-8 rank order"
+                    if args.evidence_mode == "selected128"
+                    else (
+                        "per-token concat(current, current-minus-anchor) for all selected tokens, "
+                        "grouped in selector top-8 rank order"
+                    )
+                )
             ),
             "privileged_encoder": "full current SigLIP/pre-Gemma visual representation",
         },
