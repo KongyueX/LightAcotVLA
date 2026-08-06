@@ -1,10 +1,11 @@
 """Train the minimal pre-LLM DCE dual-path adapter oracle on Task8.
 
 The frozen base+IR policy supplies an immutable anchor prefix and a privileged
-current top-8 visual representation.  Each selected 4x4 visual block is pooled
-into one absolute-current token and one current-minus-anchor token, yielding
-exactly 16 evidence tokens.  Two independent ReZero cross-attention adapters
-inject those tokens into the action suffix *before* the frozen 18-layer EAR
+current top-8 visual representation.  ``block16`` evidence pools each selected
+4x4 block into one absolute-current token and one current-minus-anchor token;
+``selected128`` instead preserves all 128 current pre-Gemma visual tokens in
+selector rank order.  Two independent ReZero cross-attention adapters inject
+the selected evidence into the action suffix *before* the frozen 18-layer EAR
 and final experts.  The original coarse/final output projections stay frozen,
 and there is no action residual head.
 
@@ -63,7 +64,10 @@ METHOD_NAMES = (
 )
 CONTINUOUS_ACTION_DIM = 6
 TOP_K = 8
-EVIDENCE_TOKENS = 16
+EVIDENCE_TOKENS_BY_MODE = {
+    "block16": TOP_K * 2,
+    "selected128": TOP_K * mrr_block_selector.TOKENS_PER_BLOCK,
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -93,6 +97,7 @@ class Args:
     log_interval: int = 25
     attention_dim: int = 128
     attention_heads: int = 4
+    evidence_mode: str = "block16"
     ear_response_loss_weight: float = 1.0
     ear_zero_loss_weight: float = 1.0
     ear_ranking_loss_weight: float = 1.0
@@ -129,6 +134,11 @@ def _validate_args(args: Args) -> None:
         raise ValueError("Attention dimensions must be positive.")
     if args.attention_dim % args.attention_heads:
         raise ValueError("attention_dim must be divisible by attention_heads.")
+    if args.evidence_mode not in EVIDENCE_TOKENS_BY_MODE:
+        raise ValueError(
+            f"evidence_mode must be one of {tuple(EVIDENCE_TOKENS_BY_MODE)}, "
+            f"got {args.evidence_mode!r}."
+        )
     if not 0.0 < args.validation_fraction < 0.5 or not 0.0 < args.test_fraction < 0.5:
         raise ValueError("Validation/test fractions must lie in (0, 0.5).")
     if args.validation_fraction + args.test_fraction >= 0.5:
@@ -219,12 +229,14 @@ def _repeat_stale_prefix(
     )
 
 
-def _pool_top8_evidence(
+def _top8_evidence(
     anchor_prefix: dict[str, Any],
     fresh_prefix: dict[str, Any],
     selected_ids: jax.Array,
+    *,
+    mode: str,
 ) -> jax.Array:
-    """Pool each selected block into [absolute-current, current-anchor]."""
+    """Build evidence in selector top-k order under the requested token contract."""
 
     anchor_visual = anchor_prefix["prefix_tokens"][:, : mrr_oracle.VISUAL_TOKENS]
     fresh_visual = fresh_prefix["prefix_tokens"][:, : mrr_oracle.VISUAL_TOKENS]
@@ -233,8 +245,17 @@ def _pool_top8_evidence(
     def gather(tokens: jax.Array, indices: jax.Array) -> jax.Array:
         return tokens[indices]
 
-    anchor_blocks = jax.vmap(gather)(anchor_visual, token_indices)
     fresh_blocks = jax.vmap(gather)(fresh_visual, token_indices)
+    if mode == "selected128":
+        return fresh_blocks.reshape(
+            fresh_visual.shape[0],
+            EVIDENCE_TOKENS_BY_MODE[mode],
+            fresh_visual.shape[-1],
+        ).astype(fresh_visual.dtype)
+
+    if mode != "block16":
+        raise ValueError(f"Unsupported evidence mode {mode!r}.")
+    anchor_blocks = jax.vmap(gather)(anchor_visual, token_indices)
     current_token = jnp.mean(fresh_blocks.astype(jnp.float32), axis=2)
     delta_token = jnp.mean(
         fresh_blocks.astype(jnp.float32) - anchor_blocks.astype(jnp.float32),
@@ -242,7 +263,7 @@ def _pool_top8_evidence(
     )
     evidence = jnp.stack([current_token, delta_token], axis=2).reshape(
         fresh_visual.shape[0],
-        EVIDENCE_TOKENS,
+        EVIDENCE_TOKENS_BY_MODE[mode],
         fresh_visual.shape[-1],
     )
     return evidence.astype(fresh_visual.dtype)
@@ -295,7 +316,12 @@ def _pair_context(
         "stale_prefix": _repeat_stale_prefix(anchor_prefix, fresh_prefix, 1),
         "causal_prefix": causal_prefix,
         "comparison": comparison,
-        "evidence": _pool_top8_evidence(anchor_prefix, fresh_prefix, selected_ids),
+        "evidence": _top8_evidence(
+            anchor_prefix,
+            fresh_prefix,
+            selected_ids,
+            mode=args.evidence_mode,
+        ),
         "selected_ids": selected_ids[0],
         "block_logits": block_logits[0],
     }
@@ -590,12 +616,19 @@ def _make_steps(
         params: nnx.State,
         batch: dict[str, Any],
         rng: jax.Array,
+        mismatched_evidence: jax.Array,
     ) -> dict[str, jax.Array]:
         base_model = nnx.merge(base_graphdef, base_state)
         scorer = nnx.merge(selector_runtime.scorer_graphdef, scorer_state)
         context = _pair_context(base_model, scorer, selector_runtime, batch, rng, args)
         adapter = nnx.merge(ear_graphdef, params)
-        loss, metrics = _ear_loss(base_model, adapter, context, args)
+        loss, metrics = _ear_loss(
+            base_model,
+            adapter,
+            context,
+            args,
+            mismatched_evidence=mismatched_evidence,
+        )
         return {**metrics, "loss": loss}
 
     @jax.jit
@@ -642,13 +675,21 @@ def _make_steps(
         final_params: nnx.State,
         batch: dict[str, Any],
         rng: jax.Array,
+        mismatched_evidence: jax.Array,
     ) -> dict[str, jax.Array]:
         base_model = nnx.merge(base_graphdef, base_state)
         scorer = nnx.merge(selector_runtime.scorer_graphdef, scorer_state)
         context = _pair_context(base_model, scorer, selector_runtime, batch, rng, args)
         ear_adapter = nnx.merge(ear_graphdef, ear_params)
         final_adapter = nnx.merge(final_graphdef, final_params)
-        loss, metrics = _final_loss(base_model, ear_adapter, final_adapter, context, args)
+        loss, metrics = _final_loss(
+            base_model,
+            ear_adapter,
+            final_adapter,
+            context,
+            args,
+            mismatched_evidence=mismatched_evidence,
+        )
         return {**metrics, "loss": loss}
 
     return ear_train_step, ear_eval_step, final_train_step, final_eval_step
@@ -920,13 +961,21 @@ def _validation_metrics(
     arguments: tuple[Any, ...],
     *,
     seed: int,
+    mismatch_map: dict[int, int],
+    evidence_by_index: dict[int, np.ndarray],
 ) -> dict[str, float]:
     values: list[dict[str, float]] = []
     for record_index in indices:
         batch = p3t_trainer._batch(records, np.asarray([record_index], dtype=np.int64))  # noqa: SLF001
         anchor = int(pairs.anchor_indices[record_index])
+        mismatch_index = mismatch_map[int(record_index)]
         output = jax.device_get(
-            evaluator(*arguments, batch, jax.random.fold_in(jax.random.key(seed), anchor))
+            evaluator(
+                *arguments,
+                batch,
+                jax.random.fold_in(jax.random.key(seed), anchor),
+                jnp.asarray(evidence_by_index[mismatch_index]),
+            )
         )
         values.append({name: float(value) for name, value in output.items()})
     return _metric_mean(values)
@@ -1004,12 +1053,13 @@ def main(args: Args) -> None:
     query_dim = int(base_model.action_in_proj.out_features)
     coarse_query_dim = int(base_model.coarse_action_in_proj.out_features)
     evidence_dim = int(mrr_block_selector.TOKEN_EMBEDDING_DIM)
+    evidence_tokens = EVIDENCE_TOKENS_BY_MODE[args.evidence_mode]
     if query_dim != coarse_query_dim:
         raise ValueError(f"EAR/final suffix widths differ: {coarse_query_dim} vs {query_dim}.")
     adapter_config = dce_evidence_adapter.DCEEvidenceAdapterConfig(
         query_dim=query_dim,
         evidence_dim=evidence_dim,
-        evidence_tokens=EVIDENCE_TOKENS,
+        evidence_tokens=evidence_tokens,
         attention_dim=args.attention_dim,
         num_heads=args.attention_heads,
     )
@@ -1047,6 +1097,7 @@ def main(args: Args) -> None:
 
     evidence_exporter = _make_evidence_exporter(base_graphdef, selector_runtime, args)
     mismatch_map = _deterministic_mismatch_map(train_indices, pairs)
+    validation_mismatch_map = _deterministic_mismatch_map(validation_indices, pairs)
     train_evidence: dict[int, np.ndarray] = {}
     for position, record_index_value in enumerate(train_indices):
         record_index = int(record_index_value)
@@ -1063,6 +1114,21 @@ def main(args: Args) -> None:
         train_evidence[record_index] = np.asarray(output["evidence"], dtype=np.float32)
         if position == 0 or (position + 1) % 20 == 0 or position + 1 == train_indices.size:
             LOGGER.info("Exported train mismatch evidence %d/%d", position + 1, train_indices.size)
+
+    validation_evidence: dict[int, np.ndarray] = {}
+    for record_index_value in validation_indices:
+        record_index = int(record_index_value)
+        anchor = int(pairs.anchor_indices[record_index])
+        batch = p3t_trainer._batch(records, np.asarray([record_index], dtype=np.int64))  # noqa: SLF001
+        output = jax.device_get(
+            evidence_exporter(
+                base_state,
+                selector_runtime.scorer_state,
+                batch,
+                jax.random.fold_in(jax.random.key(args.seed), anchor),
+            )
+        )
+        validation_evidence[record_index] = np.asarray(output["evidence"], dtype=np.float32)
 
     sampling_rng = np.random.default_rng(args.seed)
     mode = "w" if args.overwrite else "a"
@@ -1102,6 +1168,8 @@ def main(args: Args) -> None:
             records,
             (base_state, selector_runtime.scorer_state, ear_params),
             seed=args.seed,
+            mismatch_map=validation_mismatch_map,
+            evidence_by_index=validation_evidence,
         )
         metrics_file.write(
             json.dumps(
@@ -1149,6 +1217,8 @@ def main(args: Args) -> None:
             records,
             (base_state, selector_runtime.scorer_state, ear_params, final_params),
             seed=args.seed,
+            mismatch_map=validation_mismatch_map,
+            evidence_by_index=validation_evidence,
         )
         metrics_file.write(
             json.dumps(
@@ -1252,11 +1322,16 @@ def main(args: Args) -> None:
             "test_episodes": sorted(int(value) for value in np.unique(pairs.episode_ids[test_indices])),
         },
         "evidence": {
+            "mode": args.evidence_mode,
             "selector": "learned MRR logits",
             "top_k_blocks": TOP_K,
             "source_visual_tokens": TOP_K * mrr_oracle.TOKENS_PER_BLOCK,
-            "evidence_tokens": EVIDENCE_TOKENS,
-            "token_contract": "one absolute-current mean plus one current-minus-anchor mean per block",
+            "evidence_tokens": evidence_tokens,
+            "token_contract": (
+                "one absolute-current mean plus one current-minus-anchor mean per block"
+                if args.evidence_mode == "block16"
+                else "all current pre-Gemma visual tokens, grouped in selector top-8 rank order"
+            ),
             "privileged_encoder": "full current SigLIP/pre-Gemma visual representation",
         },
         "architecture": {
