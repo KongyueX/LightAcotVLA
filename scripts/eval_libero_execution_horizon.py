@@ -72,6 +72,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--mrr-a264",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Opt in to learned MRR A264 active-prefix replay on period-two fast "
+            "calls. The server must separately load the MRR selector sidecar; "
+            "EAR/final must both use NFE1."
+        ),
+    )
+    parser.add_argument(
         "--final-denoising-steps",
         type=int,
         default=None,
@@ -381,6 +391,8 @@ def _request(
         request["action_cot_p3t_prefix_transport"] = np.asarray(
             True, dtype=np.bool_
         )
+    if args.mrr_a264:
+        request["action_cot_mrr_a264"] = np.asarray(True, dtype=np.bool_)
     if args.final_denoising_steps is not None:
         request["action_cot_final_denoising_steps"] = np.asarray(
             args.final_denoising_steps,
@@ -552,6 +564,71 @@ def _request(
         if not np.isfinite(p3t_risk) or not 0.0 <= p3t_risk <= 1.0:
             raise ValueError("P3T refresh risk must be finite and in [0, 1].")
 
+    mrr_fast = float("nan")
+    mrr_selected_block_ids_json = ""
+    mrr_selected_block_scores_json = ""
+    mrr_current_embed_ms = float(
+        policy_timing.get("mrr_current_embed_ms", np.nan)
+    )
+    mrr_selector_ms = float(policy_timing.get("mrr_selector_ms", np.nan))
+    mrr_active_replay_ms = float(
+        policy_timing.get("mrr_active_replay_ms", np.nan)
+    )
+    if args.mrr_a264:
+        required_outputs = {
+            "mrr_a264_fast",
+            "mrr_selected_block_ids",
+            "mrr_selected_block_scores",
+        }
+        missing_outputs = sorted(required_outputs.difference(result))
+        if missing_outputs:
+            raise KeyError(f"MRR A264 response is missing outputs: {missing_outputs}")
+        mrr_fast = _result_scalar("mrr_a264_fast")
+        if not np.isfinite(mrr_fast) or mrr_fast not in {0.0, 1.0}:
+            raise ValueError("MRR A264 fast-call diagnostic must be binary.")
+        prefix_reused = float(policy_timing.get("vlm_prefix_reused", np.nan))
+        if not np.isfinite(prefix_reused) or prefix_reused not in {0.0, 1.0}:
+            raise ValueError(
+                "MRR A264 requires a binary temporal-prefix reuse diagnostic."
+            )
+        if int(mrr_fast) != int(prefix_reused):
+            raise ValueError(
+                "MRR A264 fast-call and temporal-prefix diagnostics disagree."
+            )
+        block_ids = np.asarray(result["mrr_selected_block_ids"], dtype=np.int32)
+        block_scores = np.asarray(
+            result["mrr_selected_block_scores"], dtype=np.float32
+        )
+        if block_ids.shape != (4,) or block_scores.shape != (4,):
+            raise ValueError(
+                "MRR A264 block IDs/scores must each have shape (4,), got "
+                f"{block_ids.shape}/{block_scores.shape}."
+            )
+        if not np.all(np.isfinite(block_scores)):
+            raise ValueError("MRR A264 selected-block scores must be finite.")
+        if int(mrr_fast):
+            if np.any(block_ids < 0) or np.any(block_ids >= 32):
+                raise ValueError("MRR A264 fast-call block IDs must be in [0, 31].")
+            if len(set(block_ids.tolist())) != 4:
+                raise ValueError("MRR A264 fast-call block IDs must be unique.")
+        elif not np.all(block_ids == -1):
+            raise ValueError("MRR A264 keyframes must return four -1 block-ID sentinels.")
+        for name, value in {
+            "mrr_current_embed_ms": mrr_current_embed_ms,
+            "mrr_selector_ms": mrr_selector_ms,
+            "mrr_active_replay_ms": mrr_active_replay_ms,
+        }.items():
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(
+                    f"{name} must be finite and non-negative for MRR A264."
+                )
+        mrr_selected_block_ids_json = json.dumps(
+            block_ids.tolist(), separators=(",", ":")
+        )
+        mrr_selected_block_scores_json = json.dumps(
+            block_scores.tolist(), separators=(",", ":")
+        )
+
     return result, {
         "wall_ms": wall_ms,
         "policy_ms": float(policy_timing.get("infer_ms", np.nan)),
@@ -571,6 +648,12 @@ def _request(
         "p3t_prefix_transport_risk": p3t_risk,
         "p3t_prefix_transport_risk_valid": p3t_risk_valid,
         "p3t_prefix_transport_fast": p3t_fast,
+        "mrr_a264_fast": mrr_fast,
+        "mrr_selected_block_ids_json": mrr_selected_block_ids_json,
+        "mrr_selected_block_scores_json": mrr_selected_block_scores_json,
+        "mrr_current_embed_ms": mrr_current_embed_ms,
+        "mrr_selector_ms": mrr_selector_ms,
+        "mrr_active_replay_ms": mrr_active_replay_ms,
         "pact_flow_tau_json": pact_tau_json,
         "pact_flow_tau_logits_json": pact_tau_logits_json,
         "pact_flow_tau_mean": pact_tau_mean,
@@ -798,12 +881,12 @@ def _warmup(
         element = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
         for mode in args.modes:
             for repeat in range(args.warmup_requests):
-                # P3T has distinct keyframe and transported graphs. Compile
-                # both before episode timing; the non-monotonic first rollout
-                # step resets this single-client cache.
+                # P3T and MRR A264 each have distinct keyframe and fast-call
+                # graphs. Compile both before episode timing; the non-monotonic
+                # first rollout step resets this single-client cache.
                 warmup_steps = (
                     [absolute_step, absolute_step + 1]
-                    if args.p3t_prefix_transport
+                    if args.p3t_prefix_transport or args.mrr_a264
                     else [absolute_step]
                 )
                 if (
@@ -861,6 +944,8 @@ def _run_episode(
     sampled_chunks = 0
     temporal_prefix_reused_calls = 0
     temporal_prefix_refresh_calls = 0
+    mrr_a264_fast_calls = 0
+    mrr_block_histogram: collections.Counter[int] = collections.Counter()
     step = 0
     success = False
     previous_actions: np.ndarray | None = None
@@ -928,6 +1013,32 @@ def _run_episode(
                     "p3t_prefix_transport_fast": int(
                         timing["p3t_prefix_transport_fast"]
                     ),
+                }
+            mrr_info: dict[str, Any] = {}
+            if args.mrr_a264:
+                mrr_fast = int(timing["mrr_a264_fast"])
+                selected_block_ids = [
+                    int(value)
+                    for value in json.loads(timing["mrr_selected_block_ids_json"])
+                ]
+                selected_block_scores = [
+                    float(value)
+                    for value in json.loads(timing["mrr_selected_block_scores_json"])
+                ]
+                if mrr_fast:
+                    mrr_a264_fast_calls += 1
+                    mrr_block_histogram.update(selected_block_ids)
+                mrr_info = {
+                    "mrr_a264_fast": mrr_fast,
+                    "mrr_selected_block_ids_json": json.dumps(
+                        selected_block_ids, separators=(",", ":")
+                    ),
+                    "mrr_selected_block_scores_json": json.dumps(
+                        selected_block_scores, separators=(",", ":")
+                    ),
+                    "mrr_current_embed_ms": timing["mrr_current_embed_ms"],
+                    "mrr_selector_ms": timing["mrr_selector_ms"],
+                    "mrr_active_replay_ms": timing["mrr_active_replay_ms"],
                 }
             action_chunk = np.asarray(result["actions"], dtype=np.float32)
             horizon, selector_info = _select_horizon(
@@ -1079,6 +1190,7 @@ def _run_episode(
                     "selector_json": json.dumps(selector_info, separators=(",", ":")),
                     **temporal_prefix_info,
                     **p3t_prefix_info,
+                    **mrr_info,
                     **compact_router_info,
                     **selective_gripper_info,
                     **contextual_fusion_info,
@@ -1109,6 +1221,14 @@ def _run_episode(
     def mean_timing(field: str) -> float:
         values = [timing[field] for timing in timings if np.isfinite(timing[field])]
         return float(np.mean(values)) if values else float("nan")
+
+    def mrr_fast_total(field: str) -> float:
+        values = [
+            timing[field]
+            for timing in timings
+            if int(timing["mrr_a264_fast"]) == 1 and np.isfinite(timing[field])
+        ]
+        return float(np.sum(values)) if values else 0.0
 
     histogram = collections.Counter(horizons)
     row = {
@@ -1186,6 +1306,50 @@ def _run_episode(
                 ),
                 "actual_p3t_prefix_transport_total_ms": total(
                     "p3t_prefix_transport_ms"
+                ),
+            }
+        )
+    if args.mrr_a264:
+        block_histogram = {
+            block_id: int(mrr_block_histogram.get(block_id, 0))
+            for block_id in range(32)
+        }
+        selected_blocks = sum(block_histogram.values())
+        block_distribution = {
+            block_id: (
+                count / selected_blocks if selected_blocks else 0.0
+            )
+            for block_id, count in block_histogram.items()
+        }
+        current_embed_total_ms = mrr_fast_total("mrr_current_embed_ms")
+        selector_total_ms = mrr_fast_total("mrr_selector_ms")
+        active_replay_total_ms = mrr_fast_total("mrr_active_replay_ms")
+        row.update(
+            {
+                "mrr_a264_fast_calls": mrr_a264_fast_calls,
+                "mrr_block_histogram_json": json.dumps(
+                    block_histogram, sort_keys=True, separators=(",", ":")
+                ),
+                "mrr_block_distribution_json": json.dumps(
+                    block_distribution, sort_keys=True, separators=(",", ":")
+                ),
+                "actual_mrr_current_embed_total_ms": current_embed_total_ms,
+                "actual_mrr_selector_total_ms": selector_total_ms,
+                "actual_mrr_active_replay_total_ms": active_replay_total_ms,
+                "mrr_current_embed_ms_per_fast_call": (
+                    current_embed_total_ms / mrr_a264_fast_calls
+                    if mrr_a264_fast_calls
+                    else float("nan")
+                ),
+                "mrr_selector_ms_per_fast_call": (
+                    selector_total_ms / mrr_a264_fast_calls
+                    if mrr_a264_fast_calls
+                    else float("nan")
+                ),
+                "mrr_active_replay_ms_per_fast_call": (
+                    active_replay_total_ms / mrr_a264_fast_calls
+                    if mrr_a264_fast_calls
+                    else float("nan")
                 ),
             }
         )
@@ -1473,6 +1637,81 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
                 ),
             }
         )
+    if any("mrr_a264_fast_calls" in row for row in subset):
+        mrr_fast_calls = sum(
+            int(row.get("mrr_a264_fast_calls", 0)) for row in subset
+        )
+        mrr_block_histogram: collections.Counter[int] = collections.Counter()
+        for row in subset:
+            mrr_block_histogram.update(
+                {
+                    int(block_id): int(count)
+                    for block_id, count in json.loads(
+                        row.get("mrr_block_histogram_json", "{}")
+                    ).items()
+                }
+            )
+        full_mrr_histogram = {
+            block_id: int(mrr_block_histogram.get(block_id, 0))
+            for block_id in range(32)
+        }
+        selected_blocks = sum(full_mrr_histogram.values())
+        mrr_block_distribution = {
+            block_id: (
+                count / selected_blocks if selected_blocks else 0.0
+            )
+            for block_id, count in full_mrr_histogram.items()
+        }
+
+        def mrr_total(field: str) -> float:
+            values = [
+                float(row.get(field, float("nan"))) for row in subset
+            ]
+            return float(sum(value for value in values if np.isfinite(value)))
+
+        current_embed_total_ms = mrr_total("actual_mrr_current_embed_total_ms")
+        selector_total_ms = mrr_total("actual_mrr_selector_total_ms")
+        active_replay_total_ms = mrr_total("actual_mrr_active_replay_total_ms")
+        result.update(
+            {
+                "mrr_a264_fast_calls": mrr_fast_calls,
+                "mrr_block_histogram": full_mrr_histogram,
+                "mrr_block_distribution": mrr_block_distribution,
+                "mrr_current_embed_ms_per_episode": mean(
+                    "actual_mrr_current_embed_total_ms"
+                ),
+                "mrr_selector_ms_per_episode": mean(
+                    "actual_mrr_selector_total_ms"
+                ),
+                "mrr_active_replay_ms_per_episode": mean(
+                    "actual_mrr_active_replay_total_ms"
+                ),
+                "mrr_current_embed_ms_per_policy_call": per_call(
+                    "actual_mrr_current_embed_total_ms"
+                ),
+                "mrr_selector_ms_per_policy_call": per_call(
+                    "actual_mrr_selector_total_ms"
+                ),
+                "mrr_active_replay_ms_per_policy_call": per_call(
+                    "actual_mrr_active_replay_total_ms"
+                ),
+                "mrr_current_embed_ms_per_fast_call": (
+                    current_embed_total_ms / mrr_fast_calls
+                    if mrr_fast_calls
+                    else float("nan")
+                ),
+                "mrr_selector_ms_per_fast_call": (
+                    selector_total_ms / mrr_fast_calls
+                    if mrr_fast_calls
+                    else float("nan")
+                ),
+                "mrr_active_replay_ms_per_fast_call": (
+                    active_replay_total_ms / mrr_fast_calls
+                    if mrr_fast_calls
+                    else float("nan")
+                ),
+            }
+        )
     return result
 
 
@@ -1520,6 +1759,7 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "temporal_prefix_refresh_calls",
         "p3t_prefix_transport_fast_calls",
         "p3t_prefix_transport_risk_count",
+        "mrr_a264_fast_calls",
     }
     floats = {
         "avg_h",
@@ -1554,6 +1794,12 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "p3t_prefix_transport_risk_mean",
         "p3t_prefix_transport_risk_max",
         "actual_p3t_prefix_transport_total_ms",
+        "actual_mrr_current_embed_total_ms",
+        "actual_mrr_selector_total_ms",
+        "actual_mrr_active_replay_total_ms",
+        "mrr_current_embed_ms_per_fast_call",
+        "mrr_selector_ms_per_fast_call",
+        "mrr_active_replay_ms_per_fast_call",
     }
     converted = {
         key: int(value) if key in integers else float(value) if key in floats else value for key, value in row.items()
@@ -1628,6 +1874,8 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("action_cot_denoising_steps must be positive.")
     if args.temporal_prefix_reuse_period < 0:
         raise ValueError("temporal_prefix_reuse_period must be non-negative.")
+    if args.mrr_a264 and args.p3t_prefix_transport:
+        raise ValueError("mrr_a264 and p3t_prefix_transport are mutually exclusive.")
     if args.p3t_prefix_transport:
         if args.temporal_prefix_reuse_period != 2:
             raise ValueError(
@@ -1640,6 +1888,31 @@ def main(args: argparse.Namespace) -> None:
         if args.final_token_time_warp_alpha is not None:
             raise ValueError(
                 "p3t_prefix_transport does not support final token-time warp."
+            )
+    if args.mrr_a264:
+        if args.temporal_prefix_reuse_period != 2:
+            raise ValueError(
+                "mrr_a264 requires --temporal-prefix-reuse-period 2."
+            )
+        if args.action_cot_denoising_steps != 1 or args.final_denoising_steps != 1:
+            raise ValueError("mrr_a264 requires explicit EAR/final NFE1.")
+        if (
+            args.final_token_time_warp_alpha is not None
+            or args.final_time_warp_alpha != 0.0
+        ):
+            raise ValueError("mrr_a264 does not support final time warp.")
+        if list(args.modes) != ["fixed_h9"] or args.fixed_horizon != 10:
+            raise ValueError(
+                "MRR A264 evaluation requires --modes fixed_h9 --fixed-horizon 10."
+            )
+        if (
+            args.task_suite_name != "libero_10"
+            or args.task_start != 8
+            or args.max_tasks != 1
+        ):
+            raise ValueError(
+                "MRR A264 is initially restricted to the existing libero_10 Task8 "
+                "protocol: --task-start 8 --max-tasks 1."
             )
     if args.temporal_prefix_reuse_period > 0:
         temporal_conflicts = {
@@ -2032,6 +2305,14 @@ def main(args: argparse.Namespace) -> None:
             flat_item["compact_alpha_router_alpha_distribution"] = json.dumps(
                 flat_item["compact_alpha_router_alpha_distribution"],
                 sort_keys=True,
+            )
+        if "mrr_block_histogram" in flat_item:
+            flat_item["mrr_block_histogram"] = json.dumps(
+                flat_item["mrr_block_histogram"], sort_keys=True
+            )
+        if "mrr_block_distribution" in flat_item:
+            flat_item["mrr_block_distribution"] = json.dumps(
+                flat_item["mrr_block_distribution"], sort_keys=True
             )
         flat_per_task.append(flat_item)
     _write_csv(output_dir / "per_task_summary.csv", flat_per_task)

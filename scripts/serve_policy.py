@@ -45,6 +45,8 @@ class Checkpoint:
     acot_harp_gripper_event_params: str | None = None
     # Optional inert P3T prefix-transport checkpoint; requests opt in separately.
     acot_p3t_prefix_transport_params: str | None = None
+    # Optional inert learned MRR A264 block-selector artifact.
+    acot_mrr_block_selector_params: str | None = None
     # Opt in to the joint coupled Action-CoT prototype sampler.
     joint_coupled_sampler: bool = False
 
@@ -135,6 +137,7 @@ def create_policy(args: Args) -> _policy.Policy:
                 acot_harp_residual_params=args.policy.acot_harp_residual_params,
                 acot_harp_gripper_event_params=args.policy.acot_harp_gripper_event_params,
                 acot_p3t_prefix_transport_params=args.policy.acot_p3t_prefix_transport_params,
+                acot_mrr_block_selector_params=args.policy.acot_mrr_block_selector_params,
                 sample_kwargs={"joint_coupled_sampler": True}
                 if args.policy.joint_coupled_sampler
                 else None,

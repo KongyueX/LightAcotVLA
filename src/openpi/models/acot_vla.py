@@ -29,6 +29,55 @@ logger = logging.getLogger("ACoT_VLA")
 _ADAPTIVE_FINAL_TIME_WARP_CENTER = 0.05
 _ADAPTIVE_FINAL_TIME_WARP_RADIUS = 0.05
 
+_MRR_NUM_LAYERS = 18
+_MRR_PREFIX_TOKENS = 968
+_MRR_VALID_VISUAL_TOKENS = 512
+_MRR_DUMMY_TOKENS = 256
+_MRR_LANGUAGE_TOKENS = 200
+_MRR_NUM_BLOCKS = 32
+_MRR_SELECTED_BLOCKS = 4
+_MRR_TOKENS_PER_BLOCK = 16
+
+
+def _mrr_block_token_indices(block_ids: jax.Array) -> jax.Array:
+    """Map fixed 4x4 blocks in two 16x16 view grids to visual token ids."""
+
+    block_ids = jnp.asarray(block_ids, dtype=jnp.int32)
+    view = block_ids // 16
+    local_block = block_ids % 16
+    block_row = local_block // 4
+    block_col = local_block % 4
+    token_offset = (
+        (jnp.arange(_MRR_TOKENS_PER_BLOCK, dtype=jnp.int32) // 4) * 16
+        + jnp.arange(_MRR_TOKENS_PER_BLOCK, dtype=jnp.int32) % 4
+    )
+    block_start = view * 256 + block_row * 4 * 16 + block_col * 4
+    return (block_start[..., None] + token_offset).reshape((block_ids.shape[0], -1))
+
+
+def _mrr_take_tokens(tokens: jax.Array, indices: jax.Array) -> jax.Array:
+    return jax.vmap(lambda values, ids: values[ids])(tokens, indices)
+
+
+def _mrr_take_cache(cache: jax.Array, indices: jax.Array) -> jax.Array:
+    return jax.vmap(
+        lambda values, ids: values[:, ids, :, :],
+        in_axes=(1, 0),
+        out_axes=1,
+    )(cache, indices)
+
+
+def _mrr_scatter_cache(anchor: jax.Array, updates: jax.Array, indices: jax.Array) -> jax.Array:
+    return jax.vmap(
+        lambda values, fresh, ids: values.at[:, ids, :, :].set(fresh),
+        in_axes=(1, 1, 0),
+        out_axes=1,
+    )(anchor, updates, indices)
+
+
+def _mrr_scatter_tokens(anchor: jax.Array, updates: jax.Array, indices: jax.Array) -> jax.Array:
+    return jax.vmap(lambda values, fresh, ids: values.at[ids].set(fresh))(anchor, updates, indices)
+
 
 class MLP(nnx.Module):
     def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, *, activate: bool = True, rngs: nnx.Rngs, param_dtype=jnp.float32):
@@ -2423,6 +2472,214 @@ class ACOT_VLA(_model.BaseModel):
         if self.execution_horizon_predictor_enabled:
             result["execution_horizon_prefix_feature"] = jnp.asarray(
                 self._pool_prefix(prefix_state["prefix_out"], prefix_state["prefix_mask"]),
+                dtype=jnp.float32,
+            )
+        return result
+
+    def sample_actions_profile_mrr_prepare_current(
+        self,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+    ) -> dict[str, Any]:
+        """Prepare the current two-view SigLIP/language inputs for MRR A264.
+
+        This opt-in entrypoint deliberately skips the invariant masked dummy
+        image encoder.  It returns fixed-shape pre-Gemma tensors so a learned
+        selector can choose four visual blocks before the 18-layer active-query
+        replay.  Ordinary prefix inference continues to use ``embed_prefix``.
+        """
+
+        observation = _model.preprocess_observation(None, observation, train=False)
+        visual_tokens = []
+        visual_masks = []
+        for image_name in _model.IMAGE_KEYS[:2]:
+            image_tokens, _ = self.PaliGemma.img(
+                observation.images[image_name], train=False
+            )
+            if image_tokens.shape[1] != 256:
+                raise ValueError(
+                    f"MRR expected 256 SigLIP tokens for {image_name}, got {image_tokens.shape}."
+                )
+            visual_tokens.append(image_tokens)
+            visual_masks.append(
+                jnp.broadcast_to(
+                    observation.image_masks[image_name][:, None],
+                    image_tokens.shape[:2],
+                )
+            )
+        current_visual_tokens = jnp.concatenate(visual_tokens, axis=1)
+        current_visual_mask = jnp.concatenate(visual_masks, axis=1)
+        if observation.tokenized_prompt is None or observation.tokenized_prompt_mask is None:
+            raise ValueError("MRR A264 requires the fixed language prefix.")
+        current_language_tokens = self.PaliGemma.llm(
+            observation.tokenized_prompt, method="embed"
+        )
+        if current_language_tokens.shape[1] != _MRR_LANGUAGE_TOKENS:
+            raise ValueError(
+                "MRR A264 requires exactly 200 language slots, got "
+                f"{current_language_tokens.shape}."
+            )
+        dummy_mask = jnp.broadcast_to(
+            observation.image_masks[_model.IMAGE_KEYS[2]][:, None],
+            (observation.state.shape[0], _MRR_DUMMY_TOKENS),
+        )
+        prefix_mask = jnp.concatenate(
+            [current_visual_mask, dummy_mask, observation.tokenized_prompt_mask],
+            axis=1,
+        )
+        if prefix_mask.shape[1] != _MRR_PREFIX_TOKENS:
+            raise ValueError(f"MRR expected a 968-slot prefix, got {prefix_mask.shape}.")
+        positions = jnp.cumsum(prefix_mask, axis=1) - 1
+        ref_action_rng, expert_action_rng = jax.random.split(rng, 2)
+        batch_size = observation.state.shape[0]
+        images_64 = jnp.stack(
+            [observation.images[name] for name in _model.IMAGE_KEYS[:2]],
+            axis=1,
+        )
+        images_64 = jax.image.resize(
+            images_64,
+            (batch_size, 2, 64, 64, 3),
+            method=jax.image.ResizeMethod.LINEAR,
+        )
+        return {
+            "observation": observation,
+            "visual_tokens": current_visual_tokens,
+            "language_tokens": current_language_tokens,
+            "prefix_mask": prefix_mask,
+            "positions": positions,
+            "images_64": jnp.asarray(images_64, dtype=jnp.float32),
+            "ref_action_noise": jax.random.normal(
+                ref_action_rng,
+                (batch_size, self.coarse_action_horizon, self.action_dim),
+            ),
+            "expert_action_noise": jax.random.normal(
+                expert_action_rng,
+                (batch_size, self.action_horizon, self.action_dim),
+            ),
+        }
+
+    def sample_actions_profile_mrr_replay(
+        self,
+        anchor_prefix_state: dict[str, Any],
+        current: dict[str, Any],
+        selected_block_ids: jax.Array,
+    ) -> dict[str, Any]:
+        """Replay all Gemma layers on 64 selected visual plus 200 language queries."""
+
+        selected_block_ids = jnp.asarray(selected_block_ids, dtype=jnp.int32)
+        batch_size = current["observation"].state.shape[0]
+        if selected_block_ids.shape != (batch_size, _MRR_SELECTED_BLOCKS):
+            raise ValueError(
+                "MRR selected blocks must have shape "
+                f"[B,{_MRR_SELECTED_BLOCKS}], got {selected_block_ids.shape}."
+            )
+        anchor_cache_k, anchor_cache_v = anchor_prefix_state["kv_cache"]
+        if anchor_cache_k.shape[:3] != (
+            _MRR_NUM_LAYERS,
+            batch_size,
+            _MRR_PREFIX_TOKENS,
+        ):
+            raise ValueError(f"MRR received an incompatible anchor K cache {anchor_cache_k.shape}.")
+        if anchor_cache_v.shape != anchor_cache_k.shape:
+            raise ValueError(
+                f"MRR anchor K/V shapes differ: {anchor_cache_k.shape} vs {anchor_cache_v.shape}."
+            )
+
+        selected_visual_indices = _mrr_block_token_indices(selected_block_ids)
+        if selected_visual_indices.shape[1] != 64:
+            raise AssertionError("Four MRR blocks must expand to exactly 64 visual queries.")
+
+        selected_block_mask = jnp.zeros(
+            (batch_size, _MRR_NUM_BLOCKS), dtype=jnp.bool_
+        ).at[jnp.arange(batch_size)[:, None], selected_block_ids].set(True)
+        _, inactive_block_ids = jax.lax.top_k(
+            (~selected_block_mask).astype(jnp.int32),
+            _MRR_NUM_BLOCKS - _MRR_SELECTED_BLOCKS,
+        )
+        inactive_visual_indices = _mrr_block_token_indices(inactive_block_ids)
+        language_indices = jnp.broadcast_to(
+            jnp.arange(
+                _MRR_VALID_VISUAL_TOKENS + _MRR_DUMMY_TOKENS,
+                _MRR_PREFIX_TOKENS,
+                dtype=jnp.int32,
+            )[None, :],
+            (batch_size, _MRR_LANGUAGE_TOKENS),
+        )
+        dummy_indices = jnp.broadcast_to(
+            jnp.arange(
+                _MRR_VALID_VISUAL_TOKENS,
+                _MRR_VALID_VISUAL_TOKENS + _MRR_DUMMY_TOKENS,
+                dtype=jnp.int32,
+            )[None, :],
+            (batch_size, _MRR_DUMMY_TOKENS),
+        )
+        active_indices = jnp.concatenate(
+            [selected_visual_indices, language_indices], axis=1
+        )
+        inactive_indices = jnp.concatenate(
+            [inactive_visual_indices, dummy_indices], axis=1
+        )
+        if active_indices.shape[1] != 264 or inactive_indices.shape[1] != 704:
+            raise AssertionError("MRR A264 must use 264 active and 704 inactive prefix slots.")
+
+        selected_visual_tokens = _mrr_take_tokens(
+            current["visual_tokens"], selected_visual_indices
+        )
+        active_tokens = jnp.concatenate(
+            [selected_visual_tokens, current["language_tokens"]], axis=1
+        )
+        active_mask = _mrr_take_tokens(current["prefix_mask"], active_indices)
+        active_positions = _mrr_take_tokens(current["positions"], active_indices)
+        inactive_key_mask = _mrr_take_tokens(
+            current["prefix_mask"], inactive_indices
+        )
+        replay_mask = jnp.logical_and(
+            active_mask[:, :, None],
+            jnp.concatenate([inactive_key_mask, active_mask], axis=1)[:, None, :],
+        )
+        inactive_anchor_k = _mrr_take_cache(anchor_cache_k, inactive_indices)
+        inactive_anchor_v = _mrr_take_cache(anchor_cache_v, inactive_indices)
+        (active_prefix_out, _, _), appended_cache = self.PaliGemma.llm(
+            [active_tokens, None, None],
+            positions=active_positions,
+            mask=replay_mask,
+            kv_cache=(inactive_anchor_k, inactive_anchor_v),
+        )
+        appended_k, appended_v = appended_cache
+        if appended_k.shape[:3] != (
+            _MRR_NUM_LAYERS,
+            batch_size,
+            _MRR_PREFIX_TOKENS,
+        ):
+            raise ValueError(f"MRR Gemma append returned incompatible K {appended_k.shape}.")
+        fresh_active_k = appended_k[:, :, 704:]
+        fresh_active_v = appended_v[:, :, 704:]
+        composite_k = _mrr_scatter_cache(
+            anchor_cache_k, fresh_active_k, active_indices
+        )
+        composite_v = _mrr_scatter_cache(
+            anchor_cache_v, fresh_active_v, active_indices
+        )
+        composite_prefix_out = _mrr_scatter_tokens(
+            anchor_prefix_state["prefix_out"], active_prefix_out, active_indices
+        )
+        composite_prefix_tokens = _mrr_scatter_tokens(
+            anchor_prefix_state["prefix_tokens"], active_tokens, active_indices
+        )
+        result = {
+            "observation": current["observation"],
+            "prefix_tokens": composite_prefix_tokens,
+            "prefix_mask": current["prefix_mask"],
+            "prefix_ar_mask": anchor_prefix_state["prefix_ar_mask"],
+            "prefix_out": composite_prefix_out,
+            "kv_cache": (composite_k, composite_v),
+            "ref_action_noise": current["ref_action_noise"],
+            "expert_action_noise": current["expert_action_noise"],
+            "mrr_selected_block_ids": selected_block_ids,
+        }
+        if self.execution_horizon_predictor_enabled:
+            result["execution_horizon_prefix_feature"] = jnp.asarray(
+                self._pool_prefix(composite_prefix_out, current["prefix_mask"]),
                 dtype=jnp.float32,
             )
         return result

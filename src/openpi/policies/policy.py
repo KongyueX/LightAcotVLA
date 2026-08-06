@@ -16,6 +16,7 @@ from openpi import transforms as _transforms
 from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
 from openpi.models import es_harp_gripper_event as _es_harp_gripper_event
 from openpi.models import harp_temporal_residual as _harp_temporal_residual
+from openpi.models import mrr_block_selector as _mrr_block_selector
 from openpi.models import model as _model
 from openpi.models import p3t_prefix_transport as _p3t_prefix_transport
 from openpi.policies import compact_alpha_router as _compact_alpha_router
@@ -288,6 +289,7 @@ class Policy(BasePolicy):
         acot_harp_residual: _harp_temporal_residual.HARPResidualSidecar | None = None,
         acot_harp_gripper_event: _es_harp_gripper_event.GripperEventSidecar | None = None,
         acot_p3t_prefix_transport: _p3t_prefix_transport.P3TPrefixTransport | None = None,
+        acot_mrr_block_selector: _mrr_block_selector.MRRBlockSelectorRuntime | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
         self._input_transform = _transforms.compose(transforms)
@@ -322,6 +324,12 @@ class Policy(BasePolicy):
             if acot_p3t_prefix_transport is not None
             else None
         )
+        self._acot_mrr_block_selector = acot_mrr_block_selector
+        self._apply_mrr_block_selector = (
+            jax.jit(acot_mrr_block_selector.select)
+            if acot_mrr_block_selector is not None
+            else None
+        )
         self._sample_actions_profile_prefix = None
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
@@ -334,6 +342,8 @@ class Policy(BasePolicy):
         self._sample_actions_profile_midpoint_expert = None
         self._sample_actions_profile_adaptive_one_step_expert = None
         self._sample_actions_profile_ofp_expert = None
+        self._sample_actions_profile_mrr_prepare_current = None
+        self._sample_actions_profile_mrr_replay = None
         self._sample_actions_joint_coupled = None
         self._sample_actions_batched_mc = None
         self._predict_execution_horizon = None
@@ -344,10 +354,16 @@ class Policy(BasePolicy):
         self._temporal_prefix_last_step: int | None = None
         self._temporal_prefix_period: int | None = None
         self._temporal_prefix_p3t: bool | None = None
+        self._temporal_prefix_mrr_a264: bool | None = None
         self._temporal_prefix_age = 0
         self._temporal_prefix_refresh_count = 0
         self._p3t_anchor_ear: jax.Array | None = None
         self._p3t_anchor_actions: jax.Array | None = None
+        self._mrr_anchor_visual_tokens: jax.Array | None = None
+        self._mrr_anchor_images_64: jax.Array | None = None
+        self._mrr_anchor_state: jax.Array | None = None
+        self._mrr_anchor_ear: jax.Array | None = None
+        self._mrr_anchor_actions: jax.Array | None = None
         if hasattr(model, "sample_actions_joint_coupled"):
             self._sample_actions_joint_coupled = nnx_utils.module_jit(model.sample_actions_joint_coupled)
         if hasattr(model, "sample_actions_batched_mc"):
@@ -428,6 +444,14 @@ class Policy(BasePolicy):
                 # lets time_blend compile a graph with only one posemb call.
                 static_argnums=(8,),
             )
+        if hasattr(model, "sample_actions_profile_mrr_prepare_current"):
+            self._sample_actions_profile_mrr_prepare_current = nnx_utils.module_jit(
+                model.sample_actions_profile_mrr_prepare_current
+            )
+        if hasattr(model, "sample_actions_profile_mrr_replay"):
+            self._sample_actions_profile_mrr_replay = nnx_utils.module_jit(
+                model.sample_actions_profile_mrr_replay
+            )
         if self._acot_contextual_compiler is not None and not self._can_profile_sample_actions():
             raise ValueError(
                 "A contextual Action-CoT compiler requires the model's sequential profile entrypoints."
@@ -456,6 +480,25 @@ class Policy(BasePolicy):
         if self._acot_p3t_prefix_transport is not None and not self._can_profile_sample_actions():
             raise ValueError(
                 "A P3T prefix-transport sidecar requires the model's sequential Action-CoT entrypoints."
+            )
+        if self._acot_mrr_block_selector is not None and (
+            not self._can_profile_sample_actions()
+            or self._sample_actions_profile_mrr_prepare_current is None
+            or self._sample_actions_profile_mrr_replay is None
+        ):
+            raise ValueError(
+                "An MRR block-selector sidecar requires the sequential Action-CoT and "
+                "MRR A264 model entrypoints."
+            )
+        if self._acot_mrr_block_selector is not None and (
+            self._action_horizon != 10
+            or self._coarse_action_horizon != 15
+            or self._action_dim != 32
+        ):
+            raise ValueError(
+                "MRR A264 requires action_horizon=10, coarse_action_horizon=15, "
+                f"and action_dim=32; got {self._action_horizon}/"
+                f"{self._coarse_action_horizon}/{self._action_dim}."
             )
 
     @override
@@ -593,6 +636,12 @@ class Policy(BasePolicy):
         p3t_prefix_transport_enabled = _as_bool(
             inputs.pop("action_cot_p3t_prefix_transport", False)
         )
+        mrr_a264_enabled = _as_bool(inputs.pop("action_cot_mrr_a264", False))
+        if p3t_prefix_transport_enabled and mrr_a264_enabled:
+            raise ValueError(
+                "action_cot_p3t_prefix_transport and action_cot_mrr_a264 are "
+                "mutually exclusive temporal-prefix pilots."
+            )
         if p3t_prefix_transport_enabled:
             if self._apply_p3t_prefix_transport is None:
                 raise ValueError(
@@ -601,6 +650,24 @@ class Policy(BasePolicy):
             if temporal_prefix_reuse_period != 2:
                 raise ValueError(
                     "P3T prefix transport currently requires "
+                    "action_cot_temporal_prefix_reuse_period=2."
+                )
+        if mrr_a264_enabled:
+            if self._apply_mrr_block_selector is None:
+                raise ValueError(
+                    "action_cot_mrr_a264=True requires an MRR block-selector "
+                    "artifact at serve startup."
+                )
+            if (
+                self._sample_actions_profile_mrr_prepare_current is None
+                or self._sample_actions_profile_mrr_replay is None
+            ):
+                raise ValueError(
+                    "action_cot_mrr_a264=True requires the MRR A264 model entrypoints."
+                )
+            if temporal_prefix_reuse_period != 2:
+                raise ValueError(
+                    "MRR A264 currently requires "
                     "action_cot_temporal_prefix_reuse_period=2."
                 )
         if temporal_prefix_reuse_period > 0 and absolute_decision_step is None:
@@ -720,6 +787,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_absolute_decision_step", None)
             override_inputs.pop("action_cot_temporal_prefix_reuse_period", None)
             override_inputs.pop("action_cot_p3t_prefix_transport", None)
+            override_inputs.pop("action_cot_mrr_a264", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             override_inputs.pop("action_cot_final_denoising_steps", None)
@@ -1011,7 +1079,7 @@ class Policy(BasePolicy):
                 "contextual_compiler": self._acot_contextual_compiler is not None,
                 "export_acot_cache": export_acot_cache,
                 "token_time_warp": (
-                    p3t_prefix_transport_enabled
+                    (p3t_prefix_transport_enabled or mrr_a264_enabled)
                     and sample_kwargs.get("token_time_warp_alpha") is not None
                 ),
             }
@@ -1617,6 +1685,7 @@ class Policy(BasePolicy):
                 temporal_prefix_reuse_period=temporal_prefix_reuse_period,
                 absolute_decision_step=absolute_decision_step,
                 p3t_prefix_transport=p3t_prefix_transport_enabled,
+                mrr_a264=mrr_a264_enabled,
             )
         else:
             result = self._sample_actions(sample_rng, observation, **sample_kwargs)
@@ -1767,10 +1836,16 @@ class Policy(BasePolicy):
         self._temporal_prefix_last_step = None
         self._temporal_prefix_period = None
         self._temporal_prefix_p3t = None
+        self._temporal_prefix_mrr_a264 = None
         self._temporal_prefix_age = 0
         self._temporal_prefix_refresh_count = 0
         self._p3t_anchor_ear = None
         self._p3t_anchor_actions = None
+        self._mrr_anchor_visual_tokens = None
+        self._mrr_anchor_images_64 = None
+        self._mrr_anchor_state = None
+        self._mrr_anchor_ear = None
+        self._mrr_anchor_actions = None
 
     def _temporal_profile_prefix(
         self,
@@ -1780,7 +1855,15 @@ class Policy(BasePolicy):
         reuse_period: int,
         absolute_decision_step: int,
         p3t_prefix_transport: bool = False,
-    ) -> tuple[dict[str, Any], bool, int, float, jax.Array | None]:
+        mrr_a264: bool = False,
+    ) -> tuple[
+        dict[str, Any],
+        bool,
+        int,
+        float,
+        jax.Array | None,
+        dict[str, Any],
+    ]:
         """Reuse or transport a cached prefix while refreshing runtime inputs."""
 
         assert self._sample_actions_profile_prefix is not None
@@ -1790,39 +1873,148 @@ class Policy(BasePolicy):
             or absolute_decision_step <= self._temporal_prefix_last_step
             or self._temporal_prefix_period != reuse_period
             or self._temporal_prefix_p3t != p3t_prefix_transport
+            or self._temporal_prefix_mrr_a264 != mrr_a264
         )
         if new_episode:
             self._reset_temporal_prefix_cache()
             self._temporal_prefix_period = reuse_period
             self._temporal_prefix_p3t = p3t_prefix_transport
+            self._temporal_prefix_mrr_a264 = mrr_a264
 
         transport_ms = 0.0
         transport_risk = None
+        mrr_diagnostics: dict[str, Any] = {
+            "current_embed_ms": 0.0,
+            "selector_ms": 0.0,
+            "active_replay_ms": 0.0,
+        }
         next_age = self._temporal_prefix_age + 1
         reuse_prefix = (
             self._temporal_prefix_state is not None
             and next_age < reuse_period
         )
         if reuse_prefix:
-            current_observation = _model.preprocess_observation(
-                None, observation, train=False
-            )
-            batch_size = current_observation.state.shape[0]
-            ref_action_rng, expert_action_rng = jax.random.split(sample_rng, 2)
-            prefix_state = dict(self._temporal_prefix_state)
-            prefix_state.update(
-                {
-                    "observation": current_observation,
-                    "ref_action_noise": jax.random.normal(
-                        ref_action_rng,
-                        (batch_size, self._coarse_action_horizon, self._action_dim),
+            if mrr_a264:
+                if (
+                    self._apply_mrr_block_selector is None
+                    or self._sample_actions_profile_mrr_prepare_current is None
+                    or self._sample_actions_profile_mrr_replay is None
+                ):
+                    raise ValueError("MRR A264 fast call has no loaded runtime entrypoints.")
+                if any(
+                    value is None
+                    for value in (
+                        self._mrr_anchor_visual_tokens,
+                        self._mrr_anchor_images_64,
+                        self._mrr_anchor_state,
+                        self._mrr_anchor_ear,
+                        self._mrr_anchor_actions,
+                    )
+                ):
+                    raise RuntimeError(
+                        "MRR A264 fast call has no completed immutable keyframe anchor."
+                    )
+
+                current_started = time.monotonic()
+                current = self._sample_actions_profile_mrr_prepare_current(
+                    sample_rng, observation
+                )
+                _block_until_ready(current)
+                mrr_diagnostics["current_embed_ms"] = (
+                    time.monotonic() - current_started
+                ) * 1000
+
+                selector_started = time.monotonic()
+                selector_output = self._apply_mrr_block_selector(
+                    self._mrr_anchor_visual_tokens,
+                    current["visual_tokens"],
+                    self._mrr_anchor_images_64,
+                    current["images_64"],
+                    jnp.asarray(
+                        current["observation"].state - self._mrr_anchor_state,
+                        dtype=jnp.float32,
                     ),
-                    "expert_action_noise": jax.random.normal(
-                        expert_action_rng,
-                        (batch_size, self._action_horizon, self._action_dim),
-                    ),
-                }
-            )
+                    jnp.asarray(self._mrr_anchor_actions, dtype=jnp.float32),
+                    jnp.asarray(self._mrr_anchor_ear, dtype=jnp.float32),
+                )
+                selector_output.block_logits.block_until_ready()
+                mrr_diagnostics["selector_ms"] = (
+                    time.monotonic() - selector_started
+                ) * 1000
+
+                block_ids = np.asarray(
+                    jax.device_get(selector_output.selected_block_ids)
+                )
+                block_scores = np.asarray(
+                    jax.device_get(selector_output.selected_block_scores)
+                )
+                block_logits = np.asarray(jax.device_get(selector_output.block_logits))
+                batch_size = current["observation"].state.shape[0]
+                if block_ids.shape != (batch_size, 4):
+                    raise ValueError(
+                        f"MRR selector returned block ids with shape {block_ids.shape}; "
+                        f"expected {(batch_size, 4)}."
+                    )
+                if block_scores.shape != (batch_size, 4):
+                    raise ValueError(
+                        "MRR selector returned block scores with shape "
+                        f"{block_scores.shape}; expected {(batch_size, 4)}."
+                    )
+                if block_logits.shape != (batch_size, 32):
+                    raise ValueError(
+                        "MRR selector returned logits with shape "
+                        f"{block_logits.shape}; expected {(batch_size, 32)}."
+                    )
+                if not np.issubdtype(block_ids.dtype, np.integer):
+                    raise TypeError(f"MRR block ids must be integers, got {block_ids.dtype}.")
+                if np.any((block_ids < 0) | (block_ids >= 32)):
+                    raise ValueError(f"MRR block ids are outside [0,31]: {block_ids.tolist()}.")
+                if any(np.unique(row).size != 4 for row in block_ids):
+                    raise ValueError(f"MRR selector returned duplicate block ids: {block_ids.tolist()}.")
+                if not np.all(np.isfinite(block_scores)) or not np.all(
+                    np.isfinite(block_logits)
+                ):
+                    raise ValueError("MRR selector returned non-finite scores.")
+
+                replay_started = time.monotonic()
+                # The dynamic device-resident top-4 ids flow directly into the
+                # replay graph.  The host copy above is validation only.
+                prefix_state = self._sample_actions_profile_mrr_replay(
+                    self._temporal_prefix_state,
+                    current,
+                    selector_output.selected_block_ids,
+                )
+                _block_until_ready(prefix_state)
+                mrr_diagnostics["active_replay_ms"] = (
+                    time.monotonic() - replay_started
+                ) * 1000
+                mrr_diagnostics.update(
+                    {
+                        "selected_block_ids": selector_output.selected_block_ids,
+                        "selected_block_scores": selector_output.selected_block_scores,
+                        "block_logits": selector_output.block_logits,
+                    }
+                )
+            else:
+                current_observation = _model.preprocess_observation(
+                    None, observation, train=False
+                )
+                batch_size = current_observation.state.shape[0]
+                ref_action_rng, expert_action_rng = jax.random.split(sample_rng, 2)
+                prefix_state = dict(self._temporal_prefix_state)
+                prefix_state.update(
+                    {
+                        "observation": current_observation,
+                        "ref_action_noise": jax.random.normal(
+                            ref_action_rng,
+                            (batch_size, self._coarse_action_horizon, self._action_dim),
+                        ),
+                        "expert_action_noise": jax.random.normal(
+                            expert_action_rng,
+                            (batch_size, self._action_horizon, self._action_dim),
+                        ),
+                    }
+                )
             if p3t_prefix_transport:
                 if self._apply_p3t_prefix_transport is None:
                     raise ValueError("P3T prefix transport was requested without a loaded sidecar.")
@@ -1858,6 +2050,23 @@ class Policy(BasePolicy):
             self._temporal_prefix_state = prefix_state
             self._temporal_prefix_age = 0
             self._temporal_prefix_refresh_count += 1
+            if mrr_a264:
+                anchor_visual_tokens = prefix_state["prefix_tokens"][:, :512]
+                if anchor_visual_tokens.shape[1:] != (512, 2048):
+                    raise ValueError(
+                        "MRR keyframe expected pre-Gemma visual tokens [B,512,2048], "
+                        f"got {anchor_visual_tokens.shape}."
+                    )
+                self._mrr_anchor_visual_tokens = jax.lax.stop_gradient(
+                    anchor_visual_tokens
+                )
+                self._mrr_anchor_images_64 = jax.lax.stop_gradient(
+                    _p3t_low_resolution_images(prefix_state["observation"])
+                )
+                self._mrr_anchor_state = jax.lax.stop_gradient(
+                    prefix_state["observation"].state
+                )
+                _block_until_ready(self._mrr_anchor_images_64)
         self._temporal_prefix_last_step = absolute_decision_step
         return (
             prefix_state,
@@ -1865,6 +2074,7 @@ class Policy(BasePolicy):
             self._temporal_prefix_refresh_count,
             transport_ms,
             transport_risk,
+            mrr_diagnostics,
         )
 
     def _can_profile_sample_actions(self) -> bool:
@@ -1885,6 +2095,7 @@ class Policy(BasePolicy):
         temporal_prefix_reuse_period: int = 0,
         absolute_decision_step: int | None = None,
         p3t_prefix_transport: bool = False,
+        mrr_a264: bool = False,
     ) -> tuple[dict[str, Any], dict[str, float]]:
         assert self._sample_actions_profile_prefix is not None
         assert self._sample_actions_profile_implicit is not None
@@ -1894,6 +2105,7 @@ class Policy(BasePolicy):
         timing: dict[str, float] = {}
         prefix_reused = False
         p3t_transport_risk = None
+        mrr_diagnostics: dict[str, Any] = {}
 
         stage_start = time.monotonic()
         if temporal_prefix_reuse_period > 0:
@@ -1904,18 +2116,30 @@ class Policy(BasePolicy):
                 refresh_count,
                 p3t_transport_ms,
                 p3t_transport_risk,
+                mrr_diagnostics,
             ) = self._temporal_profile_prefix(
                 sample_rng,
                 observation,
                 reuse_period=temporal_prefix_reuse_period,
                 absolute_decision_step=absolute_decision_step,
                 p3t_prefix_transport=p3t_prefix_transport,
+                mrr_a264=mrr_a264,
             )
             timing["vlm_prefix_reused"] = float(prefix_reused)
             timing["vlm_prefix_refresh_count"] = float(refresh_count)
             if p3t_prefix_transport:
                 timing["p3t_prefix_transport_ms"] = p3t_transport_ms
                 timing["p3t_prefix_transport_fast"] = float(prefix_reused)
+            if mrr_a264:
+                timing["mrr_current_embed_ms"] = float(
+                    mrr_diagnostics["current_embed_ms"]
+                )
+                timing["mrr_selector_ms"] = float(
+                    mrr_diagnostics["selector_ms"]
+                )
+                timing["mrr_active_replay_ms"] = float(
+                    mrr_diagnostics["active_replay_ms"]
+                )
         else:
             prefix_state = self._sample_actions_profile_prefix(sample_rng, observation)
         _block_until_ready(prefix_state)
@@ -2545,6 +2769,43 @@ class Policy(BasePolicy):
                     "p3t_prefix_transport_fast": jnp.full(
                         (batch_size,), prefix_reused, dtype=jnp.bool_
                     ),
+                }
+            )
+        if mrr_a264:
+            explicit_action_reason = coarse_outputs.get("explicit_action_reason")
+            if explicit_action_reason is None:
+                raise ValueError("MRR A264 requires a generated EAR trajectory.")
+            if not prefix_reused:
+                # EAR and final actions complete the keyframe anchor.  The
+                # following fast decision may read these arrays, but neither
+                # it nor its composite replay cache is ever written back.
+                self._mrr_anchor_ear = jax.lax.stop_gradient(
+                    explicit_action_reason
+                )
+                self._mrr_anchor_actions = jax.lax.stop_gradient(result["actions"])
+            batch_size = result["actions"].shape[0]
+            if prefix_reused:
+                selected_block_ids = mrr_diagnostics["selected_block_ids"]
+                selected_block_scores = mrr_diagnostics[
+                    "selected_block_scores"
+                ]
+                block_logits = mrr_diagnostics["block_logits"]
+            else:
+                selected_block_ids = jnp.full(
+                    (batch_size, 4), -1, dtype=jnp.int32
+                )
+                selected_block_scores = jnp.zeros(
+                    (batch_size, 4), dtype=jnp.float32
+                )
+                block_logits = jnp.zeros((batch_size, 32), dtype=jnp.float32)
+            result.update(
+                {
+                    "mrr_a264_fast": jnp.full(
+                        (batch_size,), prefix_reused, dtype=jnp.bool_
+                    ),
+                    "mrr_selected_block_ids": selected_block_ids,
+                    "mrr_selected_block_scores": selected_block_scores,
+                    "mrr_block_logits": block_logits,
                 }
             )
         if "execution_horizon_prefix_feature" in prefix_state:
