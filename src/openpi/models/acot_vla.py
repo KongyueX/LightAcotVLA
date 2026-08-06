@@ -2448,7 +2448,6 @@ class ACOT_VLA(_model.BaseModel):
             jnp.ones_like(alpha) - alpha,
             explicit_action_reason,
             implicit_action_reason,
-            tokenwise_time_basis=True,
         )
         return {
             "actions": expert_action_noise - velocity,
