@@ -85,7 +85,14 @@ def _restore_params(params: nnx.State, path: pathlib.Path, *, namespace: str) ->
     if set(expected_flat) != set(loaded_flat):
         raise ValueError(f"Adapter parameter paths mismatch for {namespace!r}.")
     for key, expected in expected_flat.items():
-        value = np.asarray(loaded_flat[key])
+        loaded_value = loaded_flat[key]
+        if expected is None:
+            if loaded_value is not None:
+                raise ValueError(
+                    f"Adapter parameter {namespace!r} at {key} must remain None."
+                )
+            continue
+        value = np.asarray(loaded_value)
         if value.shape != expected.shape:
             raise ValueError(
                 f"Adapter shape mismatch for {namespace!r} at {key}: "
@@ -93,7 +100,13 @@ def _restore_params(params: nnx.State, path: pathlib.Path, *, namespace: str) ->
             )
         if not np.all(np.isfinite(value)):
             raise ValueError(f"Non-finite adapter parameter for {namespace!r} at {key}.")
-    params.replace_by_pure_dict(jax.tree.map(jnp.asarray, loaded))
+    params.replace_by_pure_dict(
+        jax.tree.map(
+            lambda value: None if value is None else jnp.asarray(value),
+            loaded,
+            is_leaf=lambda value: value is None,
+        )
+    )
 
 
 def _make_evaluator(
