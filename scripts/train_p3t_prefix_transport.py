@@ -506,20 +506,37 @@ def _reason_and_act(
     iar = base_model.sample_actions_profile_implicit(prefix_state)["implicit_action_reason"]
     if iar is None:
         raise ValueError("P3T requires the frozen implicit action reasoner.")
-    ear = base_model.sample_actions_profile_coarse(
-        prefix_state,
-        num_steps=coarse_flow_steps,
-        action_cot_denoising_steps=coarse_flow_steps,
-        dynamic_denoising_steps=False,
-    )["explicit_action_reason"]
+    if coarse_flow_steps == 1:
+        # The deployed endpoint-student path is a single static flow call.
+        # Avoid the equivalent dynamic while_loop, which cannot be traversed
+        # by reverse-mode differentiation from the transported KV cache.
+        ear = base_model._one_step_coarse_endpoint(  # noqa: SLF001
+            prefix_state,
+            prefix_state["ref_action_noise"],
+        )
+    else:
+        ear = base_model.sample_actions_profile_coarse(
+            prefix_state,
+            num_steps=coarse_flow_steps,
+            action_cot_denoising_steps=coarse_flow_steps,
+            dynamic_denoising_steps=False,
+        )["explicit_action_reason"]
     if ear is None:
         raise ValueError("P3T requires the frozen explicit action reasoner.")
-    actions = base_model.sample_actions_profile_expert(
-        prefix_state,
-        ear,
-        iar,
-        num_steps=final_flow_steps,
-    )["actions"]
+    if final_flow_steps == 1:
+        actions = base_model.sample_actions_profile_direct_one_step_expert(
+            prefix_state,
+            ear,
+            iar,
+            0.0,
+        )["actions"]
+    else:
+        actions = base_model.sample_actions_profile_expert(
+            prefix_state,
+            ear,
+            iar,
+            num_steps=final_flow_steps,
+        )["actions"]
     return iar, ear, actions
 
 
