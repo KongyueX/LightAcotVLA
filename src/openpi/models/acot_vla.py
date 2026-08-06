@@ -629,6 +629,7 @@ class ACOT_VLA(_model.BaseModel):
         interval_end_timestep: Optional[jax.Array] = None,
         interval_condition_strength: jax.Array | float = 1.0,
         interval_condition_mode: str = "half_concat",
+        tokenwise_time_basis: bool = False,
         explicit_action_reason: Optional[jax.Array] = None,
         implicit_action_reason: Optional[jax.Array] = None,
         suf_type = "reasoner"
@@ -636,11 +637,36 @@ class ACOT_VLA(_model.BaseModel):
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
         at.Bool[at.Array, " s"],
-        jax.Array | None,
+        Any | None,
     ]:
         input_mask = []
         ar_mask = []
         tokens = []
+
+        time_embedding_input = timestep
+        tokenwise_time_weights = None
+        if tokenwise_time_basis:
+            if timestep.ndim != 2:
+                raise ValueError(
+                    "Token-wise time basis requires timesteps with shape [B, T]."
+                )
+            # Evaluate the expensive AdaRMS projections only at the two ends
+            # of the requested time range, then interpolate their modulation
+            # per action token.  This is exact at both endpoint alpha values
+            # and reduces T conditioning projections to rank two.
+            time_high = jnp.max(timestep, axis=1)
+            time_low = jnp.min(timestep, axis=1)
+            time_span = time_high - time_low
+            high_alpha_weight = jnp.where(
+                time_span[:, None] > 1e-6,
+                (time_high[:, None] - timestep)
+                / jnp.maximum(time_span[:, None], 1e-6),
+                jnp.zeros_like(timestep),
+            )
+            tokenwise_time_weights = jnp.stack(
+                [1.0 - high_alpha_weight, high_alpha_weight], axis=-1
+            )
+            time_embedding_input = jnp.stack([time_high, time_low], axis=1)
 
         def interval_time_embedding(width: int) -> jax.Array:
             if interval_condition_mode not in {"half_concat", "time_blend"}:
@@ -666,7 +692,7 @@ class ACOT_VLA(_model.BaseModel):
                 return flat.reshape((*value.shape, width))
 
             if interval_end_timestep is None:
-                return embed_time(timestep)
+                return embed_time(time_embedding_input)
             strength = jnp.clip(
                 jnp.asarray(interval_condition_strength, dtype=timestep.dtype),
                 0.0,
@@ -675,12 +701,12 @@ class ACOT_VLA(_model.BaseModel):
             if interval_condition_mode == "time_blend":
                 # One embedding call only: alpha=0 or r=t exactly recovers the
                 # pretrained start-time path.
-                effective_timestep = timestep + strength * (
-                    interval_end_timestep - timestep
+                effective_timestep = time_embedding_input + strength * (
+                    interval_end_timestep - time_embedding_input
                 )
                 return embed_time(effective_timestep)
 
-            time_emb = embed_time(timestep)
+            time_emb = embed_time(time_embedding_input)
             endpoint_emb = embed_time(interval_end_timestep)
             split = time_emb.shape[-1] // 2
             conditioned_time_emb = jnp.concatenate(
@@ -710,7 +736,11 @@ class ACOT_VLA(_model.BaseModel):
                 time_emb = self.coarse_time_mlp_out(time_emb)
                 time_emb = nnx.swish(time_emb)
                 action_expert_tokens = action_tokens
-                adarms_cond = time_emb
+                adarms_cond = (
+                    (time_emb, tokenwise_time_weights)
+                    if tokenwise_time_weights is not None
+                    else time_emb
+                )
             else:
                 # mix timestep + action information using an MLP (no adaRMS)
                 time_tokens = (
@@ -738,7 +768,11 @@ class ACOT_VLA(_model.BaseModel):
                 time_emb = self.time_mlp_out(time_emb)
                 time_emb = nnx.swish(time_emb)
                 action_expert_tokens = action_tokens
-                adarms_cond = time_emb
+                adarms_cond = (
+                    (time_emb, tokenwise_time_weights)
+                    if tokenwise_time_weights is not None
+                    else time_emb
+                )
             else:
                 # mix timestep + action information using an MLP (no adaRMS)
                 time_tokens = (
@@ -1199,6 +1233,7 @@ class ACOT_VLA(_model.BaseModel):
         interval_end_time: jax.Array | None = None,
         interval_condition_strength: jax.Array | float = 1.0,
         interval_condition_mode: str = "half_concat",
+        tokenwise_time_basis: bool = False,
     ) -> jax.Array:
         """Evaluate the final-action flow field at an explicit state and time."""
 
@@ -1213,6 +1248,7 @@ class ACOT_VLA(_model.BaseModel):
             interval_end_timestep=interval_end_time,
             interval_condition_strength=interval_condition_strength,
             interval_condition_mode=interval_condition_mode,
+            tokenwise_time_basis=tokenwise_time_basis,
             explicit_action_reason=explicit_action_reason,
             implicit_action_reason=implicit_action_reason,
             suf_type="expert",
@@ -2412,6 +2448,7 @@ class ACOT_VLA(_model.BaseModel):
             jnp.ones_like(alpha) - alpha,
             explicit_action_reason,
             implicit_action_reason,
+            tokenwise_time_basis=True,
         )
         return {
             "actions": expert_action_noise - velocity,

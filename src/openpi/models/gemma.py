@@ -27,7 +27,7 @@ We follow this einsum axis naming convention:
 
 from collections.abc import Sequence
 import dataclasses
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 import einops
 import flax.linen as nn
@@ -172,7 +172,22 @@ class RMSNorm(nn.Module):
             return normed_inputs.astype(dtype), None  # return in original dtype
 
         # adaptive RMSNorm
-        modulation = nn.Dense(x.shape[-1] * 3, kernel_init=nn.initializers.zeros, dtype=dtype)(cond)
+        if isinstance(cond, tuple):
+            basis_cond, token_weights = cond
+            basis_modulation = nn.Dense(
+                x.shape[-1] * 3,
+                kernel_init=nn.initializers.zeros,
+                dtype=dtype,
+            )(basis_cond)
+            modulation = jnp.einsum(
+                "btk,bkd->btd", token_weights, basis_modulation
+            )
+        else:
+            modulation = nn.Dense(
+                x.shape[-1] * 3,
+                kernel_init=nn.initializers.zeros,
+                dtype=dtype,
+            )(cond)
         if modulation.ndim == 2:
             modulation = modulation[:, None, :]
         elif modulation.ndim != 3:
@@ -447,7 +462,7 @@ class Module(nn.Module):
         embedded: Sequence[at.Float[at.Array, "b _t _d"] | None],
         positions: at.Int[at.Array, "b t"],
         mask: at.Bool[at.Array, "b t s"],
-        adarms_cond: Sequence[jax.Array | None] | None = None,
+        adarms_cond: Sequence[Any | None] | None = None,
         *,
         kv_cache: KVCache | None = None,
         deterministic: bool = True,
