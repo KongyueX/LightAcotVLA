@@ -189,6 +189,13 @@ class Policy(BasePolicy):
         selective_gripper_tau = float(
             np.asarray(inputs.pop("action_cot_selective_gripper_tau", 0.15)).item()
         )
+        selective_refinement_mode = str(
+            np.asarray(inputs.pop("action_cot_selective_refinement_mode", "gripper")).item()
+        )
+        if selective_refinement_mode not in {"gripper", "full"}:
+            raise ValueError(
+                "action_cot_selective_refinement_mode must be 'gripper' or 'full'."
+            )
         if not np.isfinite(selective_gripper_tau) or not 0.0 <= selective_gripper_tau <= 1.0:
             raise ValueError("action_cot_selective_gripper_tau must be finite and in [0, 1].")
         absolute_decision_step_raw = inputs.pop(
@@ -268,6 +275,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_final_hybrid_mode", None)
             override_inputs.pop("action_cot_selective_gripper_refinement", None)
             override_inputs.pop("action_cot_selective_gripper_tau", None)
+            override_inputs.pop("action_cot_selective_refinement_mode", None)
             override_inputs.pop("action_cot_absolute_decision_step", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
@@ -428,6 +436,7 @@ class Policy(BasePolicy):
                 "force_direct_one_step_expert": True,
                 "selective_gripper_refinement": True,
                 "selective_gripper_tau": selective_gripper_tau,
+                "selective_refinement_mode": selective_refinement_mode,
             }
         if ofp_interval_flow:
             if not 0.0 < ofp_warm_start_time <= 1.0:
@@ -1001,6 +1010,9 @@ class Policy(BasePolicy):
             sample_kwargs.get("selective_gripper_refinement", False)
         )
         selective_gripper_tau = float(sample_kwargs.get("selective_gripper_tau", 0.15))
+        selective_refinement_mode = str(
+            sample_kwargs.get("selective_refinement_mode", "gripper")
+        )
         force_direct_one_step = _as_bool(
             sample_kwargs.get("force_direct_one_step_expert", False)
         )
@@ -1081,14 +1093,17 @@ class Policy(BasePolicy):
                     timing["selective_gripper_refinement_ms"] = (
                         time.monotonic() - refinement_started
                     ) * 1000
-                    expert_outputs["actions"] = jnp.concatenate(
-                        [
-                            action_nfe1[..., :6],
-                            second_half_outputs["actions"][..., 6:7],
-                            action_nfe1[..., 7:],
-                        ],
-                        axis=-1,
-                    )
+                    if selective_refinement_mode == "full":
+                        expert_outputs["actions"] = second_half_outputs["actions"]
+                    else:
+                        expert_outputs["actions"] = jnp.concatenate(
+                            [
+                                action_nfe1[..., :6],
+                                second_half_outputs["actions"][..., 6:7],
+                                action_nfe1[..., 7:],
+                            ],
+                            axis=-1,
+                        )
                 batch_size = action_nfe1.shape[0]
                 expert_outputs.update(
                     {
@@ -1106,6 +1121,9 @@ class Policy(BasePolicy):
                         ),
                         "selective_gripper_tau": np.full(
                             (batch_size,), selective_gripper_tau, dtype=np.float32
+                        ),
+                        "selective_refinement_full": np.full(
+                            (batch_size,), selective_refinement_mode == "full", dtype=np.bool_
                         ),
                     }
                 )

@@ -137,6 +137,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--selective-refinement-mode",
+        choices=("gripper", "full"),
+        default="gripper",
+        help=(
+            "When selective refinement triggers, take only the NFE2 gripper or the "
+            "complete direct-consistent second-half action chunk."
+        ),
+    )
+    parser.add_argument(
         "--ofp-interval-flow",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -279,6 +288,7 @@ def _request(
                     args.selective_gripper_tau,
                     dtype=np.float32,
                 ),
+                "action_cot_selective_refinement_mode": args.selective_refinement_mode,
             }
         )
     if args.ofp_interval_flow:
@@ -1142,6 +1152,10 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError(
                 "Selective gripper refinement requires --modes fixed_h9 --fixed-horizon 10."
             )
+    elif args.selective_refinement_mode != "gripper":
+        raise ValueError(
+            "selective_refinement_mode is only meaningful with --selective-gripper-refinement."
+        )
     if args.compact_alpha_router:
         if args.final_denoising_steps is not None:
             raise ValueError(
