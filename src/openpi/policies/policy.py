@@ -206,6 +206,55 @@ def _fuse_contextual_spectral_actions(
     }
 
 
+@jax.jit
+def _fuse_contextual_phase_actions(
+    compiled_actions: jax.Array,
+    expert_actions: jax.Array,
+    compiler_first: jax.Array,
+) -> dict[str, jax.Array]:
+    """Create one action-dependent phase transition inside a 10-step chunk."""
+
+    shared_speed = 0.5 * (
+        jnp.linalg.norm(compiled_actions[..., :6], axis=-1)
+        + jnp.linalg.norm(expert_actions[..., :6], axis=-1)
+    )
+    time_index = jnp.arange(compiled_actions.shape[1], dtype=jnp.int32)
+    internal = (time_index >= 2) & (time_index <= compiled_actions.shape[1] - 2)
+    phase_boundary = jnp.argmin(
+        jnp.where(internal[None, :], shared_speed, jnp.inf), axis=1
+    ).astype(jnp.int32)
+    after_boundary = time_index[None, :] >= phase_boundary[:, None]
+    boundary_mask = time_index[None, :] == phase_boundary[:, None]
+    first = jnp.where(compiler_first, compiled_actions, expert_actions)
+    second = jnp.where(compiler_first, expert_actions, compiled_actions)
+    continuous = jnp.where(
+        after_boundary[..., None], second[..., :6], first[..., :6]
+    )
+    continuous = jnp.where(
+        boundary_mask[..., None],
+        0.5 * (compiled_actions[..., :6] + expert_actions[..., :6]),
+        continuous,
+    )
+    # The discrete gripper switches directly to the destination branch at the
+    # phase boundary; averaging open/close values would create a weak command.
+    gripper = jnp.where(
+        after_boundary[..., None], second[..., 6:7], first[..., 6:7]
+    )
+    actions = jnp.concatenate(
+        (continuous, gripper, expert_actions[..., 7:]), axis=-1
+    )
+    return {
+        "actions": actions,
+        "contextual_fusion_chunk_phase_boundary": phase_boundary,
+        "contextual_fusion_chunk_compiler_first": jnp.full(
+            (actions.shape[0],), compiler_first, dtype=jnp.bool_
+        ),
+        "contextual_fusion_chunk_shared_speed_min": jnp.min(
+            jnp.where(internal[None, :], shared_speed, jnp.inf), axis=1
+        ),
+    }
+
+
 class Policy(BasePolicy):
     def __init__(
         self,
@@ -371,6 +420,8 @@ class Policy(BasePolicy):
             "semantic_gate",
             "spectral_compiler_gripper",
             "spectral_expert_gripper",
+            "phase_chunk_compiler_expert",
+            "phase_chunk_expert_compiler",
             "phase_compiler_expert",
             "phase_expert_compiler",
         }:
@@ -1862,6 +1913,25 @@ class Policy(BasePolicy):
                     time.monotonic() - fusion_started
                 ) * 1000
                 actions = fusion_outputs.pop("actions")
+            elif contextual_fusion_mode in {
+                "phase_chunk_compiler_expert",
+                "phase_chunk_expert_compiler",
+            }:
+                assert compiled_actions is not None and expert_actions is not None
+                fusion_started = time.monotonic()
+                fusion_outputs = _fuse_contextual_phase_actions(
+                    compiled_actions,
+                    expert_actions,
+                    jnp.asarray(
+                        contextual_fusion_mode == "phase_chunk_compiler_expert",
+                        dtype=jnp.bool_,
+                    ),
+                )
+                _block_until_ready(fusion_outputs)
+                timing["contextual_fusion_ms"] = (
+                    time.monotonic() - fusion_started
+                ) * 1000
+                actions = fusion_outputs.pop("actions")
             else:
                 raise AssertionError(contextual_fusion_mode)
             if dual_contextual_branches:
@@ -1877,6 +1947,8 @@ class Policy(BasePolicy):
                 "semantic_gate",
                 "spectral_compiler_gripper",
                 "spectral_expert_gripper",
+                "phase_chunk_compiler_expert",
+                "phase_chunk_expert_compiler",
             }:
                 result.update(fusion_outputs)
             if contextual_fusion_phase_selected_expert is not None:

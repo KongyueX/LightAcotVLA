@@ -147,6 +147,8 @@ def build_parser() -> argparse.ArgumentParser:
             "semantic_gate",
             "spectral_compiler_gripper",
             "spectral_expert_gripper",
+            "phase_chunk_compiler_expert",
+            "phase_chunk_expert_compiler",
             "phase_compiler_expert",
             "phase_expert_compiler",
         ),
