@@ -137,6 +137,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--contextual-fusion-mode",
+        choices=(
+            "compiler",
+            "expert",
+            "control_compiler",
+            "gripper_compiler",
+            "blend50",
+        ),
+        default="compiler",
+        help="Opt-in fusion diagnostic when the server loads a contextual compiler.",
+    )
+    parser.add_argument(
         "--selective-gripper-refinement",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -305,6 +317,8 @@ def _request(
         request["action_cot_harp_gripper_event"] = np.asarray(True, dtype=np.bool_)
     if args.final_hybrid_mode != "none":
         request["action_cot_final_hybrid_mode"] = args.final_hybrid_mode
+    if args.contextual_fusion_mode != "compiler":
+        request["action_cot_contextual_fusion_mode"] = args.contextual_fusion_mode
     if args.selective_gripper_refinement:
         request.update(
             {

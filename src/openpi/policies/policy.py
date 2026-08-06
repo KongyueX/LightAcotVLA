@@ -185,6 +185,21 @@ class Policy(BasePolicy):
         compact_alpha_router_enabled = _as_bool(
             inputs.pop("action_cot_compact_alpha_router", False)
         )
+        contextual_fusion_mode = str(
+            np.asarray(inputs.pop("action_cot_contextual_fusion_mode", "compiler")).item()
+        )
+        if contextual_fusion_mode not in {
+            "compiler",
+            "expert",
+            "control_compiler",
+            "gripper_compiler",
+            "blend50",
+        }:
+            raise ValueError("Unsupported action_cot_contextual_fusion_mode.")
+        if self._acot_contextual_compiler is None and contextual_fusion_mode != "compiler":
+            raise ValueError(
+                "Contextual fusion requires a contextual plan compiler at server startup."
+            )
         harp_residual_enabled = _as_bool(
             inputs.pop("action_cot_harp_residual", False)
         )
@@ -290,6 +305,7 @@ class Policy(BasePolicy):
             override_inputs.pop("profile_policy_timing", None)
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_compact_alpha_router", None)
+            override_inputs.pop("action_cot_contextual_fusion_mode", None)
             override_inputs.pop("action_cot_harp_residual", None)
             override_inputs.pop("action_cot_harp_gripper_event", None)
             override_inputs.pop("action_cot_final_hybrid_mode", None)
@@ -829,8 +845,14 @@ class Policy(BasePolicy):
             raise ValueError("A contextual Action-CoT compiler cannot be combined with joint coupled sampling.")
         if ofp_interval_flow and self._acot_contextual_compiler is not None:
             raise ValueError("OFP interval inference cannot be combined with a contextual Action-CoT compiler.")
-        if final_time_warp_alpha > 0.0 and self._acot_contextual_compiler is not None:
-            raise ValueError("Final time warp cannot be combined with a contextual Action-CoT compiler.")
+        if (
+            final_time_warp_alpha > 0.0
+            and self._acot_contextual_compiler is not None
+            and contextual_fusion_mode == "compiler"
+        ):
+            raise ValueError(
+                "Compiler-only inference does not consume final time warp; use a fusion mode."
+            )
         if adaptive_final_time_warp and self._acot_contextual_compiler is not None:
             raise ValueError("Adaptive final time warp cannot be combined with a contextual Action-CoT compiler.")
         if final_denoising_steps is not None and self._acot_contextual_compiler is not None:
@@ -1433,22 +1455,77 @@ class Policy(BasePolicy):
                 raise ValueError("Contextual compiler inference requires IAR tokens.")
             if expert_action_noise is None:
                 raise ValueError("Contextual compiler inference requires final-action flow noise.")
+            if contextual_fusion_mode != "compiler" and (
+                self._sample_actions_profile_direct_one_step_expert is None
+            ):
+                raise ValueError(
+                    "Contextual fusion requires the direct one-step final expert."
+                )
             prefix_mask = prefix_state["prefix_mask"].astype(prefix_state["prefix_out"].dtype)
             prefix_feature = jnp.asarray(
                 jnp.sum(prefix_state["prefix_out"] * prefix_mask[..., None], axis=1)
                 / jnp.maximum(jnp.sum(prefix_mask, axis=1, keepdims=True), 1.0),
                 dtype=jnp.float32,
             )
-            compiled_actions = self._acot_contextual_compiler.predict_batch(
-                explicit_action_reason,
-                expert_action_noise,
-                prefix_feature,
-                implicit_action_reason,
-                observation.state,
-            )
-            _block_until_ready(compiled_actions)
-            timing["contextual_compiler_ms"] = (time.monotonic() - stage_start) * 1000
-            result = {"actions": compiled_actions}
+            compiled_actions = None
+            if contextual_fusion_mode != "expert":
+                compiler_started = time.monotonic()
+                compiled_actions = self._acot_contextual_compiler.predict_batch(
+                    explicit_action_reason,
+                    expert_action_noise,
+                    prefix_feature,
+                    implicit_action_reason,
+                    observation.state,
+                )
+                _block_until_ready(compiled_actions)
+                timing["contextual_compiler_ms"] = (
+                    time.monotonic() - compiler_started
+                ) * 1000
+            expert_actions = None
+            if contextual_fusion_mode != "compiler":
+                expert_started = time.monotonic()
+                assert self._sample_actions_profile_direct_one_step_expert is not None
+                expert_outputs = self._sample_actions_profile_direct_one_step_expert(
+                    prefix_state,
+                    explicit_action_reason,
+                    implicit_action_reason,
+                    final_time_warp_alpha,
+                )
+                _block_until_ready(expert_outputs)
+                timing["action_expert_ms"] = (time.monotonic() - expert_started) * 1000
+                expert_actions = expert_outputs["actions"]
+
+            if contextual_fusion_mode == "compiler":
+                assert compiled_actions is not None
+                actions = compiled_actions
+            elif contextual_fusion_mode == "expert":
+                assert expert_actions is not None
+                actions = expert_actions
+            elif contextual_fusion_mode == "control_compiler":
+                assert compiled_actions is not None and expert_actions is not None
+                actions = jnp.concatenate(
+                    (compiled_actions[..., :6], expert_actions[..., 6:]), axis=-1
+                )
+            elif contextual_fusion_mode == "gripper_compiler":
+                assert compiled_actions is not None and expert_actions is not None
+                actions = jnp.concatenate(
+                    (
+                        expert_actions[..., :6],
+                        compiled_actions[..., 6:7],
+                        expert_actions[..., 7:],
+                    ),
+                    axis=-1,
+                )
+            elif contextual_fusion_mode == "blend50":
+                assert compiled_actions is not None and expert_actions is not None
+                actions = expert_actions.at[..., :7].set(
+                    0.5 * (
+                        expert_actions[..., :7] + compiled_actions[..., :7]
+                    )
+                )
+            else:
+                raise AssertionError(contextual_fusion_mode)
+            result = {"actions": actions}
         if coarse_outputs.get("explicit_action_reason") is not None:
             result["coarse_actions"] = coarse_outputs["explicit_action_reason"]
             result["action_cot_denoising_steps"] = coarse_outputs["action_cot_denoising_steps"]
