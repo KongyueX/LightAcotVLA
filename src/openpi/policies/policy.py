@@ -283,6 +283,9 @@ class Policy(BasePolicy):
         self._use_quantile_norm = use_quantile_norm
         self._action_dim = action_dim or model.action_dim
         self._action_horizon = model.action_horizon
+        self._coarse_action_horizon = getattr(
+            model, "coarse_action_horizon", self._action_horizon
+        )
         self._acot_contextual_compiler = acot_contextual_compiler
         self._acot_compact_alpha_router = acot_compact_alpha_router
         self._acot_harp_residual = acot_harp_residual
@@ -312,6 +315,14 @@ class Policy(BasePolicy):
         self._sample_actions_joint_coupled = None
         self._sample_actions_batched_mc = None
         self._predict_execution_horizon = None
+        # Strictly opt-in, single-client feasibility cache for reusing only the
+        # VLM prefix across consecutive sequential-profile RPCs. Runtime
+        # observation/state and flow noise are replaced on every request.
+        self._temporal_prefix_state: dict[str, Any] | None = None
+        self._temporal_prefix_last_step: int | None = None
+        self._temporal_prefix_period: int | None = None
+        self._temporal_prefix_age = 0
+        self._temporal_prefix_refresh_count = 0
         if hasattr(model, "sample_actions_joint_coupled"):
             self._sample_actions_joint_coupled = nnx_utils.module_jit(model.sample_actions_joint_coupled)
         if hasattr(model, "sample_actions_batched_mc"):
@@ -538,6 +549,24 @@ class Policy(BasePolicy):
             absolute_decision_step = int(raw_step)
             if absolute_decision_step < 0 or float(absolute_decision_step) != float(raw_step):
                 raise ValueError("action_cot_absolute_decision_step must be a non-negative integer.")
+        temporal_prefix_reuse_period_raw = np.asarray(
+            inputs.pop("action_cot_temporal_prefix_reuse_period", 0)
+        ).item()
+        temporal_prefix_reuse_period = int(temporal_prefix_reuse_period_raw)
+        if (
+            temporal_prefix_reuse_period < 0
+            or float(temporal_prefix_reuse_period)
+            != float(temporal_prefix_reuse_period_raw)
+        ):
+            raise ValueError(
+                "action_cot_temporal_prefix_reuse_period must be a non-negative integer."
+            )
+        if temporal_prefix_reuse_period > 0 and absolute_decision_step is None:
+            raise ValueError(
+                "Temporal prefix reuse requires action_cot_absolute_decision_step."
+            )
+        if temporal_prefix_reuse_period == 0:
+            self._reset_temporal_prefix_cache()
         if compact_alpha_router_enabled:
             if self._acot_compact_alpha_router is None:
                 raise ValueError(
@@ -647,6 +676,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_selective_gripper_tau", None)
             override_inputs.pop("action_cot_selective_refinement_mode", None)
             override_inputs.pop("action_cot_absolute_decision_step", None)
+            override_inputs.pop("action_cot_temporal_prefix_reuse_period", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             override_inputs.pop("action_cot_final_denoising_steps", None)
@@ -881,6 +911,96 @@ class Policy(BasePolicy):
                 ).reshape((1,)),
                 "ofp_interval_condition_mode": ofp_interval_condition_mode,
             }
+        if temporal_prefix_reuse_period > 0:
+            if not profile_policy_timing or not self._can_profile_sample_actions():
+                raise ValueError(
+                    "Temporal prefix reuse is limited to the profiled sequential Action-CoT path."
+                )
+            temporal_conflicts = {
+                "pact_flow_scheduler": pact_flow_scheduler_enabled,
+                "batched_mc_samples": batched_mc_samples > 0,
+                "joint_coupled_sampler": joint_coupled_sampler,
+                "execution_horizon_predictor": run_execution_horizon_predictor,
+                "coarse_actions_override": sample_kwargs.get(
+                    "explicit_action_reason_override"
+                )
+                is not None,
+                "action_cot_skip_segment": sample_kwargs.get(
+                    "explicit_action_skip_segment"
+                )
+                is not None,
+                "dynamic_denoising_steps": _as_bool(
+                    sample_kwargs.get("dynamic_denoising_steps", False)
+                ),
+                "final_time_warp": float(
+                    np.asarray(sample_kwargs.get("final_time_warp_alpha", 0.0)).item()
+                )
+                != 0.0,
+                "endpoint_conditioning": float(
+                    np.asarray(
+                        sample_kwargs.get("final_endpoint_condition_strength", 0.0)
+                    ).item()
+                )
+                != 0.0,
+                "final_midpoint": _as_bool(
+                    sample_kwargs.get("final_midpoint", False)
+                ),
+                "adaptive_final_time_warp": _as_bool(
+                    sample_kwargs.get("adaptive_final_time_warp", False)
+                ),
+                "ofp_interval_flow": _as_bool(
+                    sample_kwargs.get("ofp_interval_flow", False)
+                ),
+                "compact_alpha_router": compact_alpha_router_enabled,
+                "harp_residual": _as_bool(
+                    sample_kwargs.get("apply_harp_residual", False)
+                ),
+                "harp_gripper_event": _as_bool(
+                    sample_kwargs.get("apply_harp_gripper_event", False)
+                ),
+                "final_hybrid_mode": str(
+                    sample_kwargs.get("final_hybrid_mode", "none")
+                )
+                != "none",
+                "selective_gripper_refinement": _as_bool(
+                    sample_kwargs.get("selective_gripper_refinement", False)
+                ),
+                "contextual_compiler": self._acot_contextual_compiler is not None,
+                "export_acot_cache": export_acot_cache,
+            }
+            active_temporal_conflicts = sorted(
+                name for name, enabled in temporal_conflicts.items() if enabled
+            )
+            if active_temporal_conflicts:
+                raise ValueError(
+                    "Temporal prefix reuse pilot cannot be combined with: "
+                    f"{', '.join(active_temporal_conflicts)}."
+                )
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            final_steps = (
+                1
+                if sample_kwargs.get("token_time_warp_alpha") is not None
+                else int(
+                    np.asarray(
+                        sample_kwargs.get(
+                            "final_denoising_steps",
+                            sample_kwargs.get("num_steps", 10),
+                        )
+                    ).item()
+                )
+            )
+            if coarse_steps != 1 or final_steps != 1:
+                raise ValueError(
+                    "Temporal prefix reuse pilot requires sequential endpoint EAR/final NFE1; "
+                    f"got {coarse_steps}/{final_steps}."
+                )
         if pact_flow_scheduler_enabled:
             if (
                 not self._can_profile_sample_actions()
@@ -1438,6 +1558,7 @@ class Policy(BasePolicy):
             or harp_gripper_event_enabled
             or final_hybrid_mode != "none"
             or selective_gripper_refinement_enabled
+            or temporal_prefix_reuse_period > 0
             or profile_policy_timing
             or export_acot_cache
         ) and self._can_profile_sample_actions():
@@ -1446,6 +1567,8 @@ class Policy(BasePolicy):
                 observation,
                 sample_kwargs,
                 export_acot_cache=export_acot_cache,
+                temporal_prefix_reuse_period=temporal_prefix_reuse_period,
+                absolute_decision_step=absolute_decision_step,
             )
         else:
             result = self._sample_actions(sample_rng, observation, **sample_kwargs)
@@ -1591,6 +1714,68 @@ class Policy(BasePolicy):
             actions = np.pad(actions, ((0, 0), (0, self._action_dim - actions.shape[-1])))
         return actions[:, : self._action_dim]
 
+    def _reset_temporal_prefix_cache(self) -> None:
+        self._temporal_prefix_state = None
+        self._temporal_prefix_last_step = None
+        self._temporal_prefix_period = None
+        self._temporal_prefix_age = 0
+        self._temporal_prefix_refresh_count = 0
+
+    def _temporal_profile_prefix(
+        self,
+        sample_rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        *,
+        reuse_period: int,
+        absolute_decision_step: int,
+    ) -> tuple[dict[str, Any], bool, int]:
+        """Reuse only stale VLM prefix tensors while refreshing runtime inputs."""
+
+        assert self._sample_actions_profile_prefix is not None
+        new_episode = (
+            absolute_decision_step == 0
+            or self._temporal_prefix_last_step is None
+            or absolute_decision_step <= self._temporal_prefix_last_step
+            or self._temporal_prefix_period != reuse_period
+        )
+        if new_episode:
+            self._reset_temporal_prefix_cache()
+            self._temporal_prefix_period = reuse_period
+
+        next_age = self._temporal_prefix_age + 1
+        reuse_prefix = (
+            self._temporal_prefix_state is not None
+            and next_age < reuse_period
+        )
+        if reuse_prefix:
+            current_observation = _model.preprocess_observation(
+                None, observation, train=False
+            )
+            batch_size = current_observation.state.shape[0]
+            ref_action_rng, expert_action_rng = jax.random.split(sample_rng, 2)
+            prefix_state = dict(self._temporal_prefix_state)
+            prefix_state.update(
+                {
+                    "observation": current_observation,
+                    "ref_action_noise": jax.random.normal(
+                        ref_action_rng,
+                        (batch_size, self._coarse_action_horizon, self._action_dim),
+                    ),
+                    "expert_action_noise": jax.random.normal(
+                        expert_action_rng,
+                        (batch_size, self._action_horizon, self._action_dim),
+                    ),
+                }
+            )
+            self._temporal_prefix_age = next_age
+        else:
+            prefix_state = self._sample_actions_profile_prefix(sample_rng, observation)
+            self._temporal_prefix_state = prefix_state
+            self._temporal_prefix_age = 0
+            self._temporal_prefix_refresh_count += 1
+        self._temporal_prefix_last_step = absolute_decision_step
+        return prefix_state, reuse_prefix, self._temporal_prefix_refresh_count
+
     def _can_profile_sample_actions(self) -> bool:
         return (
             self._sample_actions_profile_prefix is not None
@@ -1606,6 +1791,8 @@ class Policy(BasePolicy):
         sample_kwargs: dict[str, Any],
         *,
         export_acot_cache: bool = False,
+        temporal_prefix_reuse_period: int = 0,
+        absolute_decision_step: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, float]]:
         assert self._sample_actions_profile_prefix is not None
         assert self._sample_actions_profile_implicit is not None
@@ -1615,7 +1802,18 @@ class Policy(BasePolicy):
         timing: dict[str, float] = {}
 
         stage_start = time.monotonic()
-        prefix_state = self._sample_actions_profile_prefix(sample_rng, observation)
+        if temporal_prefix_reuse_period > 0:
+            assert absolute_decision_step is not None
+            prefix_state, prefix_reused, refresh_count = self._temporal_profile_prefix(
+                sample_rng,
+                observation,
+                reuse_period=temporal_prefix_reuse_period,
+                absolute_decision_step=absolute_decision_step,
+            )
+            timing["vlm_prefix_reused"] = float(prefix_reused)
+            timing["vlm_prefix_refresh_count"] = float(refresh_count)
+        else:
+            prefix_state = self._sample_actions_profile_prefix(sample_rng, observation)
         _block_until_ready(prefix_state)
         timing["vlm_ms"] = (time.monotonic() - stage_start) * 1000
 

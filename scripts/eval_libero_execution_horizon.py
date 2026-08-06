@@ -53,6 +53,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument(
+        "--temporal-prefix-reuse-period",
+        type=int,
+        default=0,
+        help=(
+            "Strictly opt-in VLM-prefix reuse period for the sequential endpoint "
+            "pilot. Zero disables reuse; period two refreshes once, then reuses "
+            "that prefix for the next policy decision."
+        ),
+    )
+    parser.add_argument(
         "--final-denoising-steps",
         type=int,
         default=None,
@@ -353,6 +363,11 @@ def _request(
             absolute_decision_step, dtype=np.int32
         ),
     }
+    if args.temporal_prefix_reuse_period > 0:
+        request["action_cot_temporal_prefix_reuse_period"] = np.asarray(
+            args.temporal_prefix_reuse_period,
+            dtype=np.int32,
+        )
     if args.final_denoising_steps is not None:
         request["action_cot_final_denoising_steps"] = np.asarray(
             args.final_denoising_steps,
@@ -518,6 +533,12 @@ def _request(
         "predictor_ms": float(policy_timing.get("execution_horizon_predictor_ms", np.nan)),
         "batched_teacher_ms": float(policy_timing.get("batched_mc_teacher_ms", np.nan)),
         "action_expert_ms": float(policy_timing.get("action_expert_ms", np.nan)),
+        "vlm_prefix_reused": float(
+            policy_timing.get("vlm_prefix_reused", np.nan)
+        ),
+        "vlm_prefix_refresh_count": float(
+            policy_timing.get("vlm_prefix_refresh_count", np.nan)
+        ),
         "pact_flow_tau_json": pact_tau_json,
         "pact_flow_tau_logits_json": pact_tau_logits_json,
         "pact_flow_tau_mean": pact_tau_mean,
@@ -799,6 +820,8 @@ def _run_episode(
     selective_gripper_triggers = 0
     policy_calls = 0
     sampled_chunks = 0
+    temporal_prefix_reused_calls = 0
+    temporal_prefix_refresh_calls = 0
     step = 0
     success = False
     previous_actions: np.ndarray | None = None
@@ -837,6 +860,20 @@ def _run_episode(
             policy_calls += 1
             sampled_chunks += args.teacher_samples if mode == "exact_batched_mc_v2" else 1
             timings.append(timing)
+            temporal_prefix_info: dict[str, Any] = {}
+            if args.temporal_prefix_reuse_period > 0:
+                prefix_reused = int(timing["vlm_prefix_reused"])
+                prefix_refresh_count = int(timing["vlm_prefix_refresh_count"])
+                if prefix_reused not in {0, 1} or prefix_refresh_count < 1:
+                    raise ValueError(
+                        "Temporal prefix timing must return a binary reuse flag and positive refresh count."
+                    )
+                temporal_prefix_reused_calls += prefix_reused
+                temporal_prefix_refresh_calls += 1 - prefix_reused
+                temporal_prefix_info = {
+                    "vlm_prefix_reused": prefix_reused,
+                    "vlm_prefix_refresh_count": prefix_refresh_count,
+                }
             action_chunk = np.asarray(result["actions"], dtype=np.float32)
             horizon, selector_info = _select_horizon(
                 mode,
@@ -985,6 +1022,7 @@ def _run_episode(
                     "harp_residual_ms": timing["harp_residual_ms"],
                     "harp_gripper_event_ms": timing["harp_gripper_event_ms"],
                     "selector_json": json.dumps(selector_info, separators=(",", ":")),
+                    **temporal_prefix_info,
                     **compact_router_info,
                     **selective_gripper_info,
                     **contextual_fusion_info,
@@ -1059,6 +1097,18 @@ def _run_episode(
         "actual_harp_residual_total_ms": total("harp_residual_ms"),
         "actual_harp_gripper_event_total_ms": total("harp_gripper_event_ms"),
     }
+    if args.temporal_prefix_reuse_period > 0:
+        row.update(
+            {
+                "temporal_prefix_reused_calls": temporal_prefix_reused_calls,
+                "temporal_prefix_refresh_calls": temporal_prefix_refresh_calls,
+                "temporal_prefix_reuse_rate": (
+                    temporal_prefix_reused_calls / policy_calls
+                    if policy_calls
+                    else float("nan")
+                ),
+            }
+        )
     if args.pact_flow_scheduler:
         row.update(
             {
@@ -1278,6 +1328,25 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
                 ),
             }
         )
+    if any("temporal_prefix_reused_calls" in row for row in subset):
+        reused_calls = sum(
+            int(row.get("temporal_prefix_reused_calls", 0)) for row in subset
+        )
+        refresh_calls = sum(
+            int(row.get("temporal_prefix_refresh_calls", 0)) for row in subset
+        )
+        temporal_calls = reused_calls + refresh_calls
+        result.update(
+            {
+                "temporal_prefix_reused_calls": reused_calls,
+                "temporal_prefix_refresh_calls": refresh_calls,
+                "temporal_prefix_reuse_rate": (
+                    reused_calls / temporal_calls
+                    if temporal_calls
+                    else float("nan")
+                ),
+            }
+        )
     return result
 
 
@@ -1321,6 +1390,8 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "compact_alpha_router_decisions",
         "selective_gripper_decisions",
         "selective_gripper_triggers",
+        "temporal_prefix_reused_calls",
+        "temporal_prefix_refresh_calls",
     }
     floats = {
         "avg_h",
@@ -1350,6 +1421,7 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "selective_gripper_trigger_rate",
         "actual_selective_gripper_verifier_total_ms",
         "actual_selective_gripper_refinement_total_ms",
+        "temporal_prefix_reuse_rate",
     }
     converted = {
         key: int(value) if key in integers else float(value) if key in floats else value for key, value in row.items()
@@ -1422,6 +1494,52 @@ def _prepare_journal(
 def main(args: argparse.Namespace) -> None:
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action_cot_denoising_steps must be positive.")
+    if args.temporal_prefix_reuse_period < 0:
+        raise ValueError("temporal_prefix_reuse_period must be non-negative.")
+    if args.temporal_prefix_reuse_period > 0:
+        temporal_conflicts = {
+            "pact_flow_scheduler": args.pact_flow_scheduler,
+            "final_time_warp_alpha": args.final_time_warp_alpha != 0.0,
+            "final_endpoint_condition_strength": (
+                args.final_endpoint_condition_strength != 0.0
+            ),
+            "final_midpoint": args.final_midpoint,
+            "adaptive_final_time_warp": args.adaptive_final_time_warp,
+            "compact_alpha_router": args.compact_alpha_router,
+            "harp_residual": args.harp_residual,
+            "harp_gripper_event": args.harp_gripper_event,
+            "final_hybrid_mode": args.final_hybrid_mode != "none",
+            "selective_gripper_refinement": args.selective_gripper_refinement,
+            "ofp_interval_flow": args.ofp_interval_flow,
+            "contextual_fusion": args.contextual_fusion_mode != "compiler",
+            "complex_execution_mode": any(
+                mode not in {"original", "fixed_h9"} for mode in args.modes
+            ),
+        }
+        active_temporal_conflicts = sorted(
+            name for name, enabled in temporal_conflicts.items() if enabled
+        )
+        if active_temporal_conflicts:
+            raise ValueError(
+                "temporal_prefix_reuse_period is limited to the simple sequential "
+                "endpoint pilot and cannot be combined with: "
+                f"{', '.join(active_temporal_conflicts)}."
+            )
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError(
+                "temporal_prefix_reuse_period requires endpoint-student EAR NFE1."
+            )
+        if args.final_token_time_warp_alpha is None:
+            if args.final_denoising_steps != 1:
+                raise ValueError(
+                    "temporal_prefix_reuse_period requires --final-denoising-steps 1 "
+                    "unless static token-time warp supplies the one-step final path."
+                )
+        elif args.final_denoising_steps is not None:
+            raise ValueError(
+                "Static token-time warp owns final NFE1; do not also set "
+                "--final-denoising-steps for the temporal prefix pilot."
+            )
     if args.contextual_fusion_switch_step < 0:
         raise ValueError("contextual_fusion_switch_step must be non-negative.")
     for name in (
