@@ -1,8 +1,8 @@
 """Exact dual-path counterfactual oracle on the fixed MRR Task8 test22 split.
 
-This probe is the first structural screen for DCE/CDVA-ACoT.  It reuses the
-learned MRR top-4 direct visual splice and evaluates four exact interventions
-under identical prefix/coarse/final flow noise:
+This probe is the first structural screen for DCE/CDVA-ACoT.  It ranks visual
+blocks with the learned MRR selector, retains top 4/8/16 blocks, and evaluates
+four exact interventions under identical prefix/coarse/final flow noise:
 
 * stale:       anchor prefix + stale IAR/EAR;
 * plan-only:   anchor prefix + direct-splice IAR/EAR;
@@ -72,6 +72,7 @@ class Args:
     expected_test_pairs: int = 22
     coarse_flow_steps: int = 1
     final_flow_steps: int = 1
+    top_k: int = 4
     joint_action_closure_gate: float = 0.75
     conditional_direct_gain_gate: float = 0.25
     conditional_plan_gain_gate: float = 0.10
@@ -102,6 +103,8 @@ def _validate_args(args: Args) -> None:
         raise ValueError("Expected split sizes must be positive and sum to expected_pairs.")
     if args.coarse_flow_steps <= 0 or args.final_flow_steps <= 0:
         raise ValueError("Flow step counts must be positive.")
+    if args.top_k not in (4, 8, 16):
+        raise ValueError("DCE oracle --top-k must be one of 4, 8, or 16.")
     gates = (
         args.joint_action_closure_gate,
         args.conditional_direct_gain_gate,
@@ -206,7 +209,7 @@ def _make_evaluator(
     ) -> dict[str, jax.Array]:
         base_model = nnx.merge(base_graphdef, base_state)
         scorer = nnx.merge(selector_runtime.scorer_graphdef, selector_state)
-        anchor_prefix, fresh_prefix, comparison, selected_ids, block_logits = (
+        anchor_prefix, fresh_prefix, _, _, block_logits = (
             compiler_oracle._learned_direct_context(  # noqa: SLF001
                 base_model,
                 scorer,
@@ -217,6 +220,19 @@ def _make_evaluator(
                 projection_seed=selector_runtime.config.feature_projection_seed,
                 projection_rank=selector_runtime.config.projection_rank,
             )
+        )
+        _, selected_ids = jax.lax.top_k(block_logits, args.top_k)
+        selected_mask = mrr_oracle._selected_visual_mask(selected_ids[0])  # noqa: SLF001
+        direct_kv = mrr_oracle._composite_cache(  # noqa: SLF001
+            anchor_prefix["kv_cache"],
+            fresh_prefix["kv_cache"],
+            selected_mask[None],
+            jnp.zeros((1,), dtype=jnp.bool_),
+        )
+        comparison = compiler_oracle._prefix_comparison(  # noqa: SLF001
+            anchor_prefix,
+            fresh_prefix,
+            direct_kv,
         )
         comparison_iar, comparison_ear = compiler_oracle._bottlenecks(  # noqa: SLF001
             base_model,
@@ -533,7 +549,13 @@ def main(args: Args) -> None:
         "selector": {
             "artifact_dir": str(selector_runtime.artifact_dir),
             "parameter_count": mrr_block_selector.PARAMETER_COUNT,
-            "top_k": selector_runtime.config.top_k,
+            "trained_top_k": selector_runtime.config.top_k,
+            "oracle_top_k": args.top_k,
+            "selected_visual_tokens": args.top_k * mrr_oracle.TOKENS_PER_BLOCK,
+            "selected_visual_token_fraction": (
+                args.top_k * mrr_oracle.TOKENS_PER_BLOCK / mrr_oracle.VISUAL_TOKENS
+            ),
+            "ranking": "same learned selector logits; only the retained prefix length changes",
         },
         "heldout": {
             "partition": "MRR/P3T episode-disjoint test22",
