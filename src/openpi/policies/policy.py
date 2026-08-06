@@ -1372,7 +1372,10 @@ class Policy(BasePolicy):
             outputs["actions"] = result
         # outputs["actions"] = inputs["actions"]
 
-        # Unbatch and convert to np.ndarray.
+        # Transfer the output pytree in one call so independent device buffers
+        # can be copied in parallel. Calling ``np.asarray`` leaf by leaf adds
+        # one host synchronization per diagnostic tensor on profiled paths.
+        outputs = jax.device_get(outputs)
         outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
         if compact_alpha_router_enabled:
             assert compact_alpha_router_score is not None
@@ -2058,11 +2061,6 @@ class Policy(BasePolicy):
                     time.monotonic() - dual_contextual_started
                 ) * 1000
             result = {"actions": actions}
-            if token_time_warp_alpha is not None:
-                result["token_time_warp_alpha"] = jnp.broadcast_to(
-                    jnp.asarray(token_time_warp_alpha, dtype=jnp.float32)[None, :],
-                    (actions.shape[0], actions.shape[1]),
-                )
             if contextual_fusion_mode in {
                 "semantic_gate",
                 "spectral_compiler_gripper",

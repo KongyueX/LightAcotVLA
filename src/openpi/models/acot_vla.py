@@ -2449,10 +2449,7 @@ class ACOT_VLA(_model.BaseModel):
             explicit_action_reason,
             implicit_action_reason,
         )
-        return {
-            "actions": expert_action_noise - velocity,
-            "token_time_warp_alpha": alpha,
-        }
+        return {"actions": expert_action_noise - velocity}
 
     def sample_actions_profile_direct_endpoint_conditioned_one_step_expert(
         self,
