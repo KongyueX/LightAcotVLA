@@ -134,6 +134,7 @@ class Args:
     # contract is unchanged. The remaining probability mass is assigned to the
     # deployment endpoint objective.
     pact_flow_scheduler: bool = False
+    pact_scheduler_only: bool = False
     pact_heterogeneous_flow_probability: float = 0.25
     pact_scalar_flow_probability: float = 0.25
     pact_plan_anchor_loss_weight: float = 1.0
@@ -171,7 +172,12 @@ def _train_filter(
     *,
     ofp_adapter_only: bool = False,
     adaptive_final_time_warp: bool = False,
+    pact_scheduler_only: bool = False,
 ) -> nnx.filterlib.Filter:
+    if pact_scheduler_only:
+        if stage != "final":
+            raise ValueError("PACT scheduler-only training requires stage='final'.")
+        return nnx_utils.PathRegex(r"pact_flow_scheduler/.*")
     if adaptive_final_time_warp:
         if stage != "final":
             raise ValueError("Adaptive final time warp training requires stage='final'.")
@@ -330,6 +336,8 @@ def _validate_args(args: Args) -> None:
             raise ValueError(
                 "--adaptive-final-time-warp supports endpoint and IR losses only; leave multi-time weights at zero."
             )
+    if args.pact_scheduler_only and not args.pact_flow_scheduler:
+        raise ValueError("--pact-scheduler-only requires --pact-flow-scheduler.")
     if args.pact_flow_scheduler:
         if args.stage != "final" or args.variant != "b6":
             raise ValueError(
@@ -498,6 +506,39 @@ def _load_resume_params(path: str | None) -> tuple[dict[str, Any] | None, set[tu
     if disallowed:
         raise ValueError(f"Resume sidecar contains disallowed parameters: {disallowed[:5]}")
     return params, set(flat)
+
+
+def _validate_complete_pact_resume(
+    resume_paths: set[tuple[Any, ...]],
+    model_config: Any,
+) -> None:
+    """Require an exact, complete scheduler subtree for scheduler-only continuation."""
+
+    expected_model = nnx.eval_shape(model_config.create, jax.random.key(0))
+    expected_paths = {
+        path
+        for path in traverse_util.flatten_dict(nnx.state(expected_model).to_pure_dict())
+        if _PACT_FLOW_SCHEDULER_PATH.fullmatch(_path_text(path)) is not None
+    }
+    if not expected_paths:
+        raise ValueError("PACT scheduler parameters are missing from the enabled model config.")
+    resume_pact_paths = {
+        path
+        for path in resume_paths
+        if _PACT_FLOW_SCHEDULER_PATH.fullmatch(_path_text(path)) is not None
+    }
+    missing = sorted(_path_text(path) for path in expected_paths - resume_pact_paths)
+    unexpected = sorted(_path_text(path) for path in resume_pact_paths - expected_paths)
+    if missing:
+        raise ValueError(
+            "--pact-scheduler-only requires a resume sidecar with the complete PACT subtree; "
+            f"missing parameters: {missing[:5]}"
+        )
+    if unexpected:
+        raise ValueError(
+            "PACT resume sidecar contains scheduler parameters outside the configured subtree: "
+            f"{unexpected[:5]}"
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1027,10 +1068,13 @@ def main(args: Args) -> None:
         raise ValueError(
             "Adaptive final time-warp training cannot resume from a sidecar containing pact_flow_scheduler."
         )
+    if args.pact_scheduler_only:
+        _validate_complete_pact_resume(resume_paths, model_config)
     trainable_filter = _train_filter(
         args.stage,
         ofp_adapter_only=args.ofp_adapter_only,
         adaptive_final_time_warp=args.adaptive_final_time_warp,
+        pact_scheduler_only=args.pact_scheduler_only,
     )
     ir_weight = args.ir_loss_weight if args.variant == "ir" else 0.0
     objective_name = "endpoint"
@@ -1086,7 +1130,9 @@ def main(args: Args) -> None:
     trainable_params = state.params.filter(trainable_filter)
     trainable_parameter_count = training_utils.count_parameters(trainable_params)
     trainable_scope = (
-        "adaptive_final_time_warp_gate"
+        "pact_flow_scheduler_only"
+        if args.pact_scheduler_only
+        else "adaptive_final_time_warp_gate"
         if args.adaptive_final_time_warp
         else "pact_final_expert_and_scheduler"
         if args.pact_flow_scheduler
@@ -1340,6 +1386,7 @@ def main(args: Args) -> None:
         "adaptive_final_time_warp_center": 0.05 if args.adaptive_final_time_warp else None,
         "adaptive_final_time_warp_radius": 0.05 if args.adaptive_final_time_warp else None,
         "pact_flow_scheduler": args.pact_flow_scheduler,
+        "pact_scheduler_only": args.pact_scheduler_only,
         "pact_heterogeneous_flow_probability": (
             args.pact_heterogeneous_flow_probability if args.pact_flow_scheduler else None
         ),
