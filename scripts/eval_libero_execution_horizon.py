@@ -72,6 +72,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--final-token-time-warp-alpha",
+        type=float,
+        nargs=10,
+        default=None,
+        metavar="ALPHA",
+        help=(
+            "Opt-in per-action-token final time calibration. Provide exactly "
+            "10 values in [0,1), one for each action token."
+        ),
+    )
+    parser.add_argument(
         "--final-endpoint-condition-strength",
         type=float,
         default=0.0,
@@ -340,6 +351,11 @@ def _request(
     if args.final_time_warp_alpha > 0.0:
         request["action_cot_final_time_warp_alpha"] = np.asarray(
             args.final_time_warp_alpha,
+            dtype=np.float32,
+        )
+    if args.final_token_time_warp_alpha is not None:
+        request["action_cot_final_token_time_warp_alpha"] = np.asarray(
+            args.final_token_time_warp_alpha,
             dtype=np.float32,
         )
     if args.final_endpoint_condition_strength > 0.0:
@@ -1325,6 +1341,34 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("final_denoising_steps must be positive when set.")
     if not 0.0 <= args.final_time_warp_alpha < 1.0:
         raise ValueError("final_time_warp_alpha must be in [0, 1).")
+    if args.final_token_time_warp_alpha is not None:
+        token_alpha = np.asarray(args.final_token_time_warp_alpha, dtype=np.float64)
+        if token_alpha.shape != (10,):
+            raise ValueError("final_token_time_warp_alpha must contain exactly 10 values.")
+        if not np.all(np.isfinite(token_alpha)) or np.any(token_alpha < 0.0) or np.any(token_alpha >= 1.0):
+            raise ValueError("Every final_token_time_warp_alpha value must be finite and in [0, 1).")
+        incompatible_token_time_warp = {
+            "final_time_warp_alpha": args.final_time_warp_alpha > 0.0,
+            "final_denoising_steps": args.final_denoising_steps is not None,
+            "final_endpoint_condition_strength": args.final_endpoint_condition_strength > 0.0,
+            "final_midpoint": args.final_midpoint,
+            "adaptive_final_time_warp": args.adaptive_final_time_warp,
+            "ofp_interval_flow": args.ofp_interval_flow,
+            "harp_residual": args.harp_residual,
+            "harp_gripper_event": args.harp_gripper_event,
+            "final_hybrid_mode": args.final_hybrid_mode != "none",
+            "selective_gripper_refinement": args.selective_gripper_refinement,
+            "compact_alpha_router": args.compact_alpha_router,
+            "exact_batched_mc_v2": "exact_batched_mc_v2" in args.modes,
+        }
+        conflicts = sorted(
+            name for name, enabled in incompatible_token_time_warp.items() if enabled
+        )
+        if conflicts:
+            raise ValueError(
+                "final_token_time_warp_alpha owns direct final one-step timing and "
+                f"cannot be combined with: {', '.join(conflicts)}."
+            )
     if not 0.0 <= args.final_endpoint_condition_strength <= 1.0:
         raise ValueError("final_endpoint_condition_strength must be in [0, 1].")
     if args.final_endpoint_condition_strength > 0.0:

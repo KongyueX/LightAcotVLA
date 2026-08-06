@@ -625,8 +625,8 @@ class ACOT_VLA(_model.BaseModel):
     def embed_suffix(
         self, obs: _model.Observation,
         noisy_actions,
-        timestep: at.Float[at.Array, " b"],
-        interval_end_timestep: Optional[at.Float[at.Array, " b"]] = None,
+        timestep: jax.Array,
+        interval_end_timestep: Optional[jax.Array] = None,
         interval_condition_strength: jax.Array | float = 1.0,
         interval_condition_mode: str = "half_concat",
         explicit_action_reason: Optional[jax.Array] = None,
@@ -636,7 +636,7 @@ class ACOT_VLA(_model.BaseModel):
         at.Float[at.Array, "b s emb"],
         at.Bool[at.Array, "b s"],
         at.Bool[at.Array, " s"],
-        at.Float[at.Array, "b emb"] | None,
+        jax.Array | None,
     ]:
         input_mask = []
         ar_mask = []
@@ -647,10 +647,26 @@ class ACOT_VLA(_model.BaseModel):
                 raise ValueError(
                     "interval_condition_mode must be 'half_concat' or 'time_blend'."
                 )
-            if interval_end_timestep is None:
-                return posemb_sincos(
-                    timestep, width, min_period=4e-3, max_period=4.0
+            def embed_time(value: jax.Array) -> jax.Array:
+                # The pretrained path uses one scalar time per batch item.  An
+                # opt-in token-wise path supplies [B, T] times and reuses the
+                # exact same sinusoidal embedding/MLP independently at every
+                # action token; no additional expert call is introduced.
+                if value.ndim == 1:
+                    return posemb_sincos(
+                        value, width, min_period=4e-3, max_period=4.0
+                    )
+                if value.ndim != 2:
+                    raise ValueError(
+                        "Action-flow timestep must have shape [B] or [B, T]."
+                    )
+                flat = posemb_sincos(
+                    value.reshape((-1,)), width, min_period=4e-3, max_period=4.0
                 )
+                return flat.reshape((*value.shape, width))
+
+            if interval_end_timestep is None:
+                return embed_time(timestep)
             strength = jnp.clip(
                 jnp.asarray(interval_condition_strength, dtype=timestep.dtype),
                 0.0,
@@ -662,16 +678,10 @@ class ACOT_VLA(_model.BaseModel):
                 effective_timestep = timestep + strength * (
                     interval_end_timestep - timestep
                 )
-                return posemb_sincos(
-                    effective_timestep, width, min_period=4e-3, max_period=4.0
-                )
+                return embed_time(effective_timestep)
 
-            time_emb = posemb_sincos(
-                timestep, width, min_period=4e-3, max_period=4.0
-            )
-            endpoint_emb = posemb_sincos(
-                interval_end_timestep, width, min_period=4e-3, max_period=4.0
-            )
+            time_emb = embed_time(timestep)
+            endpoint_emb = embed_time(interval_end_timestep)
             split = time_emb.shape[-1] // 2
             conditioned_time_emb = jnp.concatenate(
                 [time_emb[..., :split], endpoint_emb[..., split:]], axis=-1
@@ -703,7 +713,13 @@ class ACOT_VLA(_model.BaseModel):
                 adarms_cond = time_emb
             else:
                 # mix timestep + action information using an MLP (no adaRMS)
-                time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=noisy_actions.shape[1])
+                time_tokens = (
+                    time_emb
+                    if time_emb.ndim == 3
+                    else einops.repeat(
+                        time_emb, "b emb -> b s emb", s=noisy_actions.shape[1]
+                    )
+                )
                 action_time_tokens = jnp.concatenate([action_tokens, time_tokens], axis=-1)
                 action_time_tokens = self.coarse_action_time_mlp_in(action_time_tokens)
                 action_time_tokens = nnx.swish(action_time_tokens)
@@ -725,7 +741,13 @@ class ACOT_VLA(_model.BaseModel):
                 adarms_cond = time_emb
             else:
                 # mix timestep + action information using an MLP (no adaRMS)
-                time_tokens = einops.repeat(time_emb, "b emb -> b s emb", s=noisy_actions.shape[1])
+                time_tokens = (
+                    time_emb
+                    if time_emb.ndim == 3
+                    else einops.repeat(
+                        time_emb, "b emb -> b s emb", s=noisy_actions.shape[1]
+                    )
+                )
                 action_time_tokens = jnp.concatenate([action_tokens, time_tokens], axis=-1)
                 action_time_tokens = self.action_time_mlp_in(action_time_tokens)
                 action_time_tokens = nnx.swish(action_time_tokens)
@@ -2359,6 +2381,42 @@ class ACOT_VLA(_model.BaseModel):
             implicit_action_reason,
         )
         return {"actions": expert_action_noise - velocity}
+
+    def sample_actions_profile_tokenwise_one_step_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+        token_time_warp_alpha: jax.Array,
+    ) -> dict[str, Any]:
+        """Run one final flow call with a separate time condition per token.
+
+        This generalizes scalar endpoint calibration from one value per action
+        chunk to a length-T vector.  The action expert, attention graph, and
+        Euler update are otherwise unchanged, so latency remains one final NFE.
+        """
+
+        expert_action_noise = prefix_state["expert_action_noise"]
+        batch_size, horizon = expert_action_noise.shape[:2]
+        alpha = jnp.asarray(token_time_warp_alpha, dtype=jnp.float32)
+        if alpha.ndim == 1:
+            alpha = jnp.broadcast_to(alpha[None, :], (batch_size, horizon))
+        elif alpha.ndim == 2:
+            alpha = jnp.broadcast_to(alpha, (batch_size, horizon))
+        else:
+            raise ValueError("token_time_warp_alpha must have shape [T] or [B, T].")
+        alpha = jnp.clip(alpha, 0.0, 1.0)
+        velocity = self._action_velocity_at_time(
+            prefix_state,
+            expert_action_noise,
+            jnp.ones_like(alpha) - alpha,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        return {
+            "actions": expert_action_noise - velocity,
+            "token_time_warp_alpha": alpha,
+        }
 
     def sample_actions_profile_direct_endpoint_conditioned_one_step_expert(
         self,

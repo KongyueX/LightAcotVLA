@@ -282,6 +282,7 @@ class Policy(BasePolicy):
         self._norm_stats = norm_stats
         self._use_quantile_norm = use_quantile_norm
         self._action_dim = action_dim or model.action_dim
+        self._action_horizon = model.action_horizon
         self._acot_contextual_compiler = acot_contextual_compiler
         self._acot_compact_alpha_router = acot_compact_alpha_router
         self._acot_harp_residual = acot_harp_residual
@@ -301,6 +302,7 @@ class Policy(BasePolicy):
         self._sample_actions_profile_coarse = None
         self._sample_actions_profile_expert = None
         self._sample_actions_profile_direct_one_step_expert = None
+        self._sample_actions_profile_tokenwise_one_step_expert = None
         self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert = None
         self._sample_actions_profile_second_half_expert = None
         self._sample_actions_profile_midpoint_expert = None
@@ -333,6 +335,10 @@ class Policy(BasePolicy):
                 model.sample_actions_profile_direct_one_step_expert,
                 # module_jit prepends module state: alpha is argument four.
                 static_argnums=(4,),
+            )
+        if hasattr(model, "sample_actions_profile_tokenwise_one_step_expert"):
+            self._sample_actions_profile_tokenwise_one_step_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_tokenwise_one_step_expert
             )
         if hasattr(model, "sample_actions_profile_direct_endpoint_conditioned_one_step_expert"):
             self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert = (
@@ -545,6 +551,25 @@ class Policy(BasePolicy):
         final_time_warp_alpha = float(
             np.asarray(inputs.pop("action_cot_final_time_warp_alpha", 0.0)).item()
         )
+        token_time_warp_raw = inputs.pop(
+            "action_cot_final_token_time_warp_alpha", None
+        )
+        token_time_warp_alpha = None
+        if token_time_warp_raw is not None:
+            token_time_warp_alpha = np.asarray(
+                token_time_warp_raw, dtype=np.float32
+            ).reshape((-1,))
+            if token_time_warp_alpha.shape != (self._action_horizon,):
+                raise ValueError(
+                    "action_cot_final_token_time_warp_alpha must contain exactly "
+                    f"{self._action_horizon} values."
+                )
+            if not np.all(np.isfinite(token_time_warp_alpha)) or not np.all(
+                (token_time_warp_alpha >= 0.0) & (token_time_warp_alpha < 1.0)
+            ):
+                raise ValueError(
+                    "action_cot_final_token_time_warp_alpha values must be finite and in [0, 1)."
+                )
         final_endpoint_condition_strength = float(
             np.asarray(inputs.pop("action_cot_final_endpoint_condition_strength", 0.0)).item()
         )
@@ -607,6 +632,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             override_inputs.pop("action_cot_final_denoising_steps", None)
             override_inputs.pop("action_cot_final_time_warp_alpha", None)
+            override_inputs.pop("action_cot_final_token_time_warp_alpha", None)
             override_inputs.pop("action_cot_final_endpoint_condition_strength", None)
             override_inputs.pop("action_cot_final_midpoint", None)
             override_inputs.pop("action_cot_adaptive_final_time_warp", None)
@@ -747,6 +773,13 @@ class Policy(BasePolicy):
                 **sample_kwargs,
                 "final_endpoint_condition_strength": final_endpoint_condition_strength,
             }
+        if token_time_warp_alpha is not None:
+            sample_kwargs = {
+                **sample_kwargs,
+                "token_time_warp_alpha": jnp.asarray(
+                    token_time_warp_alpha, dtype=jnp.float32
+                ),
+            }
         if final_midpoint_enabled:
             sample_kwargs = {
                 **sample_kwargs,
@@ -821,6 +854,52 @@ class Policy(BasePolicy):
                 ).reshape((1,)),
                 "ofp_interval_condition_mode": ofp_interval_condition_mode,
             }
+        if token_time_warp_alpha is not None:
+            if self._sample_actions_profile_tokenwise_one_step_expert is None:
+                raise ValueError(
+                    "Token-wise final time warp requires the token-wise one-step model entrypoint."
+                )
+            if (
+                final_time_warp_alpha > 0.0
+                or final_denoising_steps is not None
+                or final_endpoint_condition_strength > 0.0
+                or final_midpoint_enabled
+                or adaptive_final_time_warp
+                or compact_alpha_router_enabled
+                or harp_residual_enabled
+                or harp_gripper_event_enabled
+                or final_hybrid_mode != "none"
+                or selective_gripper_refinement_enabled
+                or ofp_interval_flow
+                or joint_coupled_sampler
+                or batched_mc_samples
+            ):
+                raise ValueError(
+                    "Token-wise final time warp is a standalone one-call final mode."
+                )
+            if (
+                self._acot_contextual_compiler is not None
+                and contextual_fusion_mode != "expert"
+            ):
+                raise ValueError(
+                    "Token-wise final time warp requires contextual_fusion_mode=expert "
+                    "when a contextual compiler is loaded."
+                )
+            if _as_bool(sample_kwargs.get("dynamic_denoising_steps", False)):
+                raise ValueError("Token-wise final time warp requires a fixed one-step EAR.")
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            if coarse_steps != 1:
+                raise ValueError(
+                    "Token-wise final time warp requires endpoint-student EAR NFE1; "
+                    f"got EAR NFE={coarse_steps}."
+                )
         if final_endpoint_condition_strength > 0.0:
             if self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert is None:
                 raise ValueError(
@@ -1232,6 +1311,7 @@ class Policy(BasePolicy):
             or ofp_interval_flow
             or final_denoising_steps is not None
             or final_time_warp_alpha > 0.0
+            or token_time_warp_alpha is not None
             or final_endpoint_condition_strength > 0.0
             or final_midpoint_enabled
             or adaptive_final_time_warp
@@ -1443,6 +1523,7 @@ class Policy(BasePolicy):
         prefix_feature = None
         explicit_final_steps = sample_kwargs.get("final_denoising_steps")
         final_time_warp_alpha = float(sample_kwargs.get("final_time_warp_alpha", 0.0))
+        token_time_warp_alpha = sample_kwargs.get("token_time_warp_alpha")
         final_endpoint_condition_strength = float(
             sample_kwargs.get("final_endpoint_condition_strength", 0.0)
         )
@@ -1517,6 +1598,17 @@ class Policy(BasePolicy):
                     sample_kwargs["ofp_warm_start_time"],
                     sample_kwargs["ofp_interval_condition_strength"],
                     sample_kwargs["ofp_interval_condition_mode"],
+                )
+            elif token_time_warp_alpha is not None:
+                if self._sample_actions_profile_tokenwise_one_step_expert is None:
+                    raise ValueError(
+                        "The loaded policy does not implement token-wise final time warp."
+                    )
+                expert_outputs = self._sample_actions_profile_tokenwise_one_step_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    token_time_warp_alpha,
                 )
             elif _as_bool(sample_kwargs.get("adaptive_final_time_warp", False)):
                 if self._sample_actions_profile_adaptive_one_step_expert is None:
@@ -1834,13 +1926,25 @@ class Policy(BasePolicy):
             expert_actions = None
             if contextual_fusion_mode != "compiler":
                 expert_started = time.monotonic()
-                assert self._sample_actions_profile_direct_one_step_expert is not None
-                expert_outputs = self._sample_actions_profile_direct_one_step_expert(
-                    prefix_state,
-                    explicit_action_reason,
-                    implicit_action_reason,
-                    final_time_warp_alpha,
-                )
+                if token_time_warp_alpha is not None:
+                    if self._sample_actions_profile_tokenwise_one_step_expert is None:
+                        raise ValueError(
+                            "The loaded policy does not implement token-wise final time warp."
+                        )
+                    expert_outputs = self._sample_actions_profile_tokenwise_one_step_expert(
+                        prefix_state,
+                        explicit_action_reason,
+                        implicit_action_reason,
+                        token_time_warp_alpha,
+                    )
+                else:
+                    assert self._sample_actions_profile_direct_one_step_expert is not None
+                    expert_outputs = self._sample_actions_profile_direct_one_step_expert(
+                        prefix_state,
+                        explicit_action_reason,
+                        implicit_action_reason,
+                        final_time_warp_alpha,
+                    )
                 if not dual_contextual_branches:
                     _block_until_ready(expert_outputs)
                 timing["action_expert_ms"] = (time.monotonic() - expert_started) * 1000
@@ -1943,6 +2047,11 @@ class Policy(BasePolicy):
                     time.monotonic() - dual_contextual_started
                 ) * 1000
             result = {"actions": actions}
+            if token_time_warp_alpha is not None:
+                result["token_time_warp_alpha"] = jnp.broadcast_to(
+                    token_time_warp_alpha[None, :],
+                    (actions.shape[0], actions.shape[1]),
+                )
             if contextual_fusion_mode in {
                 "semantic_gate",
                 "spectral_compiler_gripper",
