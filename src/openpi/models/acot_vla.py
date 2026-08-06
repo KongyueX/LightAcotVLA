@@ -2360,6 +2360,39 @@ class ACOT_VLA(_model.BaseModel):
         )
         return {"actions": expert_action_noise - velocity}
 
+    def sample_actions_profile_direct_endpoint_conditioned_one_step_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+        endpoint_condition_strength: float = 0.05,
+    ) -> dict[str, Any]:
+        """Run a static one-step endpoint-conditioned final flow.
+
+        This is the endpoint-only specialization of the OFP ``half_concat``
+        interval map for ``1 -> 0``.  It keeps the original Gaussian start and
+        one Euler update, but mixes the endpoint-time embedding into the final
+        expert's time condition.  Unlike the general OFP entrypoint it has no
+        warm-start branch or auxiliary outputs, so the single final suffix can
+        be constant-folded as aggressively as the direct NFE1 baseline.
+        """
+
+        expert_action_noise = prefix_state["expert_action_noise"]
+        batch_size = expert_action_noise.shape[0]
+        interval_start = jnp.ones((batch_size,), dtype=jnp.float32)
+        interval_end = jnp.zeros((batch_size,), dtype=jnp.float32)
+        velocity = self._action_velocity_at_time(
+            prefix_state,
+            expert_action_noise,
+            interval_start,
+            explicit_action_reason,
+            implicit_action_reason,
+            interval_end_time=interval_end,
+            interval_condition_strength=endpoint_condition_strength,
+            interval_condition_mode="half_concat",
+        )
+        return {"actions": expert_action_noise - velocity}
+
     def sample_actions_profile_second_half_expert(
         self,
         prefix_state: dict[str, Any],

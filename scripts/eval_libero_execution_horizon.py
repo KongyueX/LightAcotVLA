@@ -72,6 +72,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--final-endpoint-condition-strength",
+        type=float,
+        default=0.0,
+        help=(
+            "Static endpoint-time embedding strength in [0,1]. This runs the "
+            "endpoint-only half-concat flow in one final suffix call."
+        ),
+    )
+    parser.add_argument(
         "--adaptive-final-time-warp",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -257,6 +266,11 @@ def _request(
     if args.final_time_warp_alpha > 0.0:
         request["action_cot_final_time_warp_alpha"] = np.asarray(
             args.final_time_warp_alpha,
+            dtype=np.float32,
+        )
+    if args.final_endpoint_condition_strength > 0.0:
+        request["action_cot_final_endpoint_condition_strength"] = np.asarray(
+            args.final_endpoint_condition_strength,
             dtype=np.float32,
         )
     if args.adaptive_final_time_warp:
@@ -1067,6 +1081,29 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("final_denoising_steps must be positive when set.")
     if not 0.0 <= args.final_time_warp_alpha < 1.0:
         raise ValueError("final_time_warp_alpha must be in [0, 1).")
+    if not 0.0 <= args.final_endpoint_condition_strength <= 1.0:
+        raise ValueError("final_endpoint_condition_strength must be in [0, 1].")
+    if args.final_endpoint_condition_strength > 0.0:
+        incompatible_endpoint_modes = (
+            args.final_time_warp_alpha > 0.0
+            or args.final_denoising_steps is not None
+            or args.adaptive_final_time_warp
+            or args.compact_alpha_router
+            or args.harp_residual
+            or args.harp_gripper_event
+            or args.final_hybrid_mode != "none"
+            or args.selective_gripper_refinement
+            or args.ofp_interval_flow
+            or "exact_batched_mc_v2" in args.modes
+        )
+        if incompatible_endpoint_modes:
+            raise ValueError(
+                "final_endpoint_condition_strength is a standalone one-step final mode."
+            )
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError(
+                "final_endpoint_condition_strength requires endpoint-student EAR NFE1."
+            )
     if not np.isfinite(args.selective_gripper_tau) or not 0.0 <= args.selective_gripper_tau <= 1.0:
         raise ValueError("selective_gripper_tau must be finite and in [0, 1].")
     if args.final_time_warp_alpha > 0.0 and args.ofp_interval_flow:

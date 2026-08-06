@@ -78,6 +78,7 @@ class Policy(BasePolicy):
         self._sample_actions_profile_coarse = None
         self._sample_actions_profile_expert = None
         self._sample_actions_profile_direct_one_step_expert = None
+        self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert = None
         self._sample_actions_profile_second_half_expert = None
         self._sample_actions_profile_adaptive_one_step_expert = None
         self._sample_actions_profile_ofp_expert = None
@@ -108,6 +109,14 @@ class Policy(BasePolicy):
                 model.sample_actions_profile_direct_one_step_expert,
                 # module_jit prepends module state: alpha is argument four.
                 static_argnums=(4,),
+            )
+        if hasattr(model, "sample_actions_profile_direct_endpoint_conditioned_one_step_expert"):
+            self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert = (
+                nnx_utils.module_jit(
+                    model.sample_actions_profile_direct_endpoint_conditioned_one_step_expert,
+                    # module_jit prepends module state: strength is argument four.
+                    static_argnums=(4,),
+                )
             )
         if hasattr(model, "sample_actions_profile_second_half_expert"):
             self._sample_actions_profile_second_half_expert = nnx_utils.module_jit(
@@ -232,6 +241,9 @@ class Policy(BasePolicy):
         final_time_warp_alpha = float(
             np.asarray(inputs.pop("action_cot_final_time_warp_alpha", 0.0)).item()
         )
+        final_endpoint_condition_strength = float(
+            np.asarray(inputs.pop("action_cot_final_endpoint_condition_strength", 0.0)).item()
+        )
         requested_final_time_warp_alpha = final_time_warp_alpha
         adaptive_final_time_warp = _as_bool(
             inputs.pop("action_cot_adaptive_final_time_warp", False)
@@ -281,6 +293,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             override_inputs.pop("action_cot_final_denoising_steps", None)
             override_inputs.pop("action_cot_final_time_warp_alpha", None)
+            override_inputs.pop("action_cot_final_endpoint_condition_strength", None)
             override_inputs.pop("action_cot_adaptive_final_time_warp", None)
             override_inputs.pop("action_cot_ofp_interval_flow", None)
             override_inputs.pop("action_cot_ofp_warm_start_actions", None)
@@ -394,6 +407,12 @@ class Policy(BasePolicy):
             }
         if not 0.0 <= final_time_warp_alpha < 1.0:
             raise ValueError("action_cot_final_time_warp_alpha must be in [0, 1).")
+        if not 0.0 <= final_endpoint_condition_strength <= 1.0:
+            raise ValueError("action_cot_final_endpoint_condition_strength must be in [0, 1].")
+        if final_time_warp_alpha > 0.0 and final_endpoint_condition_strength > 0.0:
+            raise ValueError(
+                "Final time warp and endpoint conditioning are mutually exclusive."
+            )
         if compact_alpha_router_enabled:
             sample_kwargs = {
                 **sample_kwargs,
@@ -407,6 +426,11 @@ class Policy(BasePolicy):
                 # Keep this hashable so the direct endpoint JIT can specialize
                 # and constant-fold the effective time.
                 "final_time_warp_alpha": final_time_warp_alpha,
+            }
+        if final_endpoint_condition_strength > 0.0:
+            sample_kwargs = {
+                **sample_kwargs,
+                "final_endpoint_condition_strength": final_endpoint_condition_strength,
             }
         if adaptive_final_time_warp:
             sample_kwargs = {
@@ -463,6 +487,43 @@ class Policy(BasePolicy):
                 ).reshape((1,)),
                 "ofp_interval_condition_mode": ofp_interval_condition_mode,
             }
+        if final_endpoint_condition_strength > 0.0:
+            if self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert is None:
+                raise ValueError(
+                    "Endpoint conditioning requires the static one-step model entrypoint."
+                )
+            if (
+                final_denoising_steps is not None
+                or adaptive_final_time_warp
+                or compact_alpha_router_enabled
+                or harp_residual_enabled
+                or harp_gripper_event_enabled
+                or final_hybrid_mode != "none"
+                or selective_gripper_refinement_enabled
+                or ofp_interval_flow
+                or joint_coupled_sampler
+                or batched_mc_samples
+                or run_execution_horizon_predictor
+                or self._acot_contextual_compiler is not None
+            ):
+                raise ValueError(
+                    "Endpoint conditioning is a standalone one-step final mode."
+                )
+            if _as_bool(sample_kwargs.get("dynamic_denoising_steps", False)):
+                raise ValueError("Endpoint conditioning requires a fixed one-step EAR.")
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            if coarse_steps != 1:
+                raise ValueError(
+                    "Endpoint conditioning requires endpoint-student EAR NFE1; "
+                    f"got EAR NFE={coarse_steps}."
+                )
         observation = _model.Observation.from_dict(inputs)
         detailed_timing = {}
         if compact_alpha_router_enabled:
@@ -797,6 +858,7 @@ class Policy(BasePolicy):
             or ofp_interval_flow
             or final_denoising_steps is not None
             or final_time_warp_alpha > 0.0
+            or final_endpoint_condition_strength > 0.0
             or adaptive_final_time_warp
             or compact_alpha_router_enabled
             or harp_residual_enabled
@@ -1005,6 +1067,9 @@ class Policy(BasePolicy):
         prefix_feature = None
         explicit_final_steps = sample_kwargs.get("final_denoising_steps")
         final_time_warp_alpha = float(sample_kwargs.get("final_time_warp_alpha", 0.0))
+        final_endpoint_condition_strength = float(
+            sample_kwargs.get("final_endpoint_condition_strength", 0.0)
+        )
         final_hybrid_mode = str(sample_kwargs.get("final_hybrid_mode", "none"))
         selective_gripper_refinement = _as_bool(
             sample_kwargs.get("selective_gripper_refinement", False)
@@ -1126,6 +1191,19 @@ class Policy(BasePolicy):
                             (batch_size,), selective_refinement_mode == "full", dtype=np.bool_
                         ),
                     }
+                )
+            elif final_endpoint_condition_strength > 0.0:
+                if self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert is None:
+                    raise ValueError(
+                        "The loaded policy does not implement static endpoint-conditioned inference."
+                    )
+                expert_outputs = (
+                    self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert(
+                        prefix_state,
+                        coarse_outputs["explicit_action_reason"],
+                        implicit_outputs["implicit_action_reason"],
+                        final_endpoint_condition_strength,
+                    )
                 )
             elif final_hybrid_mode != "none":
                 if self._sample_actions_profile_direct_one_step_expert is None:
