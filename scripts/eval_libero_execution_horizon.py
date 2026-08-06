@@ -144,9 +144,53 @@ def build_parser() -> argparse.ArgumentParser:
             "control_compiler",
             "gripper_compiler",
             "blend50",
+            "semantic_gate",
+            "phase_compiler_expert",
+            "phase_expert_compiler",
         ),
         default="compiler",
         help="Opt-in fusion diagnostic when the server loads a contextual compiler.",
+    )
+    parser.add_argument(
+        "--contextual-fusion-translation-tau",
+        type=float,
+        default=0.20,
+        help="Normalized translation-group disagreement threshold for semantic_gate.",
+    )
+    parser.add_argument(
+        "--contextual-fusion-rotation-tau",
+        type=float,
+        default=0.20,
+        help="Normalized rotation-group disagreement threshold for semantic_gate.",
+    )
+    parser.add_argument(
+        "--contextual-fusion-gripper-tau",
+        type=float,
+        default=0.15,
+        help="Normalized gripper margin below which semantic_gate treats a step as an event.",
+    )
+    parser.add_argument(
+        "--contextual-fusion-gate-width",
+        type=float,
+        default=0.05,
+        help="Positive sigmoid width for semantic_gate continuous-control gates.",
+    )
+    parser.add_argument(
+        "--contextual-fusion-high-disagreement-source",
+        "--contextual-fusion-high-source",
+        dest="contextual_fusion_high_disagreement_source",
+        choices=("expert", "compiler"),
+        default="expert",
+        help="Branch used at high-disagreement/contact-event steps by semantic_gate.",
+    )
+    parser.add_argument(
+        "--contextual-fusion-switch-step",
+        type=int,
+        default=400,
+        help=(
+            "Absolute environment step where a phase_* diagnostic switches from "
+            "its first branch to its second branch."
+        ),
     )
     parser.add_argument(
         "--selective-gripper-refinement",
@@ -278,6 +322,11 @@ def _request(
         "policy_seed": np.asarray(seed, dtype=np.int64),
         "profile_policy_timing": np.asarray(1, dtype=np.bool_),
         "action_cot_denoising_steps": np.asarray(args.action_cot_denoising_steps, dtype=np.int32),
+        # Always expose rollout phase. Ordinary policies ignore it, compact
+        # routers and phase fusion diagnostics consume the same protocol field.
+        "action_cot_absolute_decision_step": np.asarray(
+            absolute_decision_step, dtype=np.int32
+        ),
     }
     if args.final_denoising_steps is not None:
         request["action_cot_final_denoising_steps"] = np.asarray(
@@ -302,15 +351,7 @@ def _request(
             dtype=np.bool_,
         )
     if args.compact_alpha_router:
-        request.update(
-            {
-                "action_cot_compact_alpha_router": np.asarray(True, dtype=np.bool_),
-                "action_cot_absolute_decision_step": np.asarray(
-                    absolute_decision_step,
-                    dtype=np.int32,
-                ),
-            }
-        )
+        request["action_cot_compact_alpha_router"] = np.asarray(True, dtype=np.bool_)
     if args.harp_residual:
         request["action_cot_harp_residual"] = np.asarray(True, dtype=np.bool_)
     if args.harp_gripper_event:
@@ -319,6 +360,33 @@ def _request(
         request["action_cot_final_hybrid_mode"] = args.final_hybrid_mode
     if args.contextual_fusion_mode != "compiler":
         request["action_cot_contextual_fusion_mode"] = args.contextual_fusion_mode
+    if args.contextual_fusion_mode in {
+        "phase_compiler_expert",
+        "phase_expert_compiler",
+    }:
+        request["action_cot_contextual_fusion_switch_step"] = np.asarray(
+            args.contextual_fusion_switch_step, dtype=np.int32
+        )
+    if args.contextual_fusion_mode == "semantic_gate":
+        request.update(
+            {
+                "action_cot_contextual_fusion_translation_tau": np.asarray(
+                    args.contextual_fusion_translation_tau, dtype=np.float32
+                ),
+                "action_cot_contextual_fusion_rotation_tau": np.asarray(
+                    args.contextual_fusion_rotation_tau, dtype=np.float32
+                ),
+                "action_cot_contextual_fusion_gripper_tau": np.asarray(
+                    args.contextual_fusion_gripper_tau, dtype=np.float32
+                ),
+                "action_cot_contextual_fusion_gate_width": np.asarray(
+                    args.contextual_fusion_gate_width, dtype=np.float32
+                ),
+                "action_cot_contextual_fusion_high_disagreement_source": (
+                    args.contextual_fusion_high_disagreement_source
+                ),
+            }
+        )
     if args.selective_gripper_refinement:
         request.update(
             {
@@ -373,6 +441,10 @@ def _request(
     wall_ms = (time.perf_counter() - started) * 1000.0
     policy_timing = result.get("policy_timing", {})
     server_timing = result.get("server_timing", {})
+
+    def _result_scalar(name: str) -> float:
+        return float(np.asarray(result.get(name, np.nan)).item())
+
     return result, {
         "wall_ms": wall_ms,
         "policy_ms": float(policy_timing.get("infer_ms", np.nan)),
@@ -381,6 +453,33 @@ def _request(
         "batched_teacher_ms": float(policy_timing.get("batched_mc_teacher_ms", np.nan)),
         "compact_alpha_router_ms": float(
             policy_timing.get("compact_alpha_router_ms", np.nan)
+        ),
+        "contextual_fusion_ms": float(
+            policy_timing.get("contextual_fusion_ms", np.nan)
+        ),
+        "contextual_fusion_translation_disagreement_mean": _result_scalar(
+            "contextual_fusion_translation_disagreement_mean"
+        ),
+        "contextual_fusion_rotation_disagreement_mean": _result_scalar(
+            "contextual_fusion_rotation_disagreement_mean"
+        ),
+        "contextual_fusion_gripper_conflict_rate": _result_scalar(
+            "contextual_fusion_gripper_conflict_rate"
+        ),
+        "contextual_fusion_expert_gate_rate": _result_scalar(
+            "contextual_fusion_expert_gate_rate"
+        ),
+        "contextual_fusion_high_disagreement_source_expert": _result_scalar(
+            "contextual_fusion_high_disagreement_source_expert"
+        ),
+        "contextual_fusion_phase_selected_expert": _result_scalar(
+            "contextual_fusion_phase_selected_expert"
+        ),
+        "contextual_fusion_absolute_decision_step": _result_scalar(
+            "contextual_fusion_absolute_decision_step"
+        ),
+        "contextual_fusion_switch_step": _result_scalar(
+            "contextual_fusion_switch_step"
         ),
         "harp_residual_ms": float(policy_timing.get("harp_residual_ms", np.nan)),
         "harp_gripper_event_ms": float(
@@ -573,18 +672,32 @@ def _warmup(
         element = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
         for mode in args.modes:
             for repeat in range(args.warmup_requests):
-                _request(
-                    client,
-                    element,
-                    mode=mode,
-                    seed=args.seed + repeat,
-                    previous_actions=None,
-                    previous_horizon=10,
-                    budget_fraction=args.v2_initial_budget / args.v2_budget_capacity,
-                    episode_progress=0.0,
-                    absolute_decision_step=absolute_step,
-                    args=args,
-                )
+                warmup_steps = [absolute_step]
+                if (
+                    args.contextual_fusion_mode
+                    in {"phase_compiler_expert", "phase_expert_compiler"}
+                    and args.contextual_fusion_switch_step > 0
+                ):
+                    # Compile both single-branch paths before timing. Deployment
+                    # requests still execute only the branch selected at their
+                    # actual absolute step.
+                    warmup_steps = [
+                        args.contextual_fusion_switch_step - 1,
+                        args.contextual_fusion_switch_step,
+                    ]
+                for warmup_step in warmup_steps:
+                    _request(
+                        client,
+                        element,
+                        mode=mode,
+                        seed=args.seed + repeat,
+                        previous_actions=None,
+                        previous_horizon=10,
+                        budget_fraction=args.v2_initial_budget / args.v2_budget_capacity,
+                        episode_progress=0.0,
+                        absolute_decision_step=warmup_step,
+                        args=args,
+                    )
     finally:
         libero_eval._safe_close_env(env)
 
@@ -727,6 +840,45 @@ def _run_episode(
                         "selective_gripper_refinement_ms"
                     ],
                 }
+            contextual_fusion_info: dict[str, Any] = {}
+            if args.contextual_fusion_mode == "semantic_gate":
+                contextual_fusion_info = {
+                    "contextual_fusion_ms": timing["contextual_fusion_ms"],
+                    "contextual_fusion_translation_disagreement_mean": timing[
+                        "contextual_fusion_translation_disagreement_mean"
+                    ],
+                    "contextual_fusion_rotation_disagreement_mean": timing[
+                        "contextual_fusion_rotation_disagreement_mean"
+                    ],
+                    "contextual_fusion_gripper_conflict_rate": timing[
+                        "contextual_fusion_gripper_conflict_rate"
+                    ],
+                    "contextual_fusion_expert_gate_rate": timing[
+                        "contextual_fusion_expert_gate_rate"
+                    ],
+                    "contextual_fusion_high_disagreement_source_expert": timing[
+                        "contextual_fusion_high_disagreement_source_expert"
+                    ],
+                }
+            elif args.contextual_fusion_mode in {
+                "phase_compiler_expert",
+                "phase_expert_compiler",
+            }:
+                returned_step = int(timing["contextual_fusion_absolute_decision_step"])
+                returned_switch = int(timing["contextual_fusion_switch_step"])
+                if returned_step != step or returned_switch != args.contextual_fusion_switch_step:
+                    raise ValueError(
+                        "Phase fusion response does not match requested step/switch: "
+                        f"got {returned_step}/{returned_switch}, requested "
+                        f"{step}/{args.contextual_fusion_switch_step}."
+                    )
+                contextual_fusion_info = {
+                    "contextual_fusion_phase_selected_expert": timing[
+                        "contextual_fusion_phase_selected_expert"
+                    ],
+                    "contextual_fusion_absolute_decision_step": returned_step,
+                    "contextual_fusion_switch_step": returned_switch,
+                }
             decisions.append(
                 {
                     "mode": mode,
@@ -746,6 +898,7 @@ def _run_episode(
                     "selector_json": json.dumps(selector_info, separators=(",", ":")),
                     **compact_router_info,
                     **selective_gripper_info,
+                    **contextual_fusion_info,
                 }
             )
             previous_actions = action_chunk
@@ -768,6 +921,10 @@ def _run_episode(
     def total(field: str) -> float:
         values = [timing[field] for timing in timings if np.isfinite(timing[field])]
         return float(np.sum(values)) if values else float("nan")
+
+    def mean_timing(field: str) -> float:
+        values = [timing[field] for timing in timings if np.isfinite(timing[field])]
+        return float(np.mean(values)) if values else float("nan")
 
     histogram = collections.Counter(horizons)
     row = {
@@ -793,6 +950,22 @@ def _run_episode(
         "actual_server_total_ms": total("server_ms"),
         "actual_predictor_total_ms": total("predictor_ms"),
         "actual_batched_teacher_total_ms": total("batched_teacher_ms"),
+        "actual_contextual_fusion_total_ms": total("contextual_fusion_ms"),
+        "contextual_fusion_translation_disagreement_mean": mean_timing(
+            "contextual_fusion_translation_disagreement_mean"
+        ),
+        "contextual_fusion_rotation_disagreement_mean": mean_timing(
+            "contextual_fusion_rotation_disagreement_mean"
+        ),
+        "contextual_fusion_gripper_conflict_rate": mean_timing(
+            "contextual_fusion_gripper_conflict_rate"
+        ),
+        "contextual_fusion_expert_gate_rate": mean_timing(
+            "contextual_fusion_expert_gate_rate"
+        ),
+        "contextual_fusion_phase_expert_rate": mean_timing(
+            "contextual_fusion_phase_selected_expert"
+        ),
         "actual_harp_residual_total_ms": total("harp_residual_ms"),
         "actual_harp_gripper_event_total_ms": total("harp_gripper_event_ms"),
     }
@@ -897,6 +1070,27 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
         "predictor_ms_per_episode": mean("actual_predictor_total_ms"),
         "predictor_ms_per_call": per_call("actual_predictor_total_ms"),
         "batched_teacher_ms_per_episode": mean("actual_batched_teacher_total_ms"),
+        "contextual_fusion_ms_per_episode": mean(
+            "actual_contextual_fusion_total_ms"
+        ),
+        "contextual_fusion_ms_per_call": per_call(
+            "actual_contextual_fusion_total_ms"
+        ),
+        "contextual_fusion_translation_disagreement_mean": mean(
+            "contextual_fusion_translation_disagreement_mean"
+        ),
+        "contextual_fusion_rotation_disagreement_mean": mean(
+            "contextual_fusion_rotation_disagreement_mean"
+        ),
+        "contextual_fusion_gripper_conflict_rate": mean(
+            "contextual_fusion_gripper_conflict_rate"
+        ),
+        "contextual_fusion_expert_gate_rate": mean(
+            "contextual_fusion_expert_gate_rate"
+        ),
+        "contextual_fusion_phase_expert_rate": mean(
+            "contextual_fusion_phase_expert_rate"
+        ),
         "harp_residual_ms_per_episode": mean("actual_harp_residual_total_ms"),
         "harp_residual_ms_per_call": per_call("actual_harp_residual_total_ms"),
         "harp_gripper_event_ms_per_episode": mean(
@@ -1022,6 +1216,12 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "actual_server_total_ms",
         "actual_predictor_total_ms",
         "actual_batched_teacher_total_ms",
+        "actual_contextual_fusion_total_ms",
+        "contextual_fusion_translation_disagreement_mean",
+        "contextual_fusion_rotation_disagreement_mean",
+        "contextual_fusion_gripper_conflict_rate",
+        "contextual_fusion_expert_gate_rate",
+        "contextual_fusion_phase_expert_rate",
         "actual_harp_residual_total_ms",
         "actual_harp_gripper_event_total_ms",
         "compact_alpha_router_score_sum",
@@ -1102,6 +1302,21 @@ def _prepare_journal(
 def main(args: argparse.Namespace) -> None:
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action_cot_denoising_steps must be positive.")
+    if args.contextual_fusion_switch_step < 0:
+        raise ValueError("contextual_fusion_switch_step must be non-negative.")
+    for name in (
+        "contextual_fusion_translation_tau",
+        "contextual_fusion_rotation_tau",
+        "contextual_fusion_gripper_tau",
+    ):
+        value = float(getattr(args, name))
+        if not np.isfinite(value) or value < 0.0:
+            raise ValueError(f"{name} must be finite and non-negative.")
+    if (
+        not np.isfinite(args.contextual_fusion_gate_width)
+        or args.contextual_fusion_gate_width <= 0.0
+    ):
+        raise ValueError("contextual_fusion_gate_width must be finite and positive.")
     if args.final_denoising_steps is not None and args.final_denoising_steps <= 0:
         raise ValueError("final_denoising_steps must be positive when set.")
     if not 0.0 <= args.final_time_warp_alpha < 1.0:

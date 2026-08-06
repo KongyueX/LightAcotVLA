@@ -32,6 +32,124 @@ def _block_until_ready(value: Any) -> None:
     jax.tree.map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, value)
 
 
+@jax.jit
+def _fuse_contextual_semantic_actions(
+    compiled_actions: jax.Array,
+    expert_actions: jax.Array,
+    translation_tau: jax.Array,
+    rotation_tau: jax.Array,
+    gripper_tau: jax.Array,
+    gate_width: jax.Array,
+    high_source_expert: jax.Array,
+) -> dict[str, jax.Array]:
+    """Fuse compiler/expert chunks with semantic, temporally coherent gates.
+
+    The two branches have already consumed the same observation, EAR, IAR, and
+    final-action noise.  Consequently this verifier adds no model evaluation:
+    it only compares their normalized action chunks.  Translation and rotation
+    each receive one gate per timestep so a vector is never mixed dimension by
+    dimension.  Discrete gripper events use a hard branch choice rather than an
+    invalid interpolation across open/close signs.
+    """
+
+    disagreement = jnp.abs(expert_actions[..., :7] - compiled_actions[..., :7])
+
+    def _dilate_one_step(values: jax.Array) -> jax.Array:
+        previous = jnp.concatenate((values[:, :1], values[:, :-1]), axis=1)
+        following = jnp.concatenate((values[:, 1:], values[:, -1:]), axis=1)
+        return jnp.maximum(jnp.maximum(previous, values), following)
+
+    def _continuous_gate(start: int, end: int, tau: jax.Array) -> jax.Array:
+        # Group RMS consumes every per-dimension disagreement while preserving
+        # the geometry of the translation/rotation vector during blending.
+        score = jnp.sqrt(
+            jnp.mean(jnp.square(disagreement[..., start:end]), axis=-1, keepdims=True)
+            + jnp.asarray(1e-8, dtype=disagreement.dtype)
+        )
+        score = _dilate_one_step(score)
+        width = jnp.maximum(
+            jnp.asarray(gate_width, dtype=score.dtype),
+            jnp.asarray(1e-4, dtype=score.dtype),
+        )
+        return jax.nn.sigmoid((score - jnp.asarray(tau, dtype=score.dtype)) / width)
+
+    translation_weight = _continuous_gate(0, 3, translation_tau)
+    rotation_weight = _continuous_gate(3, 6, rotation_tau)
+
+    expert_gripper = expert_actions[..., 6:7]
+    compiled_gripper = compiled_actions[..., 6:7]
+    sign_disagreement = jnp.signbit(expert_gripper) != jnp.signbit(compiled_gripper)
+    expert_transition = jnp.concatenate(
+        (
+            jnp.zeros_like(sign_disagreement[:, :1]),
+            jnp.signbit(expert_gripper[:, 1:]) != jnp.signbit(expert_gripper[:, :-1]),
+        ),
+        axis=1,
+    )
+    compiler_transition = jnp.concatenate(
+        (
+            jnp.zeros_like(sign_disagreement[:, :1]),
+            jnp.signbit(compiled_gripper[:, 1:]) != jnp.signbit(compiled_gripper[:, :-1]),
+        ),
+        axis=1,
+    )
+    low_gripper_margin = jnp.minimum(
+        jnp.abs(expert_gripper), jnp.abs(compiled_gripper)
+    ) < jnp.asarray(gripper_tau, dtype=expert_gripper.dtype)
+    gripper_event = sign_disagreement | expert_transition | compiler_transition | low_gripper_margin
+    gripper_event = _dilate_one_step(gripper_event)
+
+    # Contact/open-close boundaries are semantic events for the continuous
+    # controls too.  Use the configured high-disagreement source throughout a
+    # one-step neighborhood instead of creating a mixed contact transition.
+    event_weight = gripper_event.astype(translation_weight.dtype)
+    translation_weight = jnp.maximum(translation_weight, event_weight)
+    rotation_weight = jnp.maximum(rotation_weight, event_weight)
+
+    high_actions = jnp.where(high_source_expert, expert_actions, compiled_actions)
+    low_actions = jnp.where(high_source_expert, compiled_actions, expert_actions)
+    translation = low_actions[..., :3] + translation_weight * (
+        high_actions[..., :3] - low_actions[..., :3]
+    )
+    rotation = low_actions[..., 3:6] + rotation_weight * (
+        high_actions[..., 3:6] - low_actions[..., 3:6]
+    )
+    gripper = jnp.where(gripper_event, high_actions[..., 6:7], low_actions[..., 6:7])
+    actions = jnp.concatenate(
+        (translation, rotation, gripper, expert_actions[..., 7:]), axis=-1
+    )
+    expert_translation_weight = jnp.where(
+        high_source_expert, translation_weight, 1.0 - translation_weight
+    )
+    expert_rotation_weight = jnp.where(
+        high_source_expert, rotation_weight, 1.0 - rotation_weight
+    )
+    expert_gripper_gate = jnp.where(
+        high_source_expert, gripper_event, ~gripper_event
+    ).astype(translation_weight.dtype)
+    expert_gate_rate = (
+        3.0 * jnp.mean(expert_translation_weight, axis=(1, 2))
+        + 3.0 * jnp.mean(expert_rotation_weight, axis=(1, 2))
+        + jnp.mean(expert_gripper_gate, axis=(1, 2))
+    ) / 7.0
+    return {
+        "actions": actions,
+        "contextual_fusion_translation_disagreement_mean": jnp.mean(
+            disagreement[..., :3], axis=(1, 2)
+        ),
+        "contextual_fusion_rotation_disagreement_mean": jnp.mean(
+            disagreement[..., 3:6], axis=(1, 2)
+        ),
+        "contextual_fusion_gripper_conflict_rate": jnp.mean(
+            sign_disagreement.astype(disagreement.dtype), axis=(1, 2)
+        ),
+        "contextual_fusion_expert_gate_rate": expert_gate_rate,
+        "contextual_fusion_high_disagreement_source_expert": jnp.full(
+            (actions.shape[0],), high_source_expert, dtype=jnp.bool_
+        ),
+    }
+
+
 class Policy(BasePolicy):
     def __init__(
         self,
@@ -194,11 +312,61 @@ class Policy(BasePolicy):
             "control_compiler",
             "gripper_compiler",
             "blend50",
+            "semantic_gate",
+            "phase_compiler_expert",
+            "phase_expert_compiler",
         }:
             raise ValueError("Unsupported action_cot_contextual_fusion_mode.")
         if self._acot_contextual_compiler is None and contextual_fusion_mode != "compiler":
             raise ValueError(
                 "Contextual fusion requires a contextual plan compiler at server startup."
+            )
+        contextual_fusion_translation_tau = float(
+            np.asarray(inputs.pop("action_cot_contextual_fusion_translation_tau", 0.20)).item()
+        )
+        contextual_fusion_rotation_tau = float(
+            np.asarray(inputs.pop("action_cot_contextual_fusion_rotation_tau", 0.20)).item()
+        )
+        contextual_fusion_gripper_tau = float(
+            np.asarray(inputs.pop("action_cot_contextual_fusion_gripper_tau", 0.15)).item()
+        )
+        contextual_fusion_gate_width = float(
+            np.asarray(inputs.pop("action_cot_contextual_fusion_gate_width", 0.05)).item()
+        )
+        contextual_fusion_high_disagreement_source = str(
+            np.asarray(
+                inputs.pop(
+                    "action_cot_contextual_fusion_high_disagreement_source", "expert"
+                )
+            ).item()
+        )
+        if contextual_fusion_high_disagreement_source not in {"expert", "compiler"}:
+            raise ValueError(
+                "action_cot_contextual_fusion_high_disagreement_source must be "
+                "'expert' or 'compiler'."
+            )
+        for name, value in (
+            ("translation_tau", contextual_fusion_translation_tau),
+            ("rotation_tau", contextual_fusion_rotation_tau),
+            ("gripper_tau", contextual_fusion_gripper_tau),
+        ):
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(f"action_cot_contextual_fusion_{name} must be finite and non-negative.")
+        if not np.isfinite(contextual_fusion_gate_width) or contextual_fusion_gate_width <= 0.0:
+            raise ValueError(
+                "action_cot_contextual_fusion_gate_width must be finite and positive."
+            )
+        contextual_fusion_switch_step_raw = np.asarray(
+            inputs.pop("action_cot_contextual_fusion_switch_step", 400)
+        ).item()
+        contextual_fusion_switch_step = int(contextual_fusion_switch_step_raw)
+        if (
+            contextual_fusion_switch_step < 0
+            or float(contextual_fusion_switch_step)
+            != float(contextual_fusion_switch_step_raw)
+        ):
+            raise ValueError(
+                "action_cot_contextual_fusion_switch_step must be a non-negative integer."
             )
         harp_residual_enabled = _as_bool(
             inputs.pop("action_cot_harp_residual", False)
@@ -234,22 +402,27 @@ class Policy(BasePolicy):
             None,
         )
         absolute_decision_step = None
+        if absolute_decision_step_raw is not None:
+            raw_step = np.asarray(absolute_decision_step_raw).item()
+            absolute_decision_step = int(raw_step)
+            if absolute_decision_step < 0 or float(absolute_decision_step) != float(raw_step):
+                raise ValueError("action_cot_absolute_decision_step must be a non-negative integer.")
         if compact_alpha_router_enabled:
             if self._acot_compact_alpha_router is None:
                 raise ValueError(
                     "action_cot_compact_alpha_router=True requires a compact router NPZ at serve startup."
                 )
-            if absolute_decision_step_raw is None:
+            if absolute_decision_step is None:
                 raise ValueError(
                     "action_cot_compact_alpha_router=True requires action_cot_absolute_decision_step."
                 )
-            raw_step = np.asarray(absolute_decision_step_raw).item()
-            absolute_decision_step = int(raw_step)
-            if absolute_decision_step < 0 or float(absolute_decision_step) != float(raw_step):
-                raise ValueError("action_cot_absolute_decision_step must be a non-negative integer.")
-        elif absolute_decision_step_raw is not None:
+        if (
+            contextual_fusion_mode
+            in {"phase_compiler_expert", "phase_expert_compiler"}
+            and absolute_decision_step is None
+        ):
             raise ValueError(
-                "action_cot_absolute_decision_step is only valid when the compact alpha router is enabled."
+                "Phase contextual fusion requires action_cot_absolute_decision_step."
             )
         action_cot_denoising_steps = inputs.pop("action_cot_denoising_steps", None)
         action_cot_dynamic_denoising_steps = inputs.pop("action_cot_dynamic_denoising_steps", None)
@@ -306,6 +479,14 @@ class Policy(BasePolicy):
             override_inputs.pop("export_acot_cache", None)
             override_inputs.pop("action_cot_compact_alpha_router", None)
             override_inputs.pop("action_cot_contextual_fusion_mode", None)
+            override_inputs.pop("action_cot_contextual_fusion_translation_tau", None)
+            override_inputs.pop("action_cot_contextual_fusion_rotation_tau", None)
+            override_inputs.pop("action_cot_contextual_fusion_gripper_tau", None)
+            override_inputs.pop("action_cot_contextual_fusion_gate_width", None)
+            override_inputs.pop(
+                "action_cot_contextual_fusion_high_disagreement_source", None
+            )
+            override_inputs.pop("action_cot_contextual_fusion_switch_step", None)
             override_inputs.pop("action_cot_harp_residual", None)
             override_inputs.pop("action_cot_harp_gripper_event", None)
             override_inputs.pop("action_cot_final_hybrid_mode", None)
@@ -466,6 +647,15 @@ class Policy(BasePolicy):
             sample_kwargs = {
                 **sample_kwargs,
                 "contextual_fusion_mode": contextual_fusion_mode,
+                "contextual_fusion_translation_tau": contextual_fusion_translation_tau,
+                "contextual_fusion_rotation_tau": contextual_fusion_rotation_tau,
+                "contextual_fusion_gripper_tau": contextual_fusion_gripper_tau,
+                "contextual_fusion_gate_width": contextual_fusion_gate_width,
+                "contextual_fusion_high_disagreement_source": (
+                    contextual_fusion_high_disagreement_source
+                ),
+                "contextual_fusion_switch_step": contextual_fusion_switch_step,
+                "contextual_fusion_absolute_decision_step": absolute_decision_step,
             }
         if adaptive_final_time_warp:
             sample_kwargs = {
@@ -1042,6 +1232,7 @@ class Policy(BasePolicy):
                     "coarse_action_expert_ms",
                     "action_expert_ms",
                     "contextual_compiler_ms",
+                    "contextual_fusion_ms",
                     "coupled_action_cot_ms",
                     "batched_mc_teacher_ms",
                     "execution_horizon_predictor_ms",
@@ -1147,9 +1338,45 @@ class Policy(BasePolicy):
             sample_kwargs.get("final_endpoint_condition_strength", 0.0)
         )
         final_midpoint = _as_bool(sample_kwargs.get("final_midpoint", False))
-        contextual_fusion_mode = str(
+        requested_contextual_fusion_mode = str(
             sample_kwargs.get("contextual_fusion_mode", "compiler")
         )
+        contextual_fusion_mode = requested_contextual_fusion_mode
+        contextual_fusion_translation_tau = float(
+            sample_kwargs.get("contextual_fusion_translation_tau", 0.20)
+        )
+        contextual_fusion_rotation_tau = float(
+            sample_kwargs.get("contextual_fusion_rotation_tau", 0.20)
+        )
+        contextual_fusion_gripper_tau = float(
+            sample_kwargs.get("contextual_fusion_gripper_tau", 0.15)
+        )
+        contextual_fusion_gate_width = float(
+            sample_kwargs.get("contextual_fusion_gate_width", 0.05)
+        )
+        contextual_fusion_high_disagreement_source = str(
+            sample_kwargs.get(
+                "contextual_fusion_high_disagreement_source", "expert"
+            )
+        )
+        contextual_fusion_phase_selected_expert = None
+        if requested_contextual_fusion_mode in {
+            "phase_compiler_expert",
+            "phase_expert_compiler",
+        }:
+            phase_step = sample_kwargs.get("contextual_fusion_absolute_decision_step")
+            if phase_step is None:
+                raise ValueError("Phase contextual fusion requires an absolute decision step.")
+            phase_step = int(phase_step)
+            phase_switch_step = int(
+                sample_kwargs.get("contextual_fusion_switch_step", 400)
+            )
+            before_switch = phase_step < phase_switch_step
+            if requested_contextual_fusion_mode == "phase_compiler_expert":
+                contextual_fusion_mode = "compiler" if before_switch else "expert"
+            else:
+                contextual_fusion_mode = "expert" if before_switch else "compiler"
+            contextual_fusion_phase_selected_expert = contextual_fusion_mode == "expert"
         final_hybrid_mode = str(sample_kwargs.get("final_hybrid_mode", "none"))
         selective_gripper_refinement = _as_bool(
             sample_kwargs.get("selective_gripper_refinement", False)
@@ -1531,9 +1758,48 @@ class Policy(BasePolicy):
                         expert_actions[..., :7] + compiled_actions[..., :7]
                     )
                 )
+            elif contextual_fusion_mode == "semantic_gate":
+                assert compiled_actions is not None and expert_actions is not None
+                fusion_started = time.monotonic()
+                fusion_outputs = _fuse_contextual_semantic_actions(
+                    compiled_actions,
+                    expert_actions,
+                    jnp.asarray(contextual_fusion_translation_tau, dtype=jnp.float32),
+                    jnp.asarray(contextual_fusion_rotation_tau, dtype=jnp.float32),
+                    jnp.asarray(contextual_fusion_gripper_tau, dtype=jnp.float32),
+                    jnp.asarray(contextual_fusion_gate_width, dtype=jnp.float32),
+                    jnp.asarray(
+                        contextual_fusion_high_disagreement_source == "expert",
+                        dtype=jnp.bool_,
+                    ),
+                )
+                _block_until_ready(fusion_outputs)
+                timing["contextual_fusion_ms"] = (
+                    time.monotonic() - fusion_started
+                ) * 1000
+                actions = fusion_outputs.pop("actions")
             else:
                 raise AssertionError(contextual_fusion_mode)
             result = {"actions": actions}
+            if contextual_fusion_mode == "semantic_gate":
+                result.update(fusion_outputs)
+            if contextual_fusion_phase_selected_expert is not None:
+                batch_size = actions.shape[0]
+                result.update(
+                    {
+                        "contextual_fusion_phase_selected_expert": jnp.full(
+                            (batch_size,),
+                            contextual_fusion_phase_selected_expert,
+                            dtype=jnp.bool_,
+                        ),
+                        "contextual_fusion_absolute_decision_step": jnp.full(
+                            (batch_size,), phase_step, dtype=jnp.int32
+                        ),
+                        "contextual_fusion_switch_step": jnp.full(
+                            (batch_size,), phase_switch_step, dtype=jnp.int32
+                        ),
+                    }
+                )
         if coarse_outputs.get("explicit_action_reason") is not None:
             result["coarse_actions"] = coarse_outputs["explicit_action_reason"]
             result["action_cot_denoising_steps"] = coarse_outputs["action_cot_denoising_steps"]
