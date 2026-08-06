@@ -67,7 +67,8 @@ _FINAL_PATH = re.compile(
     r"action_time_mlp_in/.*|"
     r"action_time_mlp_out/.*|"
     r"action_out_proj/.*|"
-    r"adaptive_final_time_warp_gate/.*"
+    r"adaptive_final_time_warp_gate/.*|"
+    r"pact_flow_scheduler/.*"
     r")$"
 )
 _FINAL_ADAPTER_PATH = re.compile(
@@ -82,6 +83,7 @@ _FINAL_ADAPTER_PATH = re.compile(
 _ADAPTIVE_FINAL_TIME_WARP_PATH = re.compile(
     r"^adaptive_final_time_warp_gate/.*$"
 )
+_PACT_FLOW_SCHEDULER_PATH = re.compile(r"^pact_flow_scheduler/.*$")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -127,6 +129,16 @@ class Args:
     ofp_interval_condition_mode: str = "half_concat"
     ofp_adapter_only: bool = False
     adaptive_final_time_warp: bool = False
+    # Plan-anchored cross-level action-chunk time scheduling. This path jointly
+    # updates the final action expert and scheduler; the frozen VLM/EAR/IAR
+    # contract is unchanged. The remaining probability mass is assigned to the
+    # deployment endpoint objective.
+    pact_flow_scheduler: bool = False
+    pact_heterogeneous_flow_probability: float = 0.25
+    pact_scalar_flow_probability: float = 0.25
+    pact_plan_anchor_loss_weight: float = 1.0
+    pact_uncertainty_loss_weight: float = 0.01
+    pact_schedule_smoothness_loss_weight: float = 0.01
     fsdp_devices: int = 1
     overwrite: bool = False
     allow_failed_audit: bool = False
@@ -200,6 +212,7 @@ def _train_filter(
                 nnx_utils.PathRegex(r"action_time_mlp_in/.*"),
                 nnx_utils.PathRegex(r"action_time_mlp_out/.*"),
                 nnx_utils.PathRegex(r"action_out_proj/.*"),
+                nnx_utils.PathRegex(r"pact_flow_scheduler/.*"),
             ]
         )
     if not filters:
@@ -317,6 +330,56 @@ def _validate_args(args: Args) -> None:
             raise ValueError(
                 "--adaptive-final-time-warp supports endpoint and IR losses only; leave multi-time weights at zero."
             )
+    if args.pact_flow_scheduler:
+        if args.stage != "final" or args.variant != "b6":
+            raise ValueError(
+                "--pact-flow-scheduler requires --stage final --variant b6."
+            )
+        if args.resume_sidecar_params is None:
+            raise ValueError(
+                "--pact-flow-scheduler requires --resume-sidecar-params for the endpoint-student anchor."
+            )
+        if args.adaptive_final_time_warp:
+            raise ValueError(
+                "--pact-flow-scheduler and --adaptive-final-time-warp are mutually exclusive."
+            )
+        if args.ofp_sc or args.ofp_adapter_only:
+            raise ValueError("--pact-flow-scheduler cannot be combined with OFP training.")
+        if args.joint_coupled_training or args.use_student_coarse:
+            raise ValueError(
+                "--pact-flow-scheduler uses exported teacher EAR and cannot use coupled/student coarse training."
+            )
+        if args.multi_time_flow_loss_weight > 0 or args.multi_time_response_loss_weight > 0:
+            raise ValueError(
+                "--pact-flow-scheduler owns heterogeneous/scalar flow sampling; "
+                "leave legacy multi-time weights at zero."
+            )
+        probabilities = (
+            args.pact_heterogeneous_flow_probability,
+            args.pact_scalar_flow_probability,
+        )
+        if any(not 0.0 <= value <= 1.0 for value in probabilities):
+            raise ValueError("PACT flow probabilities must each be in [0, 1].")
+        if sum(probabilities) > 1.0:
+            raise ValueError(
+                "PACT heterogeneous and scalar flow probabilities must sum to at most 1."
+            )
+        if args.pact_schedule_smoothness_loss_weight < 0:
+            raise ValueError("--pact-schedule-smoothness-loss-weight must be non-negative.")
+        if args.pact_plan_anchor_loss_weight < 0:
+            raise ValueError("--pact-plan-anchor-loss-weight must be non-negative.")
+        if args.pact_uncertainty_loss_weight < 0:
+            raise ValueError("--pact-uncertainty-loss-weight must be non-negative.")
+    elif (
+        args.pact_heterogeneous_flow_probability != 0.25
+        or args.pact_scalar_flow_probability != 0.25
+        or args.pact_plan_anchor_loss_weight != 1.0
+        or args.pact_uncertainty_loss_weight != 0.01
+        or args.pact_schedule_smoothness_loss_weight != 0.01
+    ):
+        raise ValueError(
+            "PACT-specific probability/smoothness overrides require --pact-flow-scheduler."
+        )
 
 
 def _check_audit_gate(inputs: Sequence[str], args: Args) -> None:
@@ -442,33 +505,47 @@ class _BaseAndSidecarLoader:
     base_params_path: str
     sidecar_params: dict[str, Any] | None
     adaptive_final_time_warp: bool = False
+    pact_flow_scheduler: bool = False
 
     def load(self, params: Any) -> Any:
-        if self.adaptive_final_time_warp:
+        if self.adaptive_final_time_warp or self.pact_flow_scheduler:
             flat_reference = traverse_util.flatten_dict(params)
-            gate_reference = {
+            new_reference = {
                 path: value
                 for path, value in flat_reference.items()
-                if _ADAPTIVE_FINAL_TIME_WARP_PATH.fullmatch(_path_text(path)) is not None
+                if (
+                    self.adaptive_final_time_warp
+                    and _ADAPTIVE_FINAL_TIME_WARP_PATH.fullmatch(_path_text(path)) is not None
+                )
+                or (
+                    self.pact_flow_scheduler
+                    and _PACT_FLOW_SCHEDULER_PATH.fullmatch(_path_text(path)) is not None
+                )
             }
-            if not gate_reference:
-                raise ValueError("Adaptive final time-warp gate is missing from the model config.")
+            if not new_reference:
+                raise ValueError("Requested endpoint extension is missing from the model config.")
             base_reference = traverse_util.unflatten_dict(
                 {
                     path: value
                     for path, value in flat_reference.items()
-                    if path not in gate_reference
+                    if path not in new_reference
                 }
             )
             loaded = weight_loaders.CheckpointWeightLoader(self.base_params_path).load(
                 base_reference
             )
             flat_loaded = traverse_util.flatten_dict(loaded)
-            # init_train_state supplies ShapeDtypeStruct leaves here.  Materialize
-            # only this exact new subtree as zeros; never broaden the global
-            # checkpoint loader's missing-parameter policy.
-            for path, expected in gate_reference.items():
-                flat_loaded[path] = jax.numpy.zeros(expected.shape, dtype=expected.dtype)
+            # ``init_train_state`` supplies ShapeDtypeStruct leaves here. The
+            # adaptive gate is contractually zero initialized. PACT may contain
+            # non-zero hidden-layer initialization, so retain its abstract
+            # leaves: ``_load_weights_and_validate`` removes them and the real
+            # model initialization survives when partial params are merged.
+            # Never broaden the global checkpoint loader's missing policy.
+            for path, expected in new_reference.items():
+                if _ADAPTIVE_FINAL_TIME_WARP_PATH.fullmatch(_path_text(path)) is not None:
+                    flat_loaded[path] = jax.numpy.zeros(expected.shape, dtype=expected.dtype)
+                else:
+                    flat_loaded[path] = expected
             loaded = traverse_util.unflatten_dict(flat_loaded)
         else:
             loaded = weight_loaders.CheckpointWeightLoader(self.base_params_path).load(params)
@@ -553,6 +630,13 @@ def _endpoint_train_step(
     multi_time_timestep: float,
     joint_coupled_training: bool,
     adaptive_final_time_warp: bool,
+    pact_flow_scheduler: bool,
+    pact_seed: int,
+    pact_heterogeneous_flow_probability: float,
+    pact_scalar_flow_probability: float,
+    pact_plan_anchor_loss_weight: float,
+    pact_uncertainty_loss_weight: float,
+    pact_schedule_smoothness_loss_weight: float,
     ofp_sc: bool,
     ofp_seed: int,
     ofp_train_steps: int,
@@ -575,6 +659,21 @@ def _endpoint_train_step(
         ema_teacher.eval()
 
     def loss_fn(candidate: Any) -> tuple[jax.Array, dict[str, jax.Array]]:
+        if pact_flow_scheduler:
+            pact_rng = jax.random.fold_in(jax.random.key(pact_seed), state.step)
+            return candidate.compute_pact_flow_distillation_loss(
+                batch["observation"],
+                batch["teacher_coarse"],
+                batch["teacher_actions"],
+                batch["action_noise"],
+                pact_rng,
+                heterogeneous_flow_probability=pact_heterogeneous_flow_probability,
+                scalar_flow_probability=pact_scalar_flow_probability,
+                plan_anchor_loss_weight=pact_plan_anchor_loss_weight,
+                uncertainty_loss_weight=pact_uncertainty_loss_weight,
+                schedule_smoothness_loss_weight=pact_schedule_smoothness_loss_weight,
+                compute_diagnostics=False,
+            )
         if ofp_sc:
             assert ema_teacher is not None
             ofp_rng = jax.random.fold_in(jax.random.key(ofp_seed), state.step)
@@ -665,6 +764,13 @@ def _endpoint_validation_step(
     multi_time_timestep: float,
     joint_coupled_training: bool,
     adaptive_final_time_warp: bool,
+    pact_flow_scheduler: bool,
+    pact_seed: int,
+    pact_heterogeneous_flow_probability: float,
+    pact_scalar_flow_probability: float,
+    pact_plan_anchor_loss_weight: float,
+    pact_uncertainty_loss_weight: float,
+    pact_schedule_smoothness_loss_weight: float,
     ofp_sc: bool,
     ofp_seed: int,
     ofp_train_steps: int,
@@ -676,6 +782,24 @@ def _endpoint_validation_step(
     ofp_interval_condition_strength: float,
     ofp_interval_condition_mode: str,
 ) -> dict[str, jax.Array]:
+    if pact_flow_scheduler:
+        model = nnx.merge(state.model_def, state.params)
+        model.eval()
+        pact_rng = jax.random.fold_in(jax.random.key(pact_seed + 1), state.step)
+        _, metrics = model.compute_pact_flow_distillation_loss(
+            batch["observation"],
+            batch["teacher_coarse"],
+            batch["teacher_actions"],
+            batch["action_noise"],
+            pact_rng,
+            heterogeneous_flow_probability=pact_heterogeneous_flow_probability,
+            scalar_flow_probability=pact_scalar_flow_probability,
+            plan_anchor_loss_weight=pact_plan_anchor_loss_weight,
+            uncertainty_loss_weight=pact_uncertainty_loss_weight,
+            schedule_smoothness_loss_weight=pact_schedule_smoothness_loss_weight,
+            compute_diagnostics=True,
+        )
+        return metrics
     if ofp_sc:
         if state.ema_params is None:
             raise ValueError("OFP-SC validation requires EMA parameters in TrainState.")
@@ -844,7 +968,11 @@ def main(args: Args) -> None:
         arrays,
         validation_fraction=args.validation_fraction,
         seed=args.seed,
-        require_semantic_intervention=args.stage in {"final", "dual"} and not args.ofp_sc,
+        require_semantic_intervention=(
+            args.stage in {"final", "dual"}
+            and not args.ofp_sc
+            and not args.pact_flow_scheduler
+        ),
     )
     train_config_base = config_lib.get_config(args.config_name)
     model_config = train_config_base.model
@@ -854,6 +982,14 @@ def main(args: Args) -> None:
         model_config = dataclasses.replace(
             model_config,
             adaptive_final_time_warp=True,
+        )
+        train_config_base = dataclasses.replace(train_config_base, model=model_config)
+    if args.pact_flow_scheduler:
+        if not hasattr(model_config, "pact_flow_scheduler"):
+            raise ValueError("PACT flow scheduling requires ACOTConfig.")
+        model_config = dataclasses.replace(
+            model_config,
+            pact_flow_scheduler=True,
         )
         train_config_base = dataclasses.replace(train_config_base, model=model_config)
     expected_shapes = {
@@ -875,6 +1011,22 @@ def main(args: Args) -> None:
     observation_dataset = data_loader.transform_dataset(raw_dataset, data_config)
 
     resume_params, resume_paths = _load_resume_params(args.resume_sidecar_params)
+    resume_has_adaptive_gate = any(
+        _ADAPTIVE_FINAL_TIME_WARP_PATH.fullmatch(_path_text(path)) is not None
+        for path in resume_paths
+    )
+    resume_has_pact_scheduler = any(
+        _PACT_FLOW_SCHEDULER_PATH.fullmatch(_path_text(path)) is not None
+        for path in resume_paths
+    )
+    if args.pact_flow_scheduler and resume_has_adaptive_gate:
+        raise ValueError(
+            "PACT training cannot resume from a sidecar containing adaptive_final_time_warp_gate."
+        )
+    if args.adaptive_final_time_warp and resume_has_pact_scheduler:
+        raise ValueError(
+            "Adaptive final time-warp training cannot resume from a sidecar containing pact_flow_scheduler."
+        )
     trainable_filter = _train_filter(
         args.stage,
         ofp_adapter_only=args.ofp_adapter_only,
@@ -890,12 +1042,15 @@ def main(args: Args) -> None:
         )
     elif args.adaptive_final_time_warp:
         objective_name = "adaptive_final_time_warp_ir"
+    elif args.pact_flow_scheduler:
+        objective_name = "pact_flow_distillation"
     train_config = dataclasses.replace(
         train_config_base,
         weight_loader=_BaseAndSidecarLoader(
             str(base_params_path),
             resume_params,
             adaptive_final_time_warp=args.adaptive_final_time_warp,
+            pact_flow_scheduler=args.pact_flow_scheduler,
         ),
         freeze_filter=nnx.Not(trainable_filter),
         lr_schedule=optimizer_lib.CosineDecaySchedule(
@@ -933,6 +1088,8 @@ def main(args: Args) -> None:
     trainable_scope = (
         "adaptive_final_time_warp_gate"
         if args.adaptive_final_time_warp
+        else "pact_final_expert_and_scheduler"
+        if args.pact_flow_scheduler
         else "ofp_final_adapter"
         if args.ofp_adapter_only
         else args.stage
@@ -963,6 +1120,13 @@ def main(args: Args) -> None:
             multi_time_timestep=args.multi_time_timestep,
             joint_coupled_training=args.joint_coupled_training,
             adaptive_final_time_warp=args.adaptive_final_time_warp,
+            pact_flow_scheduler=args.pact_flow_scheduler,
+            pact_seed=args.seed,
+            pact_heterogeneous_flow_probability=args.pact_heterogeneous_flow_probability,
+            pact_scalar_flow_probability=args.pact_scalar_flow_probability,
+            pact_plan_anchor_loss_weight=args.pact_plan_anchor_loss_weight,
+            pact_uncertainty_loss_weight=args.pact_uncertainty_loss_weight,
+            pact_schedule_smoothness_loss_weight=args.pact_schedule_smoothness_loss_weight,
             ofp_sc=args.ofp_sc,
             ofp_seed=args.seed,
             ofp_train_steps=args.train_steps,
@@ -991,6 +1155,13 @@ def main(args: Args) -> None:
             multi_time_timestep=args.multi_time_timestep,
             joint_coupled_training=args.joint_coupled_training,
             adaptive_final_time_warp=args.adaptive_final_time_warp,
+            pact_flow_scheduler=args.pact_flow_scheduler,
+            pact_seed=args.seed,
+            pact_heterogeneous_flow_probability=args.pact_heterogeneous_flow_probability,
+            pact_scalar_flow_probability=args.pact_scalar_flow_probability,
+            pact_plan_anchor_loss_weight=args.pact_plan_anchor_loss_weight,
+            pact_uncertainty_loss_weight=args.pact_uncertainty_loss_weight,
+            pact_schedule_smoothness_loss_weight=args.pact_schedule_smoothness_loss_weight,
             ofp_sc=args.ofp_sc,
             ofp_seed=args.seed,
             ofp_train_steps=args.train_steps,
@@ -1168,6 +1339,29 @@ def main(args: Args) -> None:
         "adaptive_final_time_warp": args.adaptive_final_time_warp,
         "adaptive_final_time_warp_center": 0.05 if args.adaptive_final_time_warp else None,
         "adaptive_final_time_warp_radius": 0.05 if args.adaptive_final_time_warp else None,
+        "pact_flow_scheduler": args.pact_flow_scheduler,
+        "pact_heterogeneous_flow_probability": (
+            args.pact_heterogeneous_flow_probability if args.pact_flow_scheduler else None
+        ),
+        "pact_scalar_flow_probability": (
+            args.pact_scalar_flow_probability if args.pact_flow_scheduler else None
+        ),
+        "pact_plan_anchor_loss_weight": (
+            args.pact_plan_anchor_loss_weight if args.pact_flow_scheduler else None
+        ),
+        "pact_uncertainty_loss_weight": (
+            args.pact_uncertainty_loss_weight if args.pact_flow_scheduler else None
+        ),
+        "pact_endpoint_probability": (
+            1.0
+            - args.pact_heterogeneous_flow_probability
+            - args.pact_scalar_flow_probability
+            if args.pact_flow_scheduler
+            else None
+        ),
+        "pact_schedule_smoothness_loss_weight": (
+            args.pact_schedule_smoothness_loss_weight if args.pact_flow_scheduler else None
+        ),
         "trainable_scope": trainable_scope,
         "trainable_parameter_count": trainable_parameter_count,
         "saved_parameter_source": "ema" if args.ofp_sc else "online",

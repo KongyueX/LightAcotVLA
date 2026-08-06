@@ -35,7 +35,8 @@ _ACOT_ENDPOINT_STUDENT_PATH = re.compile(
     r"action_time_mlp_in/.*|"
     r"action_time_mlp_out/.*|"
     r"action_out_proj/.*|"
-    r"adaptive_final_time_warp_gate/.*"
+    r"adaptive_final_time_warp_gate/.*|"
+    r"pact_flow_scheduler/.*"
     r")$"
 )
 
@@ -181,49 +182,79 @@ def create_trained_policy(
         sidecar_params = _model.convert_str_keys_to_int(
             _model.restore_params(sidecar_path, dtype=jnp.bfloat16)
         )
-        flat_sidecar_paths = [
-            _path_string(path) for path in traverse_util.flatten_dict(sidecar_params)
-        ]
+        flat_sidecar = traverse_util.flatten_dict(sidecar_params)
+        flat_sidecar_paths = [_path_string(path) for path in flat_sidecar]
         has_adaptive_final_time_warp = any(
             path.startswith("adaptive_final_time_warp_gate/")
             for path in flat_sidecar_paths
         )
-        if has_adaptive_final_time_warp:
-            if not hasattr(model_config, "adaptive_final_time_warp"):
-                raise ValueError("Adaptive final time-warp sidecars require ACOTConfig.")
-            model_config = dataclasses.replace(
-                model_config,
-                adaptive_final_time_warp=True,
+        has_pact_flow_scheduler = any(
+            path.startswith("pact_flow_scheduler/") for path in flat_sidecar_paths
+        )
+        if has_adaptive_final_time_warp and has_pact_flow_scheduler:
+            raise ValueError(
+                "Endpoint sidecars cannot contain both adaptive_final_time_warp_gate "
+                "and pact_flow_scheduler parameters."
             )
+        extension_root = None
+        if has_adaptive_final_time_warp or has_pact_flow_scheduler:
+            if has_adaptive_final_time_warp:
+                if not hasattr(model_config, "adaptive_final_time_warp"):
+                    raise ValueError("Adaptive final time-warp sidecars require ACOTConfig.")
+                model_config = dataclasses.replace(
+                    model_config,
+                    adaptive_final_time_warp=True,
+                )
+                extension_root = "adaptive_final_time_warp_gate"
+                extension_label = "Adaptive final time-warp"
+            else:
+                if not hasattr(model_config, "pact_flow_scheduler"):
+                    raise ValueError("PACT flow-scheduler sidecars require ACOTConfig.")
+                model_config = dataclasses.replace(
+                    model_config,
+                    pact_flow_scheduler=True,
+                )
+                extension_root = "pact_flow_scheduler"
+                extension_label = "PACT flow-scheduler"
             expected_model = nnx.eval_shape(model_config.create, jax.random.key(0))
             expected_params = nnx.state(expected_model).to_pure_dict()
             flat_base = traverse_util.flatten_dict(base_params)
             flat_expected = traverse_util.flatten_dict(expected_params)
-            expected_gate_paths = {
+            expected_extension_paths = {
                 path
                 for path in flat_expected
-                if path and path[0] == "adaptive_final_time_warp_gate"
+                if path and path[0] == extension_root
             }
-            sidecar_gate_paths = {
+            sidecar_extension_paths = {
                 path
-                for path in traverse_util.flatten_dict(sidecar_params)
-                if path and path[0] == "adaptive_final_time_warp_gate"
+                for path in flat_sidecar
+                if path and path[0] == extension_root
             }
-            missing_gate_paths = expected_gate_paths.difference(sidecar_gate_paths)
-            if missing_gate_paths:
+            missing_extension_paths = expected_extension_paths.difference(
+                sidecar_extension_paths
+            )
+            unexpected_extension_paths = sidecar_extension_paths.difference(
+                expected_extension_paths
+            )
+            if missing_extension_paths:
                 raise ValueError(
-                    "Adaptive final time-warp sidecar is incomplete: "
-                    f"{sorted(_path_string(path) for path in missing_gate_paths)[:5]}"
+                    f"{extension_label} sidecar is incomplete: "
+                    f"{sorted(_path_string(path) for path in missing_extension_paths)[:5]}"
+                )
+            if unexpected_extension_paths:
+                raise ValueError(
+                    f"{extension_label} sidecar contains unexpected parameters: "
+                    f"{sorted(_path_string(path) for path in unexpected_extension_paths)[:5]}"
                 )
             missing = set(flat_expected).difference(flat_base)
             invalid_missing = sorted(
                 _path_string(path)
                 for path in missing
-                if not path or path[0] != "adaptive_final_time_warp_gate"
+                if not path or path[0] != extension_root
             )
             if invalid_missing:
                 raise ValueError(
-                    "Base checkpoint is missing non-calibrator parameters: "
+                    "Base checkpoint is missing non-extension parameters: "
                     f"{invalid_missing[:5]}"
                 )
             for path in missing:
@@ -235,7 +266,14 @@ def create_trained_policy(
             for path in flat_sidecar_paths
         )
         has_final_student = any(
-            path.startswith(("action_", "time_mlp_", "adaptive_final_time_warp_gate/"))
+            path.startswith(
+                (
+                    "action_",
+                    "time_mlp_",
+                    "adaptive_final_time_warp_gate/",
+                    "pact_flow_scheduler/",
+                )
+            )
             or re.match(r"^PaliGemma/llm/.*_2(?:/|$)", path)
             for path in flat_sidecar_paths
         )

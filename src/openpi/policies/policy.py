@@ -303,6 +303,7 @@ class Policy(BasePolicy):
         self._sample_actions_profile_expert = None
         self._sample_actions_profile_direct_one_step_expert = None
         self._sample_actions_profile_tokenwise_one_step_expert = None
+        self._sample_actions_profile_pact_flow_one_step_expert = None
         self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert = None
         self._sample_actions_profile_second_half_expert = None
         self._sample_actions_profile_midpoint_expert = None
@@ -343,6 +344,17 @@ class Policy(BasePolicy):
                 # boundary.  Specializing it lets XLA constant-fold the time
                 # embeddings and AdaRMS modulation like the scalar fast path.
                 static_argnums=(4,),
+            )
+        if (
+            getattr(model, "pact_flow_scheduler_enabled", False)
+            and hasattr(model, "sample_actions_profile_pact_flow_one_step_expert")
+        ):
+            # PACT predicts a different token-time field for every observation.
+            # Keep the scheduler and the single final expert call in one dynamic
+            # JIT graph; specializing the predicted tau values would recompile
+            # the graph at every policy decision.
+            self._sample_actions_profile_pact_flow_one_step_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_pact_flow_one_step_expert
             )
         if hasattr(model, "sample_actions_profile_direct_endpoint_conditioned_one_step_expert"):
             self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert = (
@@ -558,6 +570,9 @@ class Policy(BasePolicy):
         token_time_warp_raw = inputs.pop(
             "action_cot_final_token_time_warp_alpha", None
         )
+        pact_flow_scheduler_enabled = _as_bool(
+            inputs.pop("action_cot_pact_flow_scheduler", False)
+        )
         token_time_warp_alpha = None
         if token_time_warp_raw is not None:
             token_time_warp_alpha = np.asarray(
@@ -637,6 +652,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_final_denoising_steps", None)
             override_inputs.pop("action_cot_final_time_warp_alpha", None)
             override_inputs.pop("action_cot_final_token_time_warp_alpha", None)
+            override_inputs.pop("action_cot_pact_flow_scheduler", None)
             override_inputs.pop("action_cot_final_endpoint_condition_strength", None)
             override_inputs.pop("action_cot_final_midpoint", None)
             override_inputs.pop("action_cot_adaptive_final_time_warp", None)
@@ -723,7 +739,9 @@ class Policy(BasePolicy):
         # joint_coupled_sampler selects a separate jitted entrypoint and must
         # not be forwarded to the legacy sample_actions signature.
         sample_kwargs = {
-            key: value for key, value in self._sample_kwargs.items() if key != "joint_coupled_sampler"
+            key: value
+            for key, value in self._sample_kwargs.items()
+            if key not in {"joint_coupled_sampler", "pact_flow_scheduler"}
         }
         if "coarse_actions_override" in inputs:
             sample_kwargs = {
@@ -783,6 +801,11 @@ class Policy(BasePolicy):
                 "token_time_warp_alpha": tuple(
                     float(value) for value in token_time_warp_alpha
                 ),
+            }
+        if pact_flow_scheduler_enabled:
+            sample_kwargs = {
+                **sample_kwargs,
+                "pact_flow_scheduler": True,
             }
         if final_midpoint_enabled:
             sample_kwargs = {
@@ -858,6 +881,96 @@ class Policy(BasePolicy):
                 ).reshape((1,)),
                 "ofp_interval_condition_mode": ofp_interval_condition_mode,
             }
+        if pact_flow_scheduler_enabled:
+            if (
+                not self._can_profile_sample_actions()
+                or self._sample_actions_profile_pact_flow_one_step_expert is None
+            ):
+                raise ValueError(
+                    "action_cot_pact_flow_scheduler=True requires a PACT-enabled sequential "
+                    "Action-CoT checkpoint."
+                )
+
+            # Validate the fully merged kwargs, including modes configured at
+            # policy construction rather than only request-local overrides.
+            # PACT owns the complete one-step final path, so silently ignoring
+            # any other final sampler would make both timing and ablations
+            # ambiguous.
+            effective_final_time_warp_alpha = float(
+                np.asarray(sample_kwargs.get("final_time_warp_alpha", 0.0)).item()
+            )
+            effective_endpoint_condition_strength = float(
+                np.asarray(
+                    sample_kwargs.get("final_endpoint_condition_strength", 0.0)
+                ).item()
+            )
+            effective_final_hybrid_mode = str(
+                sample_kwargs.get("final_hybrid_mode", "none")
+            )
+            effective_batched_mc_samples = int(
+                np.asarray(
+                    sample_kwargs.get("batched_mc_samples", batched_mc_samples)
+                ).item()
+            )
+            pact_conflicts = {
+                "token_time_warp_alpha": sample_kwargs.get("token_time_warp_alpha")
+                is not None,
+                "final_time_warp_alpha": effective_final_time_warp_alpha != 0.0,
+                "final_denoising_steps": sample_kwargs.get("final_denoising_steps")
+                is not None,
+                "final_endpoint_condition_strength": (
+                    effective_endpoint_condition_strength != 0.0
+                ),
+                "final_midpoint": _as_bool(sample_kwargs.get("final_midpoint", False)),
+                "adaptive_final_time_warp": _as_bool(
+                    sample_kwargs.get("adaptive_final_time_warp", False)
+                ),
+                "ofp_interval_flow": _as_bool(
+                    sample_kwargs.get("ofp_interval_flow", False)
+                ),
+                "compact_alpha_router": compact_alpha_router_enabled,
+                "harp_residual": _as_bool(
+                    sample_kwargs.get("apply_harp_residual", False)
+                ),
+                "harp_gripper_event": _as_bool(
+                    sample_kwargs.get("apply_harp_gripper_event", False)
+                ),
+                "final_hybrid_mode": effective_final_hybrid_mode != "none",
+                "selective_gripper_refinement": _as_bool(
+                    sample_kwargs.get("selective_gripper_refinement", False)
+                ),
+                "force_direct_one_step_expert": _as_bool(
+                    sample_kwargs.get("force_direct_one_step_expert", False)
+                ),
+                "joint_coupled_sampler": joint_coupled_sampler,
+                "batched_mc_samples": effective_batched_mc_samples > 0,
+                "dynamic_denoising_steps": _as_bool(
+                    sample_kwargs.get("dynamic_denoising_steps", False)
+                ),
+                "contextual_compiler": self._acot_contextual_compiler is not None,
+            }
+            active_pact_conflicts = sorted(
+                name for name, enabled in pact_conflicts.items() if enabled
+            )
+            if active_pact_conflicts:
+                raise ValueError(
+                    "PACT flow scheduling is a standalone one-call final mode and cannot be "
+                    f"combined with: {', '.join(active_pact_conflicts)}."
+                )
+
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            if coarse_steps != 1:
+                raise ValueError(
+                    "PACT flow scheduling requires endpoint-student EAR NFE1; "
+                    f"got EAR NFE={coarse_steps}."
+                )
         if token_time_warp_alpha is not None:
             if self._sample_actions_profile_tokenwise_one_step_expert is None:
                 raise ValueError(
@@ -1316,6 +1429,7 @@ class Policy(BasePolicy):
             or final_denoising_steps is not None
             or final_time_warp_alpha > 0.0
             or token_time_warp_alpha is not None
+            or pact_flow_scheduler_enabled
             or final_endpoint_condition_strength > 0.0
             or final_midpoint_enabled
             or adaptive_final_time_warp
@@ -1531,6 +1645,9 @@ class Policy(BasePolicy):
         explicit_final_steps = sample_kwargs.get("final_denoising_steps")
         final_time_warp_alpha = float(sample_kwargs.get("final_time_warp_alpha", 0.0))
         token_time_warp_alpha = sample_kwargs.get("token_time_warp_alpha")
+        pact_flow_scheduler = _as_bool(
+            sample_kwargs.get("pact_flow_scheduler", False)
+        )
         final_endpoint_condition_strength = float(
             sample_kwargs.get("final_endpoint_condition_strength", 0.0)
         )
@@ -1593,7 +1710,21 @@ class Policy(BasePolicy):
             and int(np.asarray(explicit_final_steps).item()) == 1
         )
         if self._acot_contextual_compiler is None:
-            if _as_bool(sample_kwargs.get("ofp_interval_flow", False)):
+            if pact_flow_scheduler:
+                if self._sample_actions_profile_pact_flow_one_step_expert is None:
+                    raise ValueError(
+                        "The loaded policy does not implement PACT flow scheduling."
+                    )
+                # The scheduler consumes current-observation prefix/EAR/IAR and
+                # invokes the final action expert exactly once inside this same
+                # jitted entrypoint.  Do not split tau prediction into another
+                # dispatch or synchronize it separately.
+                expert_outputs = self._sample_actions_profile_pact_flow_one_step_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                )
+            elif _as_bool(sample_kwargs.get("ofp_interval_flow", False)):
                 if self._sample_actions_profile_ofp_expert is None:
                     raise ValueError("The loaded policy does not implement OFP interval inference.")
                 expert_outputs = self._sample_actions_profile_ofp_expert(

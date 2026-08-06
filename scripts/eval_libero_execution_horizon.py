@@ -83,6 +83,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--pact-flow-scheduler",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Opt in to the learned PACT per-token flow-time scheduler. The served "
+            "model must include the PACT head; formal PACT evaluation fixes EAR, "
+            "final generation, and execution horizon to 1/1/10."
+        ),
+    )
+    parser.add_argument(
         "--final-endpoint-condition-strength",
         type=float,
         default=0.0,
@@ -331,7 +341,7 @@ def _request(
     episode_progress: float,
     absolute_decision_step: int,
     args: argparse.Namespace,
-) -> tuple[dict[str, Any], dict[str, float]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     request = {
         **element,
         "policy_seed": np.asarray(seed, dtype=np.int64),
@@ -357,6 +367,11 @@ def _request(
         request["action_cot_final_token_time_warp_alpha"] = np.asarray(
             args.final_token_time_warp_alpha,
             dtype=np.float32,
+        )
+    if args.pact_flow_scheduler:
+        request["action_cot_pact_flow_scheduler"] = np.asarray(
+            True,
+            dtype=np.bool_,
         )
     if args.final_endpoint_condition_strength > 0.0:
         request["action_cot_final_endpoint_condition_strength"] = np.asarray(
@@ -465,12 +480,50 @@ def _request(
     def _result_scalar(name: str) -> float:
         return float(np.asarray(result.get(name, np.nan)).item())
 
+    pact_tau_json = ""
+    pact_tau_logits_json = ""
+    pact_tau_mean = float("nan")
+    pact_tau_std = float("nan")
+    pact_tau_min = float("nan")
+    pact_tau_max = float("nan")
+    if args.pact_flow_scheduler:
+        if "pact_flow_tau" not in result:
+            raise KeyError("PACT response is missing pact_flow_tau diagnostics.")
+        pact_tau = np.asarray(result["pact_flow_tau"], dtype=np.float32).reshape((-1,))
+        if pact_tau.shape != (10,):
+            raise ValueError(f"PACT tau must have shape (10,), got {pact_tau.shape}.")
+        if not np.all(np.isfinite(pact_tau)) or np.any(pact_tau < 0.0) or np.any(pact_tau > 1.0):
+            raise ValueError("PACT tau values must be finite and in [0, 1].")
+        pact_tau_json = json.dumps(pact_tau.tolist(), separators=(",", ":"))
+        pact_tau_mean = float(np.mean(pact_tau))
+        pact_tau_std = float(np.std(pact_tau))
+        pact_tau_min = float(np.min(pact_tau))
+        pact_tau_max = float(np.max(pact_tau))
+        if "pact_flow_tau_logits" in result:
+            pact_tau_logits = np.asarray(
+                result["pact_flow_tau_logits"], dtype=np.float32
+            ).reshape((-1,))
+            if pact_tau_logits.shape != (10,) or not np.all(np.isfinite(pact_tau_logits)):
+                raise ValueError(
+                    "PACT tau logits must contain exactly 10 finite values when returned."
+                )
+            pact_tau_logits_json = json.dumps(
+                pact_tau_logits.tolist(), separators=(",", ":")
+            )
+
     return result, {
         "wall_ms": wall_ms,
         "policy_ms": float(policy_timing.get("infer_ms", np.nan)),
         "server_ms": float(server_timing.get("infer_ms", wall_ms)),
         "predictor_ms": float(policy_timing.get("execution_horizon_predictor_ms", np.nan)),
         "batched_teacher_ms": float(policy_timing.get("batched_mc_teacher_ms", np.nan)),
+        "action_expert_ms": float(policy_timing.get("action_expert_ms", np.nan)),
+        "pact_flow_tau_json": pact_tau_json,
+        "pact_flow_tau_logits_json": pact_tau_logits_json,
+        "pact_flow_tau_mean": pact_tau_mean,
+        "pact_flow_tau_std": pact_tau_std,
+        "pact_flow_tau_min": pact_tau_min,
+        "pact_flow_tau_max": pact_tau_max,
         "compact_alpha_router_ms": float(
             policy_timing.get("compact_alpha_router_ms", np.nan)
         ),
@@ -737,7 +790,7 @@ def _run_episode(
     states = task_suite.get_task_init_states(task_id)
     state_id = (args.initial_state_offset + episode) % len(states)
     env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
-    timings: list[dict[str, float]] = []
+    timings: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
     horizons: list[int] = []
     compact_alpha_router_scores: list[float] = []
@@ -899,6 +952,22 @@ def _run_episode(
                     "contextual_fusion_absolute_decision_step": returned_step,
                     "contextual_fusion_switch_step": returned_switch,
                 }
+            pact_flow_info: dict[str, Any] = {}
+            if args.pact_flow_scheduler:
+                pact_flow_info = {
+                    "pact_flow_tau_json": timing["pact_flow_tau_json"],
+                    "pact_flow_tau_logits_json": timing[
+                        "pact_flow_tau_logits_json"
+                    ],
+                    "pact_flow_tau_mean": timing["pact_flow_tau_mean"],
+                    "pact_flow_tau_std": timing["pact_flow_tau_std"],
+                    "pact_flow_tau_min": timing["pact_flow_tau_min"],
+                    "pact_flow_tau_max": timing["pact_flow_tau_max"],
+                    # This synchronized final-stage timing already contains the
+                    # scheduler and its one final expert call. No scheduler-only
+                    # online dispatch or device barrier is introduced.
+                    "action_expert_ms": timing["action_expert_ms"],
+                }
             decisions.append(
                 {
                     "mode": mode,
@@ -919,6 +988,7 @@ def _run_episode(
                     **compact_router_info,
                     **selective_gripper_info,
                     **contextual_fusion_info,
+                    **pact_flow_info,
                 }
             )
             previous_actions = action_chunk
@@ -989,6 +1059,16 @@ def _run_episode(
         "actual_harp_residual_total_ms": total("harp_residual_ms"),
         "actual_harp_gripper_event_total_ms": total("harp_gripper_event_ms"),
     }
+    if args.pact_flow_scheduler:
+        row.update(
+            {
+                "actual_action_expert_total_ms": total("action_expert_ms"),
+                "pact_flow_tau_mean": mean_timing("pact_flow_tau_mean"),
+                "pact_flow_tau_std": mean_timing("pact_flow_tau_std"),
+                "pact_flow_tau_min": mean_timing("pact_flow_tau_min"),
+                "pact_flow_tau_max": mean_timing("pact_flow_tau_max"),
+            }
+        )
     if args.compact_alpha_router:
         alpha_histogram = collections.Counter(
             f"{alpha:.2f}" for alpha in compact_alpha_router_alphas
@@ -1120,6 +1200,21 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
             "actual_harp_gripper_event_total_ms"
         ),
     }
+    if any("actual_action_expert_total_ms" in row for row in subset):
+        result.update(
+            {
+                "action_expert_ms_per_episode": mean(
+                    "actual_action_expert_total_ms"
+                ),
+                "action_expert_ms_per_call": per_call(
+                    "actual_action_expert_total_ms"
+                ),
+                "pact_flow_tau_mean": mean("pact_flow_tau_mean"),
+                "pact_flow_tau_std": mean("pact_flow_tau_std"),
+                "pact_flow_tau_min": mean("pact_flow_tau_min"),
+                "pact_flow_tau_max": mean("pact_flow_tau_max"),
+            }
+        )
     if any("compact_alpha_router_alpha_distribution_json" in row for row in subset):
         alpha_histogram: collections.Counter[str] = collections.Counter()
         score_sum = 0.0
@@ -1236,6 +1331,11 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "actual_server_total_ms",
         "actual_predictor_total_ms",
         "actual_batched_teacher_total_ms",
+        "actual_action_expert_total_ms",
+        "pact_flow_tau_mean",
+        "pact_flow_tau_std",
+        "pact_flow_tau_min",
+        "pact_flow_tau_max",
         "actual_contextual_fusion_total_ms",
         "contextual_fusion_translation_disagreement_mean",
         "contextual_fusion_rotation_disagreement_mean",
@@ -1348,6 +1448,7 @@ def main(args: argparse.Namespace) -> None:
         if not np.all(np.isfinite(token_alpha)) or np.any(token_alpha < 0.0) or np.any(token_alpha >= 1.0):
             raise ValueError("Every final_token_time_warp_alpha value must be finite and in [0, 1).")
         incompatible_token_time_warp = {
+            "pact_flow_scheduler": args.pact_flow_scheduler,
             "final_time_warp_alpha": args.final_time_warp_alpha > 0.0,
             "final_denoising_steps": args.final_denoising_steps is not None,
             "final_endpoint_condition_strength": args.final_endpoint_condition_strength > 0.0,
@@ -1368,6 +1469,43 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError(
                 "final_token_time_warp_alpha owns direct final one-step timing and "
                 f"cannot be combined with: {', '.join(conflicts)}."
+            )
+    if args.pact_flow_scheduler:
+        incompatible_pact_modes = {
+            "final_token_time_warp_alpha": (
+                args.final_token_time_warp_alpha is not None
+            ),
+            "final_time_warp_alpha": args.final_time_warp_alpha != 0.0,
+            "final_denoising_steps": args.final_denoising_steps is not None,
+            "final_endpoint_condition_strength": (
+                args.final_endpoint_condition_strength != 0.0
+            ),
+            "final_midpoint": args.final_midpoint,
+            "adaptive_final_time_warp": args.adaptive_final_time_warp,
+            "compact_alpha_router": args.compact_alpha_router,
+            "harp_residual": args.harp_residual,
+            "harp_gripper_event": args.harp_gripper_event,
+            "final_hybrid_mode": args.final_hybrid_mode != "none",
+            "selective_gripper_refinement": args.selective_gripper_refinement,
+            "ofp_interval_flow": args.ofp_interval_flow,
+            "contextual_fusion": args.contextual_fusion_mode != "compiler",
+            "exact_batched_mc_v2": "exact_batched_mc_v2" in args.modes,
+        }
+        pact_conflicts = sorted(
+            name for name, enabled in incompatible_pact_modes.items() if enabled
+        )
+        if pact_conflicts:
+            raise ValueError(
+                "pact_flow_scheduler is a standalone one-call final mode and cannot "
+                f"be combined with: {', '.join(pact_conflicts)}."
+            )
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError(
+                "pact_flow_scheduler requires endpoint-student EAR NFE1."
+            )
+        if list(args.modes) != ["fixed_h9"] or args.fixed_horizon != 10:
+            raise ValueError(
+                "Formal PACT evaluation requires --modes fixed_h9 --fixed-horizon 10."
             )
     if not 0.0 <= args.final_endpoint_condition_strength <= 1.0:
         raise ValueError("final_endpoint_condition_strength must be in [0, 1].")

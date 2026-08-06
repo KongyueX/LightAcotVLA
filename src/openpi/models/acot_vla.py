@@ -14,6 +14,12 @@ import openpi.models.gemma as _gemma
 import openpi.models.siglip as _siglip
 from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictor
 from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictorConfig
+from openpi.models.harp_temporal_residual import align_ear_to_action_time
+from openpi.models.pact_flow_scheduler import PACTFlowScheduler
+from openpi.models.pact_flow_scheduler import PACTFlowSchedulerConfig
+from openpi.models.pact_flow_scheduler import PACTFlowSchedulerOutput
+from openpi.models.pact_flow_scheduler import build_plan_anchored_bridge
+from openpi.models.pact_flow_scheduler import endpoint_from_bridge_velocity
 from openpi.models.pi0 import posemb_sincos, make_attn_mask
 from openpi.shared import array_typing as at
 import openpi.shared.nnx_utils as nnx_utils
@@ -307,6 +313,15 @@ class ACOTConfig(_model.BaseModelConfig):
     # The gate is checkpointed separately in endpoint-student sidecars.
     adaptive_final_time_warp: bool = False
 
+    # Opt-in PACT-Flow adapter.  It learns a per-observation, per-action-token
+    # transport field from EAR/IAR/state while keeping the final expert at one
+    # suffix call.  Every default remains disabled to preserve legacy paths.
+    pact_flow_scheduler: bool = False
+    pact_flow_scheduler_hidden_dim: int = 96
+    pact_flow_scheduler_use_prefix: bool = False
+    pact_flow_scheduler_initial_tau: float = 0.975
+    pact_flow_scheduler_initial_log_std: float = -2.0
+
     def __post_init__(self):
         if self.max_token_len is None:
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
@@ -320,6 +335,13 @@ class ACOTConfig(_model.BaseModelConfig):
             raise ValueError("action_cot_step_values must contain at least two values when step head is enabled.")
         if self.execution_horizon_predictor and self.action_horizon != 10:
             raise ValueError("execution_horizon_predictor currently requires action_horizon=10.")
+        if self.pact_flow_scheduler:
+            if not self.adopt_explicit_action_reasoner or not self.adopt_implicit_action_reasoner:
+                raise ValueError("PACT-Flow requires both explicit and implicit action reasoners.")
+            if self.pact_flow_scheduler_hidden_dim <= 0:
+                raise ValueError("pact_flow_scheduler_hidden_dim must be positive.")
+            if not 0.0 < self.pact_flow_scheduler_initial_tau < 1.0:
+                raise ValueError("pact_flow_scheduler_initial_tau must lie strictly inside (0, 1).")
 
     @property
     @override
@@ -458,6 +480,25 @@ class ACOT_VLA(_model.BaseModel):
                 1,
                 kernel_init=jax.nn.initializers.zeros,
                 bias_init=jax.nn.initializers.zeros,
+                rngs=rngs,
+                param_dtype=jnp.float32,
+            )
+        self.pact_flow_scheduler_enabled = config.pact_flow_scheduler
+        if self.pact_flow_scheduler_enabled:
+            # Keep this attribute name stable: endpoint sidecars can select
+            # exactly ``pact_flow_scheduler/.*`` without touching the backbone.
+            self.pact_flow_scheduler = PACTFlowScheduler(
+                PACTFlowSchedulerConfig(
+                    action_horizon=config.action_horizon,
+                    action_dim=config.action_dim,
+                    iar_dim=action_expert_config.width,
+                    state_dim=config.action_dim,
+                    prefix_dim=paligemma_config.width,
+                    hidden_dim=config.pact_flow_scheduler_hidden_dim,
+                    use_prefix=config.pact_flow_scheduler_use_prefix,
+                    initial_tau=config.pact_flow_scheduler_initial_tau,
+                    initial_log_std=config.pact_flow_scheduler_initial_log_std,
+                ),
                 rngs=rngs,
                 param_dtype=jnp.float32,
             )
@@ -872,6 +913,62 @@ class ACOT_VLA(_model.BaseModel):
         return jnp.sum(prefix_out * mask[..., None], axis=1) / jnp.maximum(
             jnp.sum(mask, axis=1, keepdims=True),
             1.0,
+        )
+
+    def _align_pact_flow_ear(
+        self,
+        explicit_action_reason: _model.CoarseActions | None,
+    ) -> jax.Array:
+        """Map the coarse EAR horizon onto the final action-token timeline."""
+
+        if not self.pact_flow_scheduler_enabled:
+            raise ValueError("PACT-Flow is not enabled in the model config.")
+        if explicit_action_reason is None:
+            raise ValueError("PACT-Flow requires explicit action reasoning tokens.")
+        ear = jnp.asarray(explicit_action_reason, dtype=jnp.float32)
+        if ear.ndim != 3 or ear.shape[-1] < self.action_dim:
+            raise ValueError(
+                "PACT-Flow EAR must have shape [B, coarse_horizon, action_dim], "
+                f"got {ear.shape}."
+            )
+        if ear.shape[1] <= 0:
+            raise ValueError("PACT-Flow EAR must contain at least one coarse action.")
+        # EAR samples correspond to ticks 0,2,... while final actions are at
+        # ticks 0,1,... .  Reuse HARP's established interpolation contract.
+        return align_ear_to_action_time(
+            ear[..., : self.action_dim],
+            self.action_horizon,
+        )
+
+    def _pact_flow_schedule(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+    ) -> PACTFlowSchedulerOutput:
+        """Evaluate the learned PACT scheduler entirely inside the JAX graph."""
+
+        if not self.pact_flow_scheduler_enabled:
+            raise ValueError("PACT-Flow is not enabled in the model config.")
+        if implicit_action_reason is None:
+            raise ValueError("PACT-Flow requires implicit action reasoning tokens.")
+        aligned_ear = self._align_pact_flow_ear(explicit_action_reason)
+        observation = prefix_state["observation"]
+        normalized_state = jnp.asarray(
+            observation.state[..., : self.action_dim],
+            dtype=jnp.float32,
+        )
+        prefix_pooled = None
+        if self.pact_flow_scheduler.config.use_prefix:
+            prefix_pooled = jnp.asarray(
+                self._pool_prefix(prefix_state["prefix_out"], prefix_state["prefix_mask"]),
+                dtype=jnp.float32,
+            )
+        return self.pact_flow_scheduler(
+            aligned_ear,
+            jnp.asarray(implicit_action_reason, dtype=jnp.float32),
+            normalized_state,
+            prefix_pooled,
         )
 
     def _adaptive_final_time_warp(
@@ -1949,6 +2046,229 @@ class ACOT_VLA(_model.BaseModel):
         metrics["loss"] = total_loss
         return total_loss, metrics
 
+    def compute_pact_flow_distillation_loss(
+        self,
+        observation: _model.Observation,
+        teacher_coarse: _model.CoarseActions,
+        teacher_actions: _model.Actions,
+        action_noise: jax.Array,
+        rng: at.KeyArrayLike,
+        *,
+        heterogeneous_flow_probability: float = 0.25,
+        scalar_flow_probability: float = 0.25,
+        plan_anchor_loss_weight: float = 1.0,
+        uncertainty_loss_weight: float = 0.01,
+        schedule_smoothness_loss_weight: float = 0.0,
+        compute_diagnostics: bool = False,
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
+        """Train matched vector-time flow and PACT bridge endpoints jointly.
+
+        Each batch item is assigned one of three objectives: independently
+        sampled vector-time flow, legacy-compatible scalar-time flow, or the
+        learned plan-anchored bridge.  Their states and times are combined
+        before ``_action_velocity_at_time``, so all modes share exactly one
+        final-expert forward per loss call.
+        """
+
+        if not self.pact_flow_scheduler_enabled:
+            raise ValueError("PACT loss requires pact_flow_scheduler=True.")
+        probabilities = (
+            heterogeneous_flow_probability,
+            scalar_flow_probability,
+        )
+        if any(value < 0.0 or value > 1.0 for value in probabilities):
+            raise ValueError("PACT flow probabilities must lie in [0, 1].")
+        if sum(probabilities) > 1.0 + 1e-8:
+            raise ValueError(
+                "heterogeneous_flow_probability + scalar_flow_probability must not exceed 1."
+            )
+        if min(
+            plan_anchor_loss_weight,
+            uncertainty_loss_weight,
+            schedule_smoothness_loss_weight,
+        ) < 0.0:
+            raise ValueError("PACT auxiliary loss weights must be non-negative.")
+        if action_noise.ndim != 3 or teacher_actions.shape != action_noise.shape:
+            raise ValueError(
+                "action_noise and teacher_actions must have the same shape [B, T, D], "
+                f"got {action_noise.shape} and {teacher_actions.shape}."
+            )
+        if action_noise.shape[1:] != (self.action_horizon, self.action_dim):
+            raise ValueError(
+                "PACT action tensors must match the configured action shape "
+                f"{(self.action_horizon, self.action_dim)}, got {action_noise.shape[1:]}."
+            )
+
+        prefix_state = self._compute_prefix_state(observation)
+        implicit_action_reason = self.sample_actions_profile_implicit(prefix_state)[
+            "implicit_action_reason"
+        ]
+        schedule = self._pact_flow_schedule(
+            prefix_state,
+            teacher_coarse,
+            implicit_action_reason,
+        )
+
+        teacher_actions_float = jnp.asarray(teacher_actions, dtype=action_noise.dtype)
+        teacher_coarse_float = jnp.asarray(teacher_coarse, dtype=action_noise.dtype)
+        batch_size, action_horizon = action_noise.shape[:2]
+        mode_rng, heterogeneous_time_rng, scalar_time_rng = jax.random.split(rng, 3)
+        mode_sample = jax.random.uniform(mode_rng, (batch_size,), dtype=jnp.float32)
+        heterogeneous_mask = mode_sample < heterogeneous_flow_probability
+        scalar_mask = jnp.logical_and(
+            mode_sample >= heterogeneous_flow_probability,
+            mode_sample < heterogeneous_flow_probability + scalar_flow_probability,
+        )
+        matched_mask = jnp.logical_or(heterogeneous_mask, scalar_mask)
+        bridge_mask = jnp.logical_not(matched_mask)
+
+        heterogeneous_time = jax.random.beta(
+            heterogeneous_time_rng,
+            1.5,
+            1.0,
+            (batch_size, action_horizon),
+        )
+        heterogeneous_time = heterogeneous_time * 0.999 + 0.001
+        scalar_time = jax.random.beta(
+            scalar_time_rng,
+            1.5,
+            1.0,
+            (batch_size,),
+        )
+        scalar_time = scalar_time * 0.999 + 0.001
+        scalar_time = jnp.broadcast_to(scalar_time[:, None], heterogeneous_time.shape)
+        matched_time = jnp.where(
+            heterogeneous_mask[:, None],
+            heterogeneous_time,
+            scalar_time,
+        )
+        model_time = jnp.where(matched_mask[:, None], matched_time, schedule.tau)
+
+        expanded_time = model_time[..., None].astype(action_noise.dtype)
+        matched_state = (
+            expanded_time * action_noise
+            + (1.0 - expanded_time) * teacher_actions_float
+        )
+        bridge_state = build_plan_anchored_bridge(
+            action_noise,
+            schedule.plan_anchor.astype(action_noise.dtype),
+            schedule.tau,
+            stop_gradient_anchor=False,
+        )
+        model_state = jnp.where(
+            matched_mask[:, None, None],
+            matched_state,
+            bridge_state,
+        )
+        velocity = self._action_velocity_at_time(
+            prefix_state,
+            model_state,
+            model_time,
+            teacher_coarse_float,
+            implicit_action_reason,
+        )
+
+        target_velocity = action_noise - teacher_actions_float
+        flow_mse_per_example = jnp.mean(
+            jnp.square(velocity - target_velocity),
+            axis=(1, 2),
+        )
+        predicted_endpoint = endpoint_from_bridge_velocity(
+            model_state,
+            velocity,
+            model_time,
+        )
+        endpoint_mse_per_example = jnp.mean(
+            jnp.square(predicted_endpoint - teacher_actions_float),
+            axis=(1, 2),
+        )
+        primary_loss = jnp.mean(
+            jnp.where(matched_mask, flow_mse_per_example, endpoint_mse_per_example)
+        )
+
+        anchor_error = schedule.plan_anchor.astype(teacher_actions_float.dtype) - teacher_actions_float
+        anchor_residual_mse = jnp.mean(jnp.square(anchor_error), axis=-1)
+        plan_anchor_mse = jnp.mean(anchor_residual_mse)
+        clipped_log_std = jnp.clip(schedule.log_std, -5.0, 2.0)
+        uncertainty_nll = jnp.mean(
+            0.5
+            * (
+                anchor_residual_mse * jnp.exp(-2.0 * clipped_log_std)
+                + 2.0 * clipped_log_std
+                + jnp.log(2.0 * jnp.pi)
+            )
+        )
+        observed_anchor_rmse = jnp.sqrt(anchor_residual_mse + 1e-12)
+        predicted_anchor_std = jnp.exp(clipped_log_std)
+        risk_calibration_mse = jnp.mean(
+            jnp.square(
+                schedule.diagnostics.risk
+                - jax.lax.stop_gradient(observed_anchor_rmse)
+            )
+        )
+        uncertainty_objective = uncertainty_nll + risk_calibration_mse
+        uncertainty_calibration_mae = jnp.mean(
+            jnp.abs(predicted_anchor_std - observed_anchor_rmse)
+        )
+        standardized_residual_rms = jnp.sqrt(
+            jnp.mean(
+                anchor_residual_mse
+                / jnp.maximum(jnp.square(predicted_anchor_std), 1e-8)
+            )
+        )
+        if self.action_horizon > 1:
+            schedule_total_variation = jnp.mean(
+                jnp.abs(schedule.tau[:, 1:] - schedule.tau[:, :-1])
+            )
+        else:
+            schedule_total_variation = jnp.asarray(0.0, dtype=jnp.float32)
+
+        total_loss = (
+            primary_loss
+            + plan_anchor_loss_weight * plan_anchor_mse
+            + uncertainty_loss_weight * uncertainty_objective
+            + schedule_smoothness_loss_weight * schedule_total_variation
+        )
+
+        def masked_mean(values: jax.Array, mask: jax.Array) -> jax.Array:
+            mask_float = mask.astype(values.dtype)
+            return jnp.sum(values * mask_float) / jnp.maximum(jnp.sum(mask_float), 1.0)
+
+        metrics: dict[str, jax.Array] = {
+            "loss": total_loss,
+            "pact_primary_loss": primary_loss,
+            "pact_matched_flow_mse": masked_mean(flow_mse_per_example, matched_mask),
+            "pact_bridge_endpoint_mse": masked_mean(endpoint_mse_per_example, bridge_mask),
+            "pact_plan_anchor_mse": plan_anchor_mse,
+            "pact_uncertainty_nll": uncertainty_nll,
+            "pact_risk_calibration_mse": risk_calibration_mse,
+            "pact_uncertainty_calibration_mae": uncertainty_calibration_mae,
+            "pact_standardized_residual_rms": standardized_residual_rms,
+            "pact_schedule_total_variation": schedule_total_variation,
+            "pact_heterogeneous_fraction": jnp.mean(heterogeneous_mask.astype(jnp.float32)),
+            "pact_scalar_fraction": jnp.mean(scalar_mask.astype(jnp.float32)),
+            "pact_bridge_fraction": jnp.mean(bridge_mask.astype(jnp.float32)),
+            "pact_tau_mean": jnp.mean(schedule.tau),
+            "pact_tau_std": jnp.std(schedule.tau),
+        }
+        if compute_diagnostics:
+            metrics.update(
+                {
+                    "pact_tau_min": jnp.min(schedule.tau),
+                    "pact_tau_max": jnp.max(schedule.tau),
+                    "pact_log_std_mean": jnp.mean(clipped_log_std),
+                    "pact_log_std_std": jnp.std(clipped_log_std),
+                    "pact_plan_anchor_rms": jnp.sqrt(
+                        jnp.mean(jnp.square(schedule.plan_anchor)) + 1e-12
+                    ),
+                    "pact_risk_mean": jnp.mean(schedule.diagnostics.risk),
+                    "pact_iar_attention_entropy": jnp.mean(
+                        schedule.diagnostics.iar_attention_entropy
+                    ),
+                }
+            )
+        return total_loss, metrics
+
     @override
     def sample_actions(
         self,
@@ -2450,6 +2770,46 @@ class ACOT_VLA(_model.BaseModel):
             implicit_action_reason,
         )
         return {"actions": expert_action_noise - velocity}
+
+    def sample_actions_profile_pact_flow_one_step_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+    ) -> dict[str, Any]:
+        """Run the learned plan-anchored token flow in one final suffix call."""
+
+        if not self.pact_flow_scheduler_enabled:
+            raise ValueError("This checkpoint was created without pact_flow_scheduler=True.")
+        expert_action_noise = prefix_state["expert_action_noise"]
+        schedule = self._pact_flow_schedule(
+            prefix_state,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        bridge_state = build_plan_anchored_bridge(
+            expert_action_noise,
+            schedule.plan_anchor.astype(expert_action_noise.dtype),
+            schedule.tau,
+        )
+        velocity = self._action_velocity_at_time(
+            prefix_state,
+            bridge_state,
+            schedule.tau,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        actions = endpoint_from_bridge_velocity(bridge_state, velocity, schedule.tau)
+        return {
+            "actions": actions,
+            "pact_flow_tau": schedule.tau,
+            "pact_flow_tau_logits": schedule.diagnostics.tau_logits,
+            "pact_flow_log_std": schedule.log_std,
+            "pact_flow_plan_anchor_rms": jnp.sqrt(
+                jnp.mean(jnp.square(schedule.plan_anchor), axis=(1, 2)) + 1e-12
+            ),
+            "pact_flow_risk_mean": jnp.mean(schedule.diagnostics.risk, axis=1),
+        }
 
     def sample_actions_profile_direct_endpoint_conditioned_one_step_expert(
         self,
