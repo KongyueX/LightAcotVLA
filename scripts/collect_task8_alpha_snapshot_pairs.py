@@ -1,4 +1,4 @@
-"""Collect same-snapshot alpha=0 versus alpha=0.05 Task8 labels.
+"""Collect same-snapshot baseline versus alternative Task8 labels.
 
 The default pilot replays compact MuJoCo roots already stored by the execution-
 horizon collector.  At every root it regenerates two action chunks with the
@@ -52,7 +52,7 @@ class LiveRoot:
     root_seed: int
     call_index: int
     snapshot: state_branches.CanonicalSimulatorSnapshot
-    router_score: float
+    router_score: float | None
     router_alpha: float
 
 
@@ -75,7 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=1)
+    parser.add_argument("--baseline-alpha", type=float, default=0.0)
     parser.add_argument("--alternative-alpha", type=float, default=0.05)
+    parser.add_argument(
+        "--alternative-mode",
+        choices=("alpha", "endpoint", "midpoint"),
+        default="alpha",
+    )
+    parser.add_argument("--endpoint-strength", type=float, default=0.05)
     parser.add_argument(
         "--live-on-policy",
         action=argparse.BooleanOptionalAction,
@@ -85,6 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
             "The candidate alpha=0/.05 first chunk is followed by that same compact router, "
             "yielding Q^pi terminal labels without H1-H10 branch collection."
         ),
+    )
+    parser.add_argument(
+        "--live-behavior",
+        choices=("compact_router", "fixed_baseline"),
+        default="compact_router",
+        help="Live rollout and shared continuation policy.",
     )
     parser.add_argument(
         "--live-roots-per-episode",
@@ -129,8 +142,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--seed and --num-steps-wait must be non-negative.")
     if args.resize_size <= 0 or args.action_cot_denoising_steps <= 0:
         raise ValueError("Resize size and Action-CoT denoising steps must be positive.")
-    if not 0.0 < args.alternative_alpha < 1.0:
-        raise ValueError("--alternative-alpha must lie strictly between zero and one.")
+    if not 0.0 <= args.baseline_alpha < 1.0:
+        raise ValueError("--baseline-alpha must lie in [0, 1).")
+    if not 0.0 <= args.alternative_alpha < 1.0:
+        raise ValueError("--alternative-alpha must lie in [0, 1).")
+    if not 0.0 <= args.endpoint_strength <= 1.0:
+        raise ValueError("--endpoint-strength must lie in [0, 1].")
+    if args.alternative_mode == "endpoint" and args.endpoint_strength <= 0.0:
+        raise ValueError("Endpoint alternatives require --endpoint-strength > 0.")
 
 
 def _physics_key(physics_state: np.ndarray) -> str:
@@ -195,6 +214,8 @@ def _request(
     absolute_step: int | None = None,
     profile_policy_timing: bool = False,
     force_final_one_step: bool = False,
+    endpoint_strength: float = 0.0,
+    final_midpoint: bool = False,
 ) -> dict[str, Any]:
     request = {
         **element,
@@ -210,6 +231,8 @@ def _request(
             raise ValueError("compact_router requests require a non-negative absolute_step.")
         if alpha != 0.0:
             raise ValueError("compact_router owns alpha; do not also pass a fixed alpha.")
+        if endpoint_strength > 0.0 or final_midpoint:
+            raise ValueError("compact_router cannot be combined with endpoint or midpoint modes.")
         request.update(
             {
                 "action_cot_compact_alpha_router": np.asarray(True, dtype=np.bool_),
@@ -221,6 +244,17 @@ def _request(
         )
     elif alpha > 0.0:
         request["action_cot_final_time_warp_alpha"] = np.asarray(alpha, dtype=np.float32)
+    if endpoint_strength > 0.0:
+        if alpha > 0.0 or force_final_one_step or final_midpoint:
+            raise ValueError("Endpoint conditioning must be a standalone final mode.")
+        request["action_cot_final_endpoint_condition_strength"] = np.asarray(
+            endpoint_strength,
+            dtype=np.float32,
+        )
+    if final_midpoint:
+        if force_final_one_step:
+            raise ValueError("Midpoint mode cannot force final one-step inference.")
+        request["action_cot_final_midpoint"] = np.asarray(True, dtype=np.bool_)
     if force_final_one_step:
         request["action_cot_final_denoising_steps"] = np.asarray(1, dtype=np.int32)
     if export_cache:
@@ -231,6 +265,45 @@ def _request(
     if "actions" not in result:
         raise KeyError("Policy response does not contain actions.")
     return result
+
+
+def _alternative_request(
+    client: websocket_policy.WebsocketClientPolicy,
+    element: dict[str, Any],
+    *,
+    policy_seed: int,
+    args: argparse.Namespace,
+    profile_policy_timing: bool = False,
+) -> dict[str, Any]:
+    if args.alternative_mode == "endpoint":
+        return _request(
+            client,
+            element,
+            policy_seed=policy_seed,
+            alpha=0.0,
+            args=args,
+            endpoint_strength=args.endpoint_strength,
+            profile_policy_timing=profile_policy_timing,
+        )
+    if args.alternative_mode == "midpoint":
+        return _request(
+            client,
+            element,
+            policy_seed=policy_seed,
+            alpha=args.alternative_alpha,
+            args=args,
+            final_midpoint=True,
+            profile_policy_timing=profile_policy_timing,
+        )
+    return _request(
+        client,
+        element,
+        policy_seed=policy_seed,
+        alpha=args.alternative_alpha,
+        args=args,
+        profile_policy_timing=profile_policy_timing,
+        force_final_one_step=profile_policy_timing,
+    )
 
 
 def _progress_arrays(prefix: str, value: dict[str, Any]) -> dict[str, np.ndarray]:
@@ -276,10 +349,11 @@ def _run_arm(
     task_description: str,
     args: argparse.Namespace,
     client: websocket_policy.WebsocketClientPolicy,
-    continuation_policy: str = "alpha0",
+    continuation_policy: str = "fixed_baseline",
     profile_policy_timing: bool = False,
+    force_continuation_one_step: bool = False,
 ) -> dict[str, Any]:
-    if continuation_policy not in {"alpha0", "current_router"}:
+    if continuation_policy not in {"fixed_baseline", "current_router"}:
         raise ValueError(f"Unsupported continuation_policy: {continuation_policy!r}.")
     observation = _restore_branch_snapshot(env, snapshot)
     before = progress_collector._progress(env, observation)
@@ -315,13 +389,16 @@ def _run_arm(
             client,
             element,
             policy_seed=policy_seed,
-            alpha=0.0,
+            alpha=(args.baseline_alpha if continuation_policy == "fixed_baseline" else 0.0),
             args=args,
             compact_router=continuation_policy == "current_router",
             absolute_step=(
                 absolute_step if continuation_policy == "current_router" else None
             ),
             profile_policy_timing=profile_policy_timing,
+            force_final_one_step=(
+                force_continuation_one_step and continuation_policy == "fixed_baseline"
+            ),
         )
         actions = np.asarray(result["actions"], dtype=np.float32)[:ACTION_HORIZON, :ACTION_DIM]
         if continuation_calls == 0:
@@ -519,7 +596,10 @@ def _record_arrays(
         "coarse_actions": np.asarray(alpha0_result["coarse_actions"], dtype=np.float16),
         "alpha0_actions": alpha0_actions,
         "alternative_actions": alternative_actions,
+        "baseline_alpha": np.asarray(args.baseline_alpha, dtype=np.float32),
         "alternative_alpha": np.asarray(args.alternative_alpha, dtype=np.float32),
+        "alternative_mode": np.asarray(args.alternative_mode),
+        "endpoint_strength": np.asarray(args.endpoint_strength, dtype=np.float32),
         "action_rmse": np.asarray(
             np.sqrt(np.mean((alternative_actions - alpha0_actions) ** 2)),
             dtype=np.float32,
@@ -631,21 +711,20 @@ def _collect_root(
             client,
             element,
             policy_seed=root_seed,
-            alpha=0.0,
+            alpha=args.baseline_alpha,
             args=args,
             export_cache=True,
         )
-        alternative_result = _request(
+        alternative_result = _alternative_request(
             client,
             element,
             policy_seed=root_seed,
-            alpha=args.alternative_alpha,
             args=args,
         )
         required_cache = ("acot_prefix_feature", "acot_iar_tokens", "coarse_actions")
         missing = [name for name in required_cache if name not in alpha0_result]
         if missing:
-            raise KeyError(f"Alpha=0 response is missing deployable gate inputs: {missing}.")
+            raise KeyError(f"Baseline response is missing deployable gate inputs: {missing}.")
         if "coarse_actions" not in alternative_result:
             raise KeyError("Alternative-alpha response is missing coarse_actions.")
 
@@ -720,28 +799,29 @@ def _collect_live_pair(
         client,
         element,
         policy_seed=root.root_seed,
-        alpha=0.0,
+        alpha=args.baseline_alpha,
         args=args,
         export_cache=True,
         profile_policy_timing=True,
-        force_final_one_step=True,
+        force_final_one_step=args.baseline_alpha == 0.0,
     )
-    alternative_result = _request(
+    alternative_result = _alternative_request(
         client,
         element,
         policy_seed=root.root_seed,
-        alpha=args.alternative_alpha,
         args=args,
         profile_policy_timing=True,
-        force_final_one_step=True,
     )
     required_cache = ("acot_prefix_feature", "acot_iar_tokens", "coarse_actions")
     missing = [name for name in required_cache if name not in alpha0_result]
     if missing:
-        raise KeyError(f"Alpha=0 response is missing deployable gate inputs: {missing}.")
+        raise KeyError(f"Baseline response is missing deployable gate inputs: {missing}.")
     if "coarse_actions" not in alternative_result:
         raise KeyError("Alternative-alpha response is missing coarse_actions.")
 
+    continuation_policy = (
+        "current_router" if args.live_behavior == "compact_router" else "fixed_baseline"
+    )
     alpha0 = _run_arm(
         env,
         root.snapshot,
@@ -752,8 +832,9 @@ def _collect_live_pair(
         task_description=task_description,
         args=args,
         client=client,
-        continuation_policy="current_router",
+        continuation_policy=continuation_policy,
         profile_policy_timing=True,
+        force_continuation_one_step=args.baseline_alpha == 0.0,
     )
     alternative = _run_arm(
         env,
@@ -765,8 +846,9 @@ def _collect_live_pair(
         task_description=task_description,
         args=args,
         client=client,
-        continuation_policy="current_router",
+        continuation_policy=continuation_policy,
         profile_policy_timing=True,
+        force_continuation_one_step=args.baseline_alpha == 0.0,
     )
     preference_label, preference_reason = _preference(
         alpha0,
@@ -798,10 +880,13 @@ def _collect_live_pair(
     )
     record.update(
         {
-            "behavior_policy": np.asarray("current_compact_alpha_router"),
-            "continuation_policy": np.asarray("current_compact_alpha_router"),
+            "behavior_policy": np.asarray(args.live_behavior),
+            "continuation_policy": np.asarray(continuation_policy),
             "behavior_call_index": np.asarray(root.call_index, dtype=np.int16),
-            "behavior_router_score": np.asarray(root.router_score, dtype=np.float32),
+            "behavior_router_score": np.asarray(
+                np.nan if root.router_score is None else root.router_score,
+                dtype=np.float32,
+            ),
             "behavior_router_selected_alpha": np.asarray(root.router_alpha, dtype=np.float32),
             "behavior_rollout_success": np.asarray(behavior_success, dtype=np.bool_),
             "behavior_rollout_calls": np.asarray(behavior_calls, dtype=np.int16),
@@ -863,35 +948,45 @@ def _collect_live_episode(
             )
             snapshot = state_branches._capture_canonical_snapshot(env)
             element = _policy_input(observation, task_description, args)
+            compact_behavior = args.live_behavior == "compact_router"
             result = _request(
                 client,
                 element,
                 policy_seed=root_seed,
-                alpha=0.0,
+                alpha=0.0 if compact_behavior else args.baseline_alpha,
                 args=args,
-                compact_router=True,
-                absolute_step=step,
+                compact_router=compact_behavior,
+                absolute_step=step if compact_behavior else None,
                 profile_policy_timing=True,
+                force_final_one_step=(
+                    not compact_behavior and args.baseline_alpha == 0.0
+                ),
             )
-            required = {
-                "compact_alpha_router_score",
-                "compact_alpha_router_selected_alpha",
-            }
-            missing = sorted(required.difference(result))
-            if missing:
-                raise KeyError(f"Compact-router behavior response is missing: {missing}.")
-            router_score = float(np.asarray(result["compact_alpha_router_score"]).item())
-            router_alpha = float(
-                np.asarray(result["compact_alpha_router_selected_alpha"]).item()
-            )
-            if not np.isfinite(router_score):
-                raise ValueError("Compact-router behavior score must be finite.")
-            if not (
-                np.isclose(router_alpha, 0.0)
-                or np.isclose(router_alpha, args.alternative_alpha)
-            ):
-                raise ValueError(f"Unexpected compact-router alpha: {router_alpha}.")
-            router_alpha = args.alternative_alpha if router_alpha > 0.0 else 0.0
+            if compact_behavior:
+                required = {
+                    "compact_alpha_router_score",
+                    "compact_alpha_router_selected_alpha",
+                }
+                missing = sorted(required.difference(result))
+                if missing:
+                    raise KeyError(f"Compact-router behavior response is missing: {missing}.")
+                router_score = float(
+                    np.asarray(result["compact_alpha_router_score"]).item()
+                )
+                router_alpha = float(
+                    np.asarray(result["compact_alpha_router_selected_alpha"]).item()
+                )
+                if not np.isfinite(router_score):
+                    raise ValueError("Compact-router behavior score must be finite.")
+                if not (
+                    np.isclose(router_alpha, 0.0)
+                    or np.isclose(router_alpha, args.alternative_alpha)
+                ):
+                    raise ValueError(f"Unexpected compact-router alpha: {router_alpha}.")
+                router_alpha = args.alternative_alpha if router_alpha > 0.0 else 0.0
+            else:
+                router_score = None
+                router_alpha = args.baseline_alpha
             live_roots.append(
                 LiveRoot(
                     episode_id=episode_id,
@@ -983,16 +1078,23 @@ def _summary(
             "formal_episodes_allowed": bool(args.allow_formal_episodes),
             "formal_episode_ids": sorted(FORMAL_EPISODES),
             "root_source": "saved counterfactual physics_state",
-            "initial_arms": [0.0, args.alternative_alpha],
+            "initial_arms": {
+                "baseline_alpha": args.baseline_alpha,
+                "alternative_mode": args.alternative_mode,
+                "alternative_alpha": args.alternative_alpha,
+                "endpoint_strength": args.endpoint_strength,
+            },
             "initial_horizon": ACTION_HORIZON,
-            "continuation": "shared alpha=0 H10 policy with absolute-step seeds",
+            "continuation": (
+                f"shared baseline alpha={args.baseline_alpha} H10 policy with absolute-step seeds"
+            ),
             "terminal_evaluated": bool(args.terminal),
             "label_priority": (
                 "terminal success, both-success calls/steps, terminal progress"
                 if args.terminal
                 else "H20 privileged progress, then H10 privileged progress"
             ),
-            "policy_seed": "same stored root_seed for alpha=0 and alternative alpha",
+            "policy_seed": "same stored root_seed for baseline and alternative",
             "action_cot_denoising_steps": args.action_cot_denoising_steps,
             "resume_authority": "one compressed NPZ per unique physics root",
         },
@@ -1081,11 +1183,15 @@ def _main_live(args: argparse.Namespace) -> None:
     )
     summary["protocol"].update(
         {
-            "root_source": "live current compact-router canonical simulator snapshots",
-            "behavior_policy": "current compact alpha router, H10",
-            "continuation": "shared current compact alpha router with absolute-step seeds",
+            "root_source": "live canonical simulator snapshots",
+            "behavior_policy": args.live_behavior,
+            "continuation": (
+                "shared current compact alpha router with absolute-step seeds"
+                if args.live_behavior == "compact_router"
+                else f"shared fixed baseline alpha={args.baseline_alpha} with absolute-step seeds"
+            ),
             "q_semantics": (
-                "candidate alpha=0/.05 first chunk followed by frozen current-router pi"
+                "candidate baseline/alternative first chunk followed by frozen behavior pi"
             ),
             "live_roots_per_episode": args.live_roots_per_episode,
             "live_root_selection": "evenly-spaced early/middle/late behavior calls",
