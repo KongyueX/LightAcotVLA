@@ -150,6 +150,62 @@ def _fuse_contextual_semantic_actions(
     }
 
 
+@jax.jit
+def _fuse_contextual_spectral_actions(
+    compiled_actions: jax.Array,
+    expert_actions: jax.Array,
+    compiler_gripper: jax.Array,
+) -> dict[str, jax.Array]:
+    """Mix complementary chunk frequencies with an orthonormal 10-point DCT.
+
+    Episode-grouped offline fitting found that the contextual compiler is most
+    useful as a high-frequency stabilizer while the B6 endpoint expert carries
+    more of the low-frequency motion.  The fixed coefficients below are the
+    out-of-fold least-squares compiler weights for frequency bands 0-1, 2-4,
+    and 5-9.  Gripper actions remain a hard branch choice because interpolating
+    open/close logits can create an invalid low-margin command.
+    """
+
+    horizon = compiled_actions.shape[1]
+    steps = jnp.arange(horizon, dtype=jnp.float32)
+    frequencies = jnp.arange(horizon, dtype=jnp.float32)
+    basis = jnp.sqrt(jnp.asarray(2.0 / horizon, dtype=jnp.float32)) * jnp.cos(
+        jnp.asarray(np.pi / horizon, dtype=jnp.float32)
+        * frequencies[:, None]
+        * (steps[None, :] + 0.5)
+    )
+    basis = basis.at[0].multiply(jnp.asarray(1.0 / np.sqrt(2.0), dtype=jnp.float32))
+    compiler_frequency_weight = jnp.asarray(
+        (0.43, 0.43, 0.46, 0.46, 0.46, 0.97, 0.97, 0.97, 0.97, 0.97),
+        dtype=jnp.float32,
+    )
+    compiled_coefficients = jnp.einsum(
+        "kt,btd->bkd", basis, compiled_actions[..., :6]
+    )
+    expert_coefficients = jnp.einsum(
+        "kt,btd->bkd", basis, expert_actions[..., :6]
+    )
+    coefficients = (
+        compiler_frequency_weight[None, :, None] * compiled_coefficients
+        + (1.0 - compiler_frequency_weight[None, :, None]) * expert_coefficients
+    )
+    continuous = jnp.einsum("kt,bkd->btd", basis, coefficients)
+    gripper = jnp.where(
+        compiler_gripper,
+        compiled_actions[..., 6:7],
+        expert_actions[..., 6:7],
+    )
+    actions = jnp.concatenate(
+        (continuous, gripper, expert_actions[..., 7:]), axis=-1
+    )
+    return {
+        "actions": actions,
+        "contextual_fusion_spectral_compiler_gripper": jnp.full(
+            (actions.shape[0],), compiler_gripper, dtype=jnp.bool_
+        ),
+    }
+
+
 class Policy(BasePolicy):
     def __init__(
         self,
@@ -313,6 +369,8 @@ class Policy(BasePolicy):
             "gripper_compiler",
             "blend50",
             "semantic_gate",
+            "spectral_compiler_gripper",
+            "spectral_expert_gripper",
             "phase_compiler_expert",
             "phase_expert_compiler",
         }:
@@ -1778,10 +1836,33 @@ class Policy(BasePolicy):
                     time.monotonic() - fusion_started
                 ) * 1000
                 actions = fusion_outputs.pop("actions")
+            elif contextual_fusion_mode in {
+                "spectral_compiler_gripper",
+                "spectral_expert_gripper",
+            }:
+                assert compiled_actions is not None and expert_actions is not None
+                fusion_started = time.monotonic()
+                fusion_outputs = _fuse_contextual_spectral_actions(
+                    compiled_actions,
+                    expert_actions,
+                    jnp.asarray(
+                        contextual_fusion_mode == "spectral_compiler_gripper",
+                        dtype=jnp.bool_,
+                    ),
+                )
+                _block_until_ready(fusion_outputs)
+                timing["contextual_fusion_ms"] = (
+                    time.monotonic() - fusion_started
+                ) * 1000
+                actions = fusion_outputs.pop("actions")
             else:
                 raise AssertionError(contextual_fusion_mode)
             result = {"actions": actions}
-            if contextual_fusion_mode == "semantic_gate":
+            if contextual_fusion_mode in {
+                "semantic_gate",
+                "spectral_compiler_gripper",
+                "spectral_expert_gripper",
+            }:
                 result.update(fusion_outputs)
             if contextual_fusion_phase_selected_expert is not None:
                 batch_size = actions.shape[0]

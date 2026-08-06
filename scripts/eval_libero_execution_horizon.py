@@ -145,6 +145,8 @@ def build_parser() -> argparse.ArgumentParser:
             "gripper_compiler",
             "blend50",
             "semantic_gate",
+            "spectral_compiler_gripper",
+            "spectral_expert_gripper",
             "phase_compiler_expert",
             "phase_expert_compiler",
         ),
