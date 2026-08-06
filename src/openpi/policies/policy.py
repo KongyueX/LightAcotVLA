@@ -80,6 +80,7 @@ class Policy(BasePolicy):
         self._sample_actions_profile_direct_one_step_expert = None
         self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert = None
         self._sample_actions_profile_second_half_expert = None
+        self._sample_actions_profile_midpoint_expert = None
         self._sample_actions_profile_adaptive_one_step_expert = None
         self._sample_actions_profile_ofp_expert = None
         self._sample_actions_joint_coupled = None
@@ -123,6 +124,12 @@ class Policy(BasePolicy):
                 model.sample_actions_profile_second_half_expert,
                 # module_jit prepends module state: alpha is argument five.
                 static_argnums=(5,),
+            )
+        if hasattr(model, "sample_actions_profile_midpoint_expert"):
+            self._sample_actions_profile_midpoint_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_midpoint_expert,
+                # module_jit prepends module state: alpha is argument four.
+                static_argnums=(4,),
             )
         # Compact routing deliberately keeps the original two static endpoint
         # graphs. The first routed request warms both so a later alpha switch
@@ -244,6 +251,7 @@ class Policy(BasePolicy):
         final_endpoint_condition_strength = float(
             np.asarray(inputs.pop("action_cot_final_endpoint_condition_strength", 0.0)).item()
         )
+        final_midpoint_enabled = _as_bool(inputs.pop("action_cot_final_midpoint", False))
         requested_final_time_warp_alpha = final_time_warp_alpha
         adaptive_final_time_warp = _as_bool(
             inputs.pop("action_cot_adaptive_final_time_warp", False)
@@ -294,6 +302,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_final_denoising_steps", None)
             override_inputs.pop("action_cot_final_time_warp_alpha", None)
             override_inputs.pop("action_cot_final_endpoint_condition_strength", None)
+            override_inputs.pop("action_cot_final_midpoint", None)
             override_inputs.pop("action_cot_adaptive_final_time_warp", None)
             override_inputs.pop("action_cot_ofp_interval_flow", None)
             override_inputs.pop("action_cot_ofp_warm_start_actions", None)
@@ -432,6 +441,11 @@ class Policy(BasePolicy):
                 **sample_kwargs,
                 "final_endpoint_condition_strength": final_endpoint_condition_strength,
             }
+        if final_midpoint_enabled:
+            sample_kwargs = {
+                **sample_kwargs,
+                "final_midpoint": True,
+            }
         if adaptive_final_time_warp:
             sample_kwargs = {
                 **sample_kwargs,
@@ -522,6 +536,40 @@ class Policy(BasePolicy):
             if coarse_steps != 1:
                 raise ValueError(
                     "Endpoint conditioning requires endpoint-student EAR NFE1; "
+                    f"got EAR NFE={coarse_steps}."
+                )
+        if final_midpoint_enabled:
+            if self._sample_actions_profile_midpoint_expert is None:
+                raise ValueError("The loaded policy does not implement midpoint inference.")
+            if (
+                final_denoising_steps is not None
+                or final_endpoint_condition_strength > 0.0
+                or adaptive_final_time_warp
+                or compact_alpha_router_enabled
+                or harp_residual_enabled
+                or harp_gripper_event_enabled
+                or final_hybrid_mode != "none"
+                or selective_gripper_refinement_enabled
+                or ofp_interval_flow
+                or joint_coupled_sampler
+                or batched_mc_samples
+                or run_execution_horizon_predictor
+                or self._acot_contextual_compiler is not None
+            ):
+                raise ValueError("Midpoint inference is a standalone two-NFE final mode.")
+            if _as_bool(sample_kwargs.get("dynamic_denoising_steps", False)):
+                raise ValueError("Midpoint inference requires a fixed one-step EAR.")
+            coarse_steps = int(
+                np.asarray(
+                    sample_kwargs.get(
+                        "action_cot_denoising_steps",
+                        sample_kwargs.get("num_steps", 10),
+                    )
+                ).item()
+            )
+            if coarse_steps != 1:
+                raise ValueError(
+                    "Midpoint inference requires endpoint-student EAR NFE1; "
                     f"got EAR NFE={coarse_steps}."
                 )
         observation = _model.Observation.from_dict(inputs)
@@ -859,6 +907,7 @@ class Policy(BasePolicy):
             or final_denoising_steps is not None
             or final_time_warp_alpha > 0.0
             or final_endpoint_condition_strength > 0.0
+            or final_midpoint_enabled
             or adaptive_final_time_warp
             or compact_alpha_router_enabled
             or harp_residual_enabled
@@ -1070,6 +1119,7 @@ class Policy(BasePolicy):
         final_endpoint_condition_strength = float(
             sample_kwargs.get("final_endpoint_condition_strength", 0.0)
         )
+        final_midpoint = _as_bool(sample_kwargs.get("final_midpoint", False))
         final_hybrid_mode = str(sample_kwargs.get("final_hybrid_mode", "none"))
         selective_gripper_refinement = _as_bool(
             sample_kwargs.get("selective_gripper_refinement", False)
@@ -1109,6 +1159,15 @@ class Policy(BasePolicy):
                     prefix_state,
                     coarse_outputs["explicit_action_reason"],
                     implicit_outputs["implicit_action_reason"],
+                )
+            elif final_midpoint:
+                if self._sample_actions_profile_midpoint_expert is None:
+                    raise ValueError("The loaded policy does not implement midpoint inference.")
+                expert_outputs = self._sample_actions_profile_midpoint_expert(
+                    prefix_state,
+                    coarse_outputs["explicit_action_reason"],
+                    implicit_outputs["implicit_action_reason"],
+                    final_time_warp_alpha,
                 )
             elif selective_gripper_refinement:
                 if (

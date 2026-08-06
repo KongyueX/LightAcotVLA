@@ -81,6 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--final-midpoint",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use the shared-compute explicit-midpoint final solver: one endpoint "
+            "velocity plus one midpoint velocity, with a second-order update."
+        ),
+    )
+    parser.add_argument(
         "--adaptive-final-time-warp",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -273,6 +282,8 @@ def _request(
             args.final_endpoint_condition_strength,
             dtype=np.float32,
         )
+    if args.final_midpoint:
+        request["action_cot_final_midpoint"] = np.asarray(True, dtype=np.bool_)
     if args.adaptive_final_time_warp:
         request["action_cot_adaptive_final_time_warp"] = np.asarray(
             True,
@@ -1104,6 +1115,23 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError(
                 "final_endpoint_condition_strength requires endpoint-student EAR NFE1."
             )
+    if args.final_midpoint:
+        incompatible_midpoint_modes = (
+            args.final_denoising_steps is not None
+            or args.final_endpoint_condition_strength > 0.0
+            or args.adaptive_final_time_warp
+            or args.compact_alpha_router
+            or args.harp_residual
+            or args.harp_gripper_event
+            or args.final_hybrid_mode != "none"
+            or args.selective_gripper_refinement
+            or args.ofp_interval_flow
+            or "exact_batched_mc_v2" in args.modes
+        )
+        if incompatible_midpoint_modes:
+            raise ValueError("final_midpoint is a standalone two-NFE final mode.")
+        if args.action_cot_denoising_steps != 1:
+            raise ValueError("final_midpoint requires endpoint-student EAR NFE1.")
     if not np.isfinite(args.selective_gripper_tau) or not 0.0 <= args.selective_gripper_tau <= 1.0:
         raise ValueError("selective_gripper_tau must be finite and in [0, 1].")
     if args.final_time_warp_alpha > 0.0 and args.ofp_interval_flow:

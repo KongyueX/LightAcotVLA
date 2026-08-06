@@ -2426,6 +2426,43 @@ class ACOT_VLA(_model.BaseModel):
         )
         return {"actions": action_middle - 0.5 * velocity_middle}
 
+    def sample_actions_profile_midpoint_expert(
+        self,
+        prefix_state: dict[str, Any],
+        explicit_action_reason: _model.CoarseActions | None,
+        implicit_action_reason: jax.Array | None,
+        final_time_warp_alpha: float = 0.0,
+    ) -> dict[str, Any]:
+        """Run a shared-compute explicit-midpoint final solver in two NFEs.
+
+        The first velocity constructs the midpoint, and the midpoint velocity
+        advances the original noise over the full interval.  Unlike two Euler
+        half-steps, this is the classical second-order midpoint update:
+        ``x_0 = z - v(z - .5 v(z, 1), .5)``.
+        """
+
+        expert_action_noise = prefix_state["expert_action_noise"]
+        batch_size = expert_action_noise.shape[0]
+        alpha = jnp.asarray(final_time_warp_alpha, dtype=jnp.float32)
+        time_one = jnp.ones((batch_size,), dtype=jnp.float32) * (1.0 - alpha)
+        velocity_one = self._action_velocity_at_time(
+            prefix_state,
+            expert_action_noise,
+            time_one,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        action_middle = expert_action_noise - 0.5 * velocity_one
+        time_middle = jnp.full((batch_size,), 0.5, dtype=jnp.float32) * (1.0 - alpha)
+        velocity_middle = self._action_velocity_at_time(
+            prefix_state,
+            action_middle,
+            time_middle,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        return {"actions": expert_action_noise - velocity_middle}
+
     def sample_actions_profile_harp_pair(
         self,
         prefix_state: dict[str, Any],
