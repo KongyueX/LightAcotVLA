@@ -8,11 +8,14 @@ inject those tokens into the action suffix *before* the frozen 18-layer EAR
 and final experts.  The original coarse/final output projections stay frozen,
 and there is no action residual head.
 
-Training is deliberately staged.  Stage 1 learns the EAR adapter against the
-exact top-8 direct-splice EAR and the full-fresh EAR.  Stage 2 freezes Stage 1,
-uses its predicted EAR, and trains the final adapter with both a direct-path
-counterfactual target and the full-fresh joint target.  Test22 reports stale,
-plan-only, direct-only, joint, fresh, and shuffled-evidence interventions.
+Training is deliberately staged.  Stage 1 learns only the exact top-8
+direct-splice EAR response.  Stage 2 freezes Stage 1 and learns only the final
+response between direct-splice and anchor prefixes under the same predicted
+EAR and stale IAR.  Full-fresh outputs are used only by the Test22 closure
+report.  Zero evidence is supervised to produce zero response, while evidence
+from another episode is a contrastive negative rather than a hard stale
+target.  Test22 reports stale, plan-only, direct-only, joint, fresh, and
+shuffled-evidence interventions.
 This script is GPU-only and never modifies the default policy path.
 """
 
@@ -58,7 +61,7 @@ METHOD_NAMES = (
     "fresh",
     "shuffled_evidence",
 )
-ACTIVE_ACTION_DIM = 7
+CONTINUOUS_ACTION_DIM = 6
 TOP_K = 8
 EVIDENCE_TOKENS = 16
 
@@ -90,13 +93,18 @@ class Args:
     log_interval: int = 25
     attention_dim: int = 128
     attention_heads: int = 4
-    ear_direct_loss_weight: float = 1.0
-    ear_fresh_loss_weight: float = 1.0
-    final_direct_loss_weight: float = 1.0
-    final_joint_loss_weight: float = 1.0
-    joint_action_closure_gate: float = 0.65
-    plan_ear_closure_gate: float = 0.55
-    conditional_direct_gain_gate: float = 0.15
+    ear_response_loss_weight: float = 1.0
+    ear_zero_loss_weight: float = 1.0
+    ear_ranking_loss_weight: float = 1.0
+    final_response_loss_weight: float = 1.0
+    final_zero_loss_weight: float = 1.0
+    final_ranking_loss_weight: float = 1.0
+    gripper_event_loss_weight: float = 1.0
+    contrastive_margin: float = 0.01
+    gripper_sign_margin: float = 0.1
+    joint_action_closure_gate: float = 0.75
+    plan_ear_closure_gate: float = 0.60
+    conditional_direct_gain_gate: float = 0.25
     conditional_plan_gain_gate: float = 0.10
     shuffled_action_drop_gate: float = 0.10
     joint_gripper_accuracy_gate: float = 0.95
@@ -134,17 +142,20 @@ def _validate_args(args: Args) -> None:
     if any(value <= 0 for value in expected) or sum(expected[1:]) != expected[0]:
         raise ValueError("Expected split sizes must be positive and sum to expected_pairs.")
     weights = (
-        args.ear_direct_loss_weight,
-        args.ear_fresh_loss_weight,
-        args.final_direct_loss_weight,
-        args.final_joint_loss_weight,
+        args.ear_response_loss_weight,
+        args.ear_zero_loss_weight,
+        args.ear_ranking_loss_weight,
+        args.final_response_loss_weight,
+        args.final_zero_loss_weight,
+        args.final_ranking_loss_weight,
+        args.gripper_event_loss_weight,
     )
     if any(value < 0.0 for value in weights):
         raise ValueError("DCE loss weights must be non-negative.")
-    if args.ear_direct_loss_weight + args.ear_fresh_loss_weight <= 0.0:
-        raise ValueError("At least one EAR loss must be active.")
-    if args.final_direct_loss_weight + args.final_joint_loss_weight <= 0.0:
-        raise ValueError("At least one final loss must be active.")
+    if args.ear_response_loss_weight <= 0.0 or args.final_response_loss_weight <= 0.0:
+        raise ValueError("Both matched-response losses must be active.")
+    if args.contrastive_margin <= 0.0 or args.gripper_sign_margin <= 0.0:
+        raise ValueError("Contrastive and gripper margins must be positive.")
     gates = (
         args.joint_action_closure_gate,
         args.plan_ear_closure_gate,
@@ -159,17 +170,36 @@ def _validate_args(args: Args) -> None:
         raise ValueError("delta_floor must be positive.")
 
 
-def _active_mse(predicted: jax.Array, target: jax.Array) -> jax.Array:
+def _continuous_mse(predicted: jax.Array, target: jax.Array) -> jax.Array:
     return jnp.mean(
         jnp.square(
-            predicted[..., :ACTIVE_ACTION_DIM].astype(jnp.float32)
-            - target[..., :ACTIVE_ACTION_DIM].astype(jnp.float32)
+            predicted[..., :CONTINUOUS_ACTION_DIM].astype(jnp.float32)
+            - target[..., :CONTINUOUS_ACTION_DIM].astype(jnp.float32)
         )
     )
 
 
 def _gripper_accuracy(predicted: jax.Array, target: jax.Array) -> jax.Array:
     return jnp.mean((predicted[..., 6] >= 0.0) == (target[..., 6] >= 0.0))
+
+
+def _event_gripper_margin(
+    predicted: jax.Array,
+    teacher: jax.Array,
+    base: jax.Array,
+    *,
+    margin: float,
+) -> tuple[jax.Array, jax.Array]:
+    teacher_positive = teacher[..., 6] >= 0.0
+    base_positive = base[..., 6] >= 0.0
+    event_mask = teacher_positive != base_positive
+    target_sign = jnp.where(teacher_positive, 1.0, -1.0)
+    per_token = jax.nn.relu(
+        margin - target_sign * predicted[..., 6].astype(jnp.float32)
+    )
+    event_count = jnp.sum(event_mask.astype(jnp.float32))
+    loss = jnp.sum(per_token * event_mask.astype(jnp.float32)) / jnp.maximum(event_count, 1.0)
+    return loss, jnp.mean(event_mask.astype(jnp.float32))
 
 
 def _repeat_stale_prefix(
@@ -249,10 +279,21 @@ def _pair_context(
         fresh_prefix,
         direct_kv,
     )
+    causal_kv = (
+        jnp.concatenate([anchor_prefix["kv_cache"][0], direct_kv[0]], axis=1),
+        jnp.concatenate([anchor_prefix["kv_cache"][1], direct_kv[1]], axis=1),
+    )
+    causal_prefix = mrr_oracle._repeat_prefix_state(  # noqa: SLF001
+        fresh_prefix,
+        anchor_prefix["prefix_out"],
+        causal_kv,
+        2,
+    )
     return {
         "anchor_prefix": anchor_prefix,
         "fresh_prefix": fresh_prefix,
         "stale_prefix": _repeat_stale_prefix(anchor_prefix, fresh_prefix, 1),
+        "causal_prefix": causal_prefix,
         "comparison": comparison,
         "evidence": _pool_top8_evidence(anchor_prefix, fresh_prefix, selected_ids),
         "selected_ids": selected_ids[0],
@@ -341,31 +382,72 @@ def _ear_loss(
     adapter: dce_evidence_adapter.DCEEvidenceAdapter,
     context: dict[str, Any],
     args: Args,
+    mismatched_evidence: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    comparison = context["comparison"]
+    causal_prefix = context["causal_prefix"]
     teacher_ear = base_model._one_step_coarse_endpoint(  # noqa: SLF001
-        comparison,
-        comparison["ref_action_noise"],
+        causal_prefix,
+        causal_prefix["ref_action_noise"],
     )
-    stale_ear, direct_ear, fresh_ear = (
-        teacher_ear[0:1],
-        teacher_ear[1:2],
-        teacher_ear[2:3],
-    )
-    predicted_ear = _adapted_coarse_endpoint(
+    stale_ear, direct_ear = teacher_ear[0:1], teacher_ear[1:2]
+    zero_evidence = jnp.zeros_like(context["evidence"])
+    if mismatched_evidence is None:
+        candidate_evidence = jnp.concatenate([context["evidence"], zero_evidence], axis=0)
+        candidate_prefix = _repeat_stale_prefix(
+            context["anchor_prefix"],
+            context["fresh_prefix"],
+            2,
+        )
+    else:
+        candidate_evidence = jnp.concatenate(
+            [context["evidence"], mismatched_evidence, zero_evidence],
+            axis=0,
+        )
+        candidate_prefix = _repeat_stale_prefix(
+            context["anchor_prefix"],
+            context["fresh_prefix"],
+            3,
+        )
+    candidate_ear = _adapted_coarse_endpoint(
         base_model,
-        context["stale_prefix"],
+        candidate_prefix,
         adapter,
-        context["evidence"],
+        candidate_evidence,
     )
-    direct_loss = _active_mse(predicted_ear - stale_ear, direct_ear - stale_ear)
-    fresh_loss = _active_mse(predicted_ear, fresh_ear)
-    loss = args.ear_direct_loss_weight * direct_loss + args.ear_fresh_loss_weight * fresh_loss
+    predicted_ear = candidate_ear[0:1]
+    zero_ear = candidate_ear[-1:]
+    teacher_response = direct_ear - stale_ear
+    matched_response = predicted_ear - stale_ear
+    response_loss = _continuous_mse(matched_response, teacher_response)
+    zero_loss = _continuous_mse(zero_ear - stale_ear, jnp.zeros_like(stale_ear))
+    if mismatched_evidence is None:
+        mismatch_distance = jnp.zeros((), dtype=jnp.float32)
+        ranking_loss = jnp.zeros((), dtype=jnp.float32)
+    else:
+        mismatch_response = candidate_ear[1:2] - stale_ear
+        mismatch_distance = _continuous_mse(mismatch_response, teacher_response)
+        ranking_loss = jax.nn.relu(
+            args.contrastive_margin + response_loss - mismatch_distance
+        )
+    gripper_loss, gripper_event_fraction = _event_gripper_margin(
+        predicted_ear,
+        direct_ear,
+        stale_ear,
+        margin=args.gripper_sign_margin,
+    )
+    loss = (
+        args.ear_response_loss_weight * response_loss
+        + args.ear_zero_loss_weight * zero_loss
+        + args.ear_ranking_loss_weight * ranking_loss
+        + args.gripper_event_loss_weight * gripper_loss
+    )
     return loss, {
-        "direct_response_mse_7d": direct_loss,
-        "fresh_ear_mse_7d": fresh_loss,
-        "stale_ear_mse_7d": _active_mse(stale_ear, fresh_ear),
-        "direct_teacher_ear_mse_7d": _active_mse(direct_ear, fresh_ear),
+        "matched_response_mse_6d": response_loss,
+        "mismatch_distance_to_teacher_6d": mismatch_distance,
+        "zero_response_mse_6d": zero_loss,
+        "contrastive_ranking_loss": ranking_loss,
+        "gripper_event_margin_loss": gripper_loss,
+        "gripper_event_fraction": gripper_event_fraction,
         "gate": jnp.tanh(adapter.gate.value),
     }
 
@@ -376,17 +458,13 @@ def _final_loss(
     final_adapter: dce_evidence_adapter.DCEEvidenceAdapter,
     context: dict[str, Any],
     args: Args,
+    mismatched_evidence: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    comparison = context["comparison"]
-    teacher_ear = base_model._one_step_coarse_endpoint(  # noqa: SLF001
-        comparison,
-        comparison["ref_action_noise"],
-    )
-    teacher_iar = base_model.sample_actions_profile_implicit(comparison)["implicit_action_reason"]
-    if teacher_iar is None:
+    stale_iar = base_model.sample_actions_profile_implicit(context["stale_prefix"])[
+        "implicit_action_reason"
+    ]
+    if stale_iar is None:
         raise ValueError("DCE adapter requires the frozen implicit action reasoner.")
-    stale_ear, fresh_ear = teacher_ear[0:1], teacher_ear[2:3]
-    stale_iar, fresh_iar = teacher_iar[0:1], teacher_iar[2:3]
     predicted_ear = _adapted_coarse_endpoint(
         base_model,
         context["stale_prefix"],
@@ -394,50 +472,72 @@ def _final_loss(
         context["evidence"],
     )
 
-    teacher_action_ear = jnp.concatenate([stale_ear, stale_ear, fresh_ear], axis=0)
-    teacher_action_iar = jnp.concatenate([stale_iar, stale_iar, fresh_iar], axis=0)
-    teacher_actions = base_model._one_step_action_endpoint(  # noqa: SLF001
-        comparison,
-        comparison["expert_action_noise"],
-        teacher_action_ear,
-        teacher_action_iar,
+    causal_prefix = context["causal_prefix"]
+    base_teacher_actions = base_model._one_step_action_endpoint(  # noqa: SLF001
+        causal_prefix,
+        causal_prefix["expert_action_noise"],
+        jnp.repeat(predicted_ear, 2, axis=0),
+        jnp.repeat(stale_iar, 2, axis=0),
     )
-    stale_action, direct_teacher_action, fresh_action = (
-        teacher_actions[0:1],
-        teacher_actions[1:2],
-        teacher_actions[2:3],
-    )
-
-    adapter_prefix = _repeat_stale_prefix(
+    base_action, teacher_action = base_teacher_actions[0:1], base_teacher_actions[1:2]
+    zero_evidence = jnp.zeros_like(context["evidence"])
+    if mismatched_evidence is None:
+        candidate_evidence = jnp.concatenate([context["evidence"], zero_evidence], axis=0)
+        candidate_count = 2
+    else:
+        candidate_evidence = jnp.concatenate(
+            [context["evidence"], mismatched_evidence, zero_evidence],
+            axis=0,
+        )
+        candidate_count = 3
+    candidate_prefix = _repeat_stale_prefix(
         context["anchor_prefix"],
         context["fresh_prefix"],
-        2,
+        candidate_count,
     )
-    adapter_ear = jnp.concatenate([stale_ear, predicted_ear], axis=0)
-    adapter_iar = jnp.repeat(stale_iar, 2, axis=0)
-    adapter_evidence = jnp.repeat(context["evidence"], 2, axis=0)
-    adapter_actions = _adapted_final_endpoint(
+    candidate_actions = _adapted_final_endpoint(
         base_model,
-        adapter_prefix,
+        candidate_prefix,
         final_adapter,
-        adapter_evidence,
-        adapter_ear,
-        adapter_iar,
+        candidate_evidence,
+        jnp.repeat(predicted_ear, candidate_count, axis=0),
+        jnp.repeat(stale_iar, candidate_count, axis=0),
     )
-    direct_action, joint_action = adapter_actions[0:1], adapter_actions[1:2]
-    direct_loss = _active_mse(
-        direct_action - stale_action,
-        direct_teacher_action - stale_action,
+    matched_action = candidate_actions[0:1]
+    zero_action = candidate_actions[-1:]
+    teacher_response = teacher_action - base_action
+    matched_response = matched_action - base_action
+    response_loss = _continuous_mse(matched_response, teacher_response)
+    zero_loss = _continuous_mse(zero_action - base_action, jnp.zeros_like(base_action))
+    if mismatched_evidence is None:
+        mismatch_distance = jnp.zeros((), dtype=jnp.float32)
+        ranking_loss = jnp.zeros((), dtype=jnp.float32)
+    else:
+        mismatch_response = candidate_actions[1:2] - base_action
+        mismatch_distance = _continuous_mse(mismatch_response, teacher_response)
+        ranking_loss = jax.nn.relu(
+            args.contrastive_margin + response_loss - mismatch_distance
+        )
+    gripper_loss, gripper_event_fraction = _event_gripper_margin(
+        matched_action,
+        teacher_action,
+        base_action,
+        margin=args.gripper_sign_margin,
     )
-    joint_loss = _active_mse(joint_action, fresh_action)
-    loss = args.final_direct_loss_weight * direct_loss + args.final_joint_loss_weight * joint_loss
+    loss = (
+        args.final_response_loss_weight * response_loss
+        + args.final_zero_loss_weight * zero_loss
+        + args.final_ranking_loss_weight * ranking_loss
+        + args.gripper_event_loss_weight * gripper_loss
+    )
     return loss, {
-        "direct_response_mse_7d": direct_loss,
-        "joint_action_mse_7d": joint_loss,
-        "stale_action_mse_7d": _active_mse(stale_action, fresh_action),
-        "direct_teacher_action_mse_7d": _active_mse(direct_teacher_action, fresh_action),
-        "predicted_ear_mse_7d": _active_mse(predicted_ear, fresh_ear),
-        "joint_gripper_accuracy": _gripper_accuracy(joint_action, fresh_action),
+        "matched_response_mse_6d": response_loss,
+        "mismatch_distance_to_teacher_6d": mismatch_distance,
+        "zero_response_mse_6d": zero_loss,
+        "contrastive_ranking_loss": ranking_loss,
+        "gripper_event_margin_loss": gripper_loss,
+        "gripper_event_fraction": gripper_event_fraction,
+        "matched_teacher_gripper_accuracy": _gripper_accuracy(matched_action, teacher_action),
         "gate": jnp.tanh(final_adapter.gate.value),
     }
 
@@ -458,6 +558,7 @@ def _make_steps(
         optimizer_state: optax.OptState,
         batch: dict[str, Any],
         rng: jax.Array,
+        mismatched_evidence: jax.Array,
     ) -> tuple[nnx.State, optax.OptState, dict[str, jax.Array]]:
         base_model = nnx.merge(base_graphdef, base_state)
         scorer = nnx.merge(selector_runtime.scorer_graphdef, scorer_state)
@@ -465,7 +566,13 @@ def _make_steps(
         adapter = nnx.merge(ear_graphdef, params)
 
         def loss_fn(candidate: dce_evidence_adapter.DCEEvidenceAdapter):
-            return _ear_loss(base_model, candidate, context, args)
+            return _ear_loss(
+                base_model,
+                candidate,
+                context,
+                args,
+                mismatched_evidence=mismatched_evidence,
+            )
 
         (loss, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(adapter)
         updates, next_optimizer_state = optimizer.update(gradients, optimizer_state, params)
@@ -500,6 +607,7 @@ def _make_steps(
         optimizer_state: optax.OptState,
         batch: dict[str, Any],
         rng: jax.Array,
+        mismatched_evidence: jax.Array,
     ) -> tuple[nnx.State, optax.OptState, dict[str, jax.Array]]:
         base_model = nnx.merge(base_graphdef, base_state)
         scorer = nnx.merge(selector_runtime.scorer_graphdef, scorer_state)
@@ -508,7 +616,14 @@ def _make_steps(
         final_adapter = nnx.merge(final_graphdef, params)
 
         def loss_fn(candidate: dce_evidence_adapter.DCEEvidenceAdapter):
-            return _final_loss(base_model, ear_adapter, candidate, context, args)
+            return _final_loss(
+                base_model,
+                ear_adapter,
+                candidate,
+                context,
+                args,
+                mismatched_evidence=mismatched_evidence,
+            )
 
         (loss, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(final_adapter)
         updates, next_optimizer_state = optimizer.update(gradients, optimizer_state, params)
@@ -772,6 +887,31 @@ def _save_params(
     return target.resolve()
 
 
+def _deterministic_mismatch_map(
+    indices: np.ndarray,
+    pairs: p3t_trainer.PairIndices,
+) -> dict[int, int]:
+    """Pair every training example with a stable example from another episode."""
+
+    ordered = [int(value) for value in np.asarray(indices, dtype=np.int64)]
+    if len(ordered) < 2:
+        raise ValueError("Mismatched-evidence training requires at least two training pairs.")
+    result: dict[int, int] = {}
+    initial_shift = max(1, len(ordered) // 2)
+    for position, record_index in enumerate(ordered):
+        source_episode = int(pairs.episode_ids[record_index])
+        for extra_shift in range(len(ordered)):
+            candidate = ordered[(position + initial_shift + extra_shift) % len(ordered)]
+            if candidate != record_index and int(pairs.episode_ids[candidate]) != source_episode:
+                result[record_index] = candidate
+                break
+        else:
+            raise ValueError(
+                f"No different-episode mismatch exists for training pair {record_index}."
+            )
+    return result
+
+
 def _validation_metrics(
     evaluator: Callable[..., dict[str, jax.Array]],
     indices: np.ndarray,
@@ -905,11 +1045,31 @@ def main(args: Args) -> None:
         args,
     )
 
+    evidence_exporter = _make_evidence_exporter(base_graphdef, selector_runtime, args)
+    mismatch_map = _deterministic_mismatch_map(train_indices, pairs)
+    train_evidence: dict[int, np.ndarray] = {}
+    for position, record_index_value in enumerate(train_indices):
+        record_index = int(record_index_value)
+        anchor = int(pairs.anchor_indices[record_index])
+        batch = p3t_trainer._batch(records, np.asarray([record_index], dtype=np.int64))  # noqa: SLF001
+        output = jax.device_get(
+            evidence_exporter(
+                base_state,
+                selector_runtime.scorer_state,
+                batch,
+                jax.random.fold_in(jax.random.key(args.seed), anchor),
+            )
+        )
+        train_evidence[record_index] = np.asarray(output["evidence"], dtype=np.float32)
+        if position == 0 or (position + 1) % 20 == 0 or position + 1 == train_indices.size:
+            LOGGER.info("Exported train mismatch evidence %d/%d", position + 1, train_indices.size)
+
     sampling_rng = np.random.default_rng(args.seed)
     mode = "w" if args.overwrite else "a"
     with metrics_path.open(mode, encoding="utf-8") as metrics_file:
         for step in range(1, args.ear_steps + 1):
             record_index = int(sampling_rng.choice(train_indices))
+            mismatch_index = mismatch_map[record_index]
             anchor = int(pairs.anchor_indices[record_index])
             batch = p3t_trainer._batch(records, np.asarray([record_index], dtype=np.int64))  # noqa: SLF001
             ear_params, ear_optimizer_state, output = ear_train_step(
@@ -919,12 +1079,15 @@ def main(args: Args) -> None:
                 ear_optimizer_state,
                 batch,
                 jax.random.fold_in(jax.random.key(args.seed), anchor),
+                jnp.asarray(train_evidence[mismatch_index]),
             )
             if step == 1 or step % args.log_interval == 0 or step == args.ear_steps:
                 host = jax.device_get(output)
                 record = {
                     "stage": "ear",
                     "step": step,
+                    "pair_index": record_index,
+                    "mismatch_pair_index": mismatch_index,
                     "elapsed_seconds": time.monotonic() - started,
                     **{name: float(value) for name, value in host.items()},
                 }
@@ -952,6 +1115,7 @@ def main(args: Args) -> None:
 
         for step in range(1, args.final_steps + 1):
             record_index = int(sampling_rng.choice(train_indices))
+            mismatch_index = mismatch_map[record_index]
             anchor = int(pairs.anchor_indices[record_index])
             batch = p3t_trainer._batch(records, np.asarray([record_index], dtype=np.int64))  # noqa: SLF001
             final_params, final_optimizer_state, output = final_train_step(
@@ -962,12 +1126,15 @@ def main(args: Args) -> None:
                 final_optimizer_state,
                 batch,
                 jax.random.fold_in(jax.random.key(args.seed), anchor),
+                jnp.asarray(train_evidence[mismatch_index]),
             )
             if step == 1 or step % args.log_interval == 0 or step == args.final_steps:
                 host = jax.device_get(output)
                 record = {
                     "stage": "final",
                     "step": step,
+                    "pair_index": record_index,
+                    "mismatch_pair_index": mismatch_index,
                     "elapsed_seconds": time.monotonic() - started,
                     **{name: float(value) for name, value in host.items()},
                 }
@@ -1006,7 +1173,6 @@ def main(args: Args) -> None:
         overwrite=args.overwrite,
     )
 
-    evidence_exporter = _make_evidence_exporter(base_graphdef, selector_runtime, args)
     test_evidence = []
     for record_index in test_indices:
         anchor = int(pairs.anchor_indices[record_index])
@@ -1109,6 +1275,25 @@ def main(args: Args) -> None:
         },
         "training": {
             "order": "EAR adapter first; frozen predicted EAR conditions final adapter training",
+            "mismatched_evidence": {
+                "pairing": "deterministic cyclic pairing with a different training episode",
+                "cached_train_evidence_pairs": len(train_evidence),
+                "objective": "matched response must be closer to the causal teacher than mismatch by margin",
+                "margin": args.contrastive_margin,
+                "ear_ranking_weight": args.ear_ranking_loss_weight,
+                "final_ranking_weight": args.final_ranking_loss_weight,
+            },
+            "zero_evidence": {
+                "ear_target": "zero response relative to stale EAR",
+                "final_target": "zero response relative to anchor-prefix predicted-EAR base action",
+                "ear_weight": args.ear_zero_loss_weight,
+                "final_weight": args.final_zero_loss_weight,
+            },
+            "gripper_event_margin": {
+                "weight": args.gripper_event_loss_weight,
+                "margin": args.gripper_sign_margin,
+                "mask": "teacher/base gripper sign differs",
+            },
             "ear_validation": ear_validation,
             "final_validation": final_validation,
             "ear_checkpoint": str(saved_ear),
