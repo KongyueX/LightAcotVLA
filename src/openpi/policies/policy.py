@@ -462,6 +462,11 @@ class Policy(BasePolicy):
                 **sample_kwargs,
                 "final_midpoint": True,
             }
+        if self._acot_contextual_compiler is not None:
+            sample_kwargs = {
+                **sample_kwargs,
+                "contextual_fusion_mode": contextual_fusion_mode,
+            }
         if adaptive_final_time_warp:
             sample_kwargs = {
                 **sample_kwargs,
@@ -1142,6 +1147,9 @@ class Policy(BasePolicy):
             sample_kwargs.get("final_endpoint_condition_strength", 0.0)
         )
         final_midpoint = _as_bool(sample_kwargs.get("final_midpoint", False))
+        contextual_fusion_mode = str(
+            sample_kwargs.get("contextual_fusion_mode", "compiler")
+        )
         final_hybrid_mode = str(sample_kwargs.get("final_hybrid_mode", "none"))
         selective_gripper_refinement = _as_bool(
             sample_kwargs.get("selective_gripper_refinement", False)
