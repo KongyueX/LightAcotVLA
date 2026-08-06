@@ -194,13 +194,12 @@ class PACTFlowScheduler(nnx.Module):
             param_dtype=param_dtype,
         )
 
-        initial_tau_logit = math.log(config.initial_tau / (1.0 - config.initial_tau))
         zero_kernel = jax.nn.initializers.zeros
         self.tau_head = nnx.Linear(
             hidden,
             1,
             kernel_init=zero_kernel,
-            bias_init=jax.nn.initializers.constant(initial_tau_logit),
+            bias_init=jax.nn.initializers.zeros,
             rngs=rngs,
             param_dtype=param_dtype,
         )
@@ -208,7 +207,7 @@ class PACTFlowScheduler(nnx.Module):
             hidden,
             1,
             kernel_init=zero_kernel,
-            bias_init=jax.nn.initializers.constant(config.initial_log_std),
+            bias_init=jax.nn.initializers.zeros,
             rngs=rngs,
             param_dtype=param_dtype,
         )
@@ -290,10 +289,17 @@ class PACTFlowScheduler(nnx.Module):
             config.norm_epsilon,
         )
 
-        tau_logits = self.tau_head(hidden)[..., 0]
+        initial_tau_logit = math.log(config.initial_tau / (1.0 - config.initial_tau))
+        tau_logits = self.tau_head(hidden)[..., 0] + jnp.asarray(
+            initial_tau_logit,
+            dtype=hidden.dtype,
+        )
         tau = jax.nn.sigmoid(tau_logits)
         tau = jnp.clip(tau, config.tau_epsilon, 1.0 - config.tau_epsilon)
-        log_std = self.log_std_head(hidden)[..., 0]
+        log_std = self.log_std_head(hidden)[..., 0] + jnp.asarray(
+            config.initial_log_std,
+            dtype=hidden.dtype,
+        )
         # Risk is the calibrated residual scale itself, not an unsupervised
         # decorative head.  The endpoint trainer supervises log_std through a
         # heteroscedastic NLL and calibration objective.
