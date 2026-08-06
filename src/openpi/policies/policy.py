@@ -1760,6 +1760,11 @@ class Policy(BasePolicy):
                 / jnp.maximum(jnp.sum(prefix_mask, axis=1, keepdims=True), 1.0),
                 dtype=jnp.float32,
             )
+            dual_contextual_branches = contextual_fusion_mode not in {
+                "compiler",
+                "expert",
+            }
+            dual_contextual_started = time.monotonic()
             compiled_actions = None
             if contextual_fusion_mode != "expert":
                 compiler_started = time.monotonic()
@@ -1770,7 +1775,8 @@ class Policy(BasePolicy):
                     implicit_action_reason,
                     observation.state,
                 )
-                _block_until_ready(compiled_actions)
+                if not dual_contextual_branches:
+                    _block_until_ready(compiled_actions)
                 timing["contextual_compiler_ms"] = (
                     time.monotonic() - compiler_started
                 ) * 1000
@@ -1784,7 +1790,8 @@ class Policy(BasePolicy):
                     implicit_action_reason,
                     final_time_warp_alpha,
                 )
-                _block_until_ready(expert_outputs)
+                if not dual_contextual_branches:
+                    _block_until_ready(expert_outputs)
                 timing["action_expert_ms"] = (time.monotonic() - expert_started) * 1000
                 expert_actions = expert_outputs["actions"]
 
@@ -1857,6 +1864,14 @@ class Policy(BasePolicy):
                 actions = fusion_outputs.pop("actions")
             else:
                 raise AssertionError(contextual_fusion_mode)
+            if dual_contextual_branches:
+                # Both branches are asynchronous JAX dispatches.  Synchronize
+                # only their fused action once; blocking each proposal first
+                # adds avoidable host/device barriers to the deployment path.
+                _block_until_ready(actions)
+                timing["contextual_dual_branch_ms"] = (
+                    time.monotonic() - dual_contextual_started
+                ) * 1000
             result = {"actions": actions}
             if contextual_fusion_mode in {
                 "semantic_gate",
