@@ -180,7 +180,9 @@ class RMSNorm(nn.Module):
                 dtype=dtype,
             )(basis_cond)
             modulation = jnp.einsum(
-                "btk,bkd->btd", token_weights, basis_modulation
+                "btk,bkd->btd",
+                token_weights.astype(basis_modulation.dtype),
+                basis_modulation,
             )
         else:
             modulation = nn.Dense(
