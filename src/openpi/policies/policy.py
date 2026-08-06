@@ -17,6 +17,7 @@ from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
 from openpi.models import es_harp_gripper_event as _es_harp_gripper_event
 from openpi.models import harp_temporal_residual as _harp_temporal_residual
 from openpi.models import model as _model
+from openpi.models import p3t_prefix_transport as _p3t_prefix_transport
 from openpi.policies import compact_alpha_router as _compact_alpha_router
 from openpi.shared import array_typing as at
 from openpi.shared import nnx_utils
@@ -30,6 +31,20 @@ def _as_bool(value: Any) -> bool:
 
 def _block_until_ready(value: Any) -> None:
     jax.tree.map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, value)
+
+
+@jax.jit
+def _p3t_low_resolution_images(observation: _model.Observation) -> jax.Array:
+    """Stack the deployed base/wrist views and resize them for the P3T adapter."""
+
+    images = jnp.stack(
+        [observation.images[key] for key in _model.IMAGE_KEYS[:2]], axis=1
+    )
+    return jax.image.resize(
+        images,
+        (images.shape[0], 2, 64, 64, 3),
+        method=jax.image.ResizeMethod.LINEAR,
+    )
 
 
 @jax.jit
@@ -272,6 +287,7 @@ class Policy(BasePolicy):
         acot_compact_alpha_router: _compact_alpha_router.CompactAlphaRouter | None = None,
         acot_harp_residual: _harp_temporal_residual.HARPResidualSidecar | None = None,
         acot_harp_gripper_event: _es_harp_gripper_event.GripperEventSidecar | None = None,
+        acot_p3t_prefix_transport: _p3t_prefix_transport.P3TPrefixTransport | None = None,
     ):
         self._sample_actions = nnx_utils.module_jit(model.sample_actions)
         self._input_transform = _transforms.compose(transforms)
@@ -300,6 +316,12 @@ class Policy(BasePolicy):
             if acot_harp_gripper_event is not None
             else None
         )
+        self._acot_p3t_prefix_transport = acot_p3t_prefix_transport
+        self._apply_p3t_prefix_transport = (
+            nnx_utils.module_jit(acot_p3t_prefix_transport.__call__)
+            if acot_p3t_prefix_transport is not None
+            else None
+        )
         self._sample_actions_profile_prefix = None
         self._sample_actions_profile_implicit = None
         self._sample_actions_profile_coarse = None
@@ -321,8 +343,11 @@ class Policy(BasePolicy):
         self._temporal_prefix_state: dict[str, Any] | None = None
         self._temporal_prefix_last_step: int | None = None
         self._temporal_prefix_period: int | None = None
+        self._temporal_prefix_p3t: bool | None = None
         self._temporal_prefix_age = 0
         self._temporal_prefix_refresh_count = 0
+        self._p3t_anchor_ear: jax.Array | None = None
+        self._p3t_anchor_actions: jax.Array | None = None
         if hasattr(model, "sample_actions_joint_coupled"):
             self._sample_actions_joint_coupled = nnx_utils.module_jit(model.sample_actions_joint_coupled)
         if hasattr(model, "sample_actions_batched_mc"):
@@ -427,6 +452,10 @@ class Policy(BasePolicy):
         ):
             raise ValueError(
                 "An ES-HARP gripper sidecar requires the sequential direct one-step Action-CoT entrypoint."
+            )
+        if self._acot_p3t_prefix_transport is not None and not self._can_profile_sample_actions():
+            raise ValueError(
+                "A P3T prefix-transport sidecar requires the model's sequential Action-CoT entrypoints."
             )
 
     @override
@@ -561,6 +590,19 @@ class Policy(BasePolicy):
             raise ValueError(
                 "action_cot_temporal_prefix_reuse_period must be a non-negative integer."
             )
+        p3t_prefix_transport_enabled = _as_bool(
+            inputs.pop("action_cot_p3t_prefix_transport", False)
+        )
+        if p3t_prefix_transport_enabled:
+            if self._apply_p3t_prefix_transport is None:
+                raise ValueError(
+                    "action_cot_p3t_prefix_transport=True requires a P3T sidecar at serve startup."
+                )
+            if temporal_prefix_reuse_period != 2:
+                raise ValueError(
+                    "P3T prefix transport currently requires "
+                    "action_cot_temporal_prefix_reuse_period=2."
+                )
         if temporal_prefix_reuse_period > 0 and absolute_decision_step is None:
             raise ValueError(
                 "Temporal prefix reuse requires action_cot_absolute_decision_step."
@@ -677,6 +719,7 @@ class Policy(BasePolicy):
             override_inputs.pop("action_cot_selective_refinement_mode", None)
             override_inputs.pop("action_cot_absolute_decision_step", None)
             override_inputs.pop("action_cot_temporal_prefix_reuse_period", None)
+            override_inputs.pop("action_cot_p3t_prefix_transport", None)
             override_inputs.pop("action_cot_denoising_steps", None)
             override_inputs.pop("action_cot_dynamic_denoising_steps", None)
             override_inputs.pop("action_cot_final_denoising_steps", None)
@@ -967,6 +1010,10 @@ class Policy(BasePolicy):
                 ),
                 "contextual_compiler": self._acot_contextual_compiler is not None,
                 "export_acot_cache": export_acot_cache,
+                "token_time_warp": (
+                    p3t_prefix_transport_enabled
+                    and sample_kwargs.get("token_time_warp_alpha") is not None
+                ),
             }
             active_temporal_conflicts = sorted(
                 name for name, enabled in temporal_conflicts.items() if enabled
@@ -998,7 +1045,7 @@ class Policy(BasePolicy):
             )
             if coarse_steps != 1 or final_steps != 1:
                 raise ValueError(
-                    "Temporal prefix reuse pilot requires sequential endpoint EAR/final NFE1; "
+                    "Temporal prefix reuse requires sequential endpoint EAR/final NFE1; "
                     f"got {coarse_steps}/{final_steps}."
                 )
         if pact_flow_scheduler_enabled:
@@ -1569,6 +1616,7 @@ class Policy(BasePolicy):
                 export_acot_cache=export_acot_cache,
                 temporal_prefix_reuse_period=temporal_prefix_reuse_period,
                 absolute_decision_step=absolute_decision_step,
+                p3t_prefix_transport=p3t_prefix_transport_enabled,
             )
         else:
             result = self._sample_actions(sample_rng, observation, **sample_kwargs)
@@ -1718,8 +1766,11 @@ class Policy(BasePolicy):
         self._temporal_prefix_state = None
         self._temporal_prefix_last_step = None
         self._temporal_prefix_period = None
+        self._temporal_prefix_p3t = None
         self._temporal_prefix_age = 0
         self._temporal_prefix_refresh_count = 0
+        self._p3t_anchor_ear = None
+        self._p3t_anchor_actions = None
 
     def _temporal_profile_prefix(
         self,
@@ -1728,8 +1779,9 @@ class Policy(BasePolicy):
         *,
         reuse_period: int,
         absolute_decision_step: int,
-    ) -> tuple[dict[str, Any], bool, int]:
-        """Reuse only stale VLM prefix tensors while refreshing runtime inputs."""
+        p3t_prefix_transport: bool = False,
+    ) -> tuple[dict[str, Any], bool, int, float, jax.Array | None]:
+        """Reuse or transport a cached prefix while refreshing runtime inputs."""
 
         assert self._sample_actions_profile_prefix is not None
         new_episode = (
@@ -1737,11 +1789,15 @@ class Policy(BasePolicy):
             or self._temporal_prefix_last_step is None
             or absolute_decision_step <= self._temporal_prefix_last_step
             or self._temporal_prefix_period != reuse_period
+            or self._temporal_prefix_p3t != p3t_prefix_transport
         )
         if new_episode:
             self._reset_temporal_prefix_cache()
             self._temporal_prefix_period = reuse_period
+            self._temporal_prefix_p3t = p3t_prefix_transport
 
+        transport_ms = 0.0
+        transport_risk = None
         next_age = self._temporal_prefix_age + 1
         reuse_prefix = (
             self._temporal_prefix_state is not None
@@ -1767,6 +1823,35 @@ class Policy(BasePolicy):
                     ),
                 }
             )
+            if p3t_prefix_transport:
+                if self._apply_p3t_prefix_transport is None:
+                    raise ValueError("P3T prefix transport was requested without a loaded sidecar.")
+                if self._p3t_anchor_ear is None or self._p3t_anchor_actions is None:
+                    raise RuntimeError(
+                        "P3T fast call has no completed keyframe EAR/action cache."
+                    )
+                transport_started = time.monotonic()
+                transport_output = self._apply_p3t_prefix_transport(
+                    _p3t_low_resolution_images(
+                        self._temporal_prefix_state["observation"]
+                    ),
+                    _p3t_low_resolution_images(current_observation),
+                    jnp.asarray(
+                        current_observation.state
+                        - self._temporal_prefix_state["observation"].state,
+                        dtype=jnp.float32,
+                    ),
+                    jnp.asarray(self._p3t_anchor_actions, dtype=jnp.float32),
+                    jnp.ones(
+                        (batch_size, self._action_horizon), dtype=jnp.bool_
+                    ),
+                    jnp.asarray(self._p3t_anchor_ear, dtype=jnp.float32),
+                    self._temporal_prefix_state["kv_cache"],
+                )
+                _block_until_ready(transport_output)
+                transport_ms = (time.monotonic() - transport_started) * 1000
+                prefix_state["kv_cache"] = transport_output.kv_cache
+                transport_risk = transport_output.risk
             self._temporal_prefix_age = next_age
         else:
             prefix_state = self._sample_actions_profile_prefix(sample_rng, observation)
@@ -1774,7 +1859,13 @@ class Policy(BasePolicy):
             self._temporal_prefix_age = 0
             self._temporal_prefix_refresh_count += 1
         self._temporal_prefix_last_step = absolute_decision_step
-        return prefix_state, reuse_prefix, self._temporal_prefix_refresh_count
+        return (
+            prefix_state,
+            reuse_prefix,
+            self._temporal_prefix_refresh_count,
+            transport_ms,
+            transport_risk,
+        )
 
     def _can_profile_sample_actions(self) -> bool:
         return (
@@ -1793,6 +1884,7 @@ class Policy(BasePolicy):
         export_acot_cache: bool = False,
         temporal_prefix_reuse_period: int = 0,
         absolute_decision_step: int | None = None,
+        p3t_prefix_transport: bool = False,
     ) -> tuple[dict[str, Any], dict[str, float]]:
         assert self._sample_actions_profile_prefix is not None
         assert self._sample_actions_profile_implicit is not None
@@ -1800,18 +1892,30 @@ class Policy(BasePolicy):
         assert self._sample_actions_profile_expert is not None
 
         timing: dict[str, float] = {}
+        prefix_reused = False
+        p3t_transport_risk = None
 
         stage_start = time.monotonic()
         if temporal_prefix_reuse_period > 0:
             assert absolute_decision_step is not None
-            prefix_state, prefix_reused, refresh_count = self._temporal_profile_prefix(
+            (
+                prefix_state,
+                prefix_reused,
+                refresh_count,
+                p3t_transport_ms,
+                p3t_transport_risk,
+            ) = self._temporal_profile_prefix(
                 sample_rng,
                 observation,
                 reuse_period=temporal_prefix_reuse_period,
                 absolute_decision_step=absolute_decision_step,
+                p3t_prefix_transport=p3t_prefix_transport,
             )
             timing["vlm_prefix_reused"] = float(prefix_reused)
             timing["vlm_prefix_refresh_count"] = float(refresh_count)
+            if p3t_prefix_transport:
+                timing["p3t_prefix_transport_ms"] = p3t_transport_ms
+                timing["p3t_prefix_transport_fast"] = float(prefix_reused)
         else:
             prefix_state = self._sample_actions_profile_prefix(sample_rng, observation)
         _block_until_ready(prefix_state)
@@ -2418,6 +2522,31 @@ class Policy(BasePolicy):
         if coarse_outputs.get("explicit_action_reason") is not None:
             result["coarse_actions"] = coarse_outputs["explicit_action_reason"]
             result["action_cot_denoising_steps"] = coarse_outputs["action_cot_denoising_steps"]
+        if p3t_prefix_transport:
+            explicit_action_reason = coarse_outputs.get("explicit_action_reason")
+            if explicit_action_reason is None:
+                raise ValueError("P3T prefix transport requires a generated EAR trajectory.")
+            if not prefix_reused:
+                # A keyframe becomes the immutable anchor for its one following
+                # fast call only after EAR and final action generation finish.
+                self._p3t_anchor_ear = jax.lax.stop_gradient(
+                    explicit_action_reason
+                )
+                self._p3t_anchor_actions = jax.lax.stop_gradient(result["actions"])
+            batch_size = result["actions"].shape[0]
+            if p3t_transport_risk is None:
+                p3t_transport_risk = jnp.zeros((batch_size,), dtype=jnp.float32)
+            result.update(
+                {
+                    "p3t_prefix_transport_risk": p3t_transport_risk,
+                    "p3t_prefix_transport_risk_valid": jnp.full(
+                        (batch_size,), prefix_reused, dtype=jnp.bool_
+                    ),
+                    "p3t_prefix_transport_fast": jnp.full(
+                        (batch_size,), prefix_reused, dtype=jnp.bool_
+                    ),
+                }
+            )
         if "execution_horizon_prefix_feature" in prefix_state:
             result["execution_horizon_prefix_feature"] = prefix_state["execution_horizon_prefix_feature"]
         if export_acot_cache:

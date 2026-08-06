@@ -12,6 +12,7 @@ import jax.numpy as jnp
 from openpi.models import contextual_plan_compiler as _contextual_plan_compiler
 from openpi.models import es_harp_gripper_event as _es_harp_gripper_event
 from openpi.models import harp_temporal_residual as _harp_temporal_residual
+from openpi.models import p3t_prefix_transport as _p3t_prefix_transport
 import openpi.models.model as _model
 from openpi.policies import compact_alpha_router as _compact_alpha_router
 import openpi.policies.policy as _policy
@@ -101,6 +102,7 @@ def create_trained_policy(
     acot_compact_alpha_router_params: pathlib.Path | str | None = None,
     acot_harp_residual_params: pathlib.Path | str | None = None,
     acot_harp_gripper_event_params: pathlib.Path | str | None = None,
+    acot_p3t_prefix_transport_params: pathlib.Path | str | None = None,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -129,6 +131,9 @@ def create_trained_policy(
         acot_harp_gripper_event_params: Optional independent ES-HARP gripper
             event NPZ. Loading it is inert; each request must additionally set
             ``action_cot_harp_gripper_event=True``.
+        acot_p3t_prefix_transport_params: Optional independent P3T checkpoint
+            directory. Loading it is inert; each request must additionally set
+            ``action_cot_p3t_prefix_transport=True``.
     """
     repack_transforms = repack_transforms or transforms.Group()
     checkpoint_dir = download.maybe_download(str(checkpoint_dir))
@@ -357,6 +362,21 @@ def create_trained_policy(
             harp_gripper_event.parameter_count,
         )
 
+    p3t_prefix_transport = None
+    if acot_p3t_prefix_transport_params is not None:
+        if acot_endpoint_student_params is None:
+            raise ValueError(
+                "P3T prefix transport is restricted to the one-step EAR/final student; "
+                "load acot_endpoint_student_params in the same server."
+            )
+        p3t_path = pathlib.Path(
+            download.maybe_download(str(acot_p3t_prefix_transport_params))
+        )
+        p3t_prefix_transport = _p3t_prefix_transport.load_p3t_prefix_transport(
+            p3t_path
+        )
+        logging.info("Loaded inert P3T prefix-transport sidecar from %s", p3t_path)
+
     data_config = train_config.data.create(train_config.assets_dirs, model_config)
     if norm_stats is None:
         # We are loading the norm stats from the checkpoint instead of the config assets dir to make sure
@@ -389,4 +409,5 @@ def create_trained_policy(
         acot_compact_alpha_router=compact_alpha_router,
         acot_harp_residual=harp_residual,
         acot_harp_gripper_event=harp_gripper_event,
+        acot_p3t_prefix_transport=p3t_prefix_transport,
     )

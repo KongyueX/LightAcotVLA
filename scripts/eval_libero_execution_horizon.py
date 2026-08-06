@@ -63,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--p3t-prefix-transport",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Transport the cached keyframe KV on the period-two fast call. The "
+            "server must separately load a P3T sidecar; EAR/final must both use NFE1."
+        ),
+    )
+    parser.add_argument(
         "--final-denoising-steps",
         type=int,
         default=None,
@@ -368,6 +377,10 @@ def _request(
             args.temporal_prefix_reuse_period,
             dtype=np.int32,
         )
+    if args.p3t_prefix_transport:
+        request["action_cot_p3t_prefix_transport"] = np.asarray(
+            True, dtype=np.bool_
+        )
     if args.final_denoising_steps is not None:
         request["action_cot_final_denoising_steps"] = np.asarray(
             args.final_denoising_steps,
@@ -526,6 +539,19 @@ def _request(
                 pact_tau_logits.tolist(), separators=(",", ":")
             )
 
+    p3t_risk = _result_scalar("p3t_prefix_transport_risk")
+    p3t_risk_valid = _result_scalar("p3t_prefix_transport_risk_valid")
+    p3t_fast = _result_scalar("p3t_prefix_transport_fast")
+    if args.p3t_prefix_transport:
+        if int(p3t_risk_valid) not in {0, 1} or int(p3t_fast) not in {0, 1}:
+            raise ValueError("P3T risk-valid and fast-call diagnostics must be binary.")
+        if int(p3t_risk_valid) != int(p3t_fast):
+            raise ValueError("P3T risk is valid exactly on transported fast calls.")
+        if int(p3t_fast) != int(float(policy_timing.get("vlm_prefix_reused", np.nan))):
+            raise ValueError("P3T fast-call and temporal-prefix diagnostics disagree.")
+        if not np.isfinite(p3t_risk) or not 0.0 <= p3t_risk <= 1.0:
+            raise ValueError("P3T refresh risk must be finite and in [0, 1].")
+
     return result, {
         "wall_ms": wall_ms,
         "policy_ms": float(policy_timing.get("infer_ms", np.nan)),
@@ -539,6 +565,12 @@ def _request(
         "vlm_prefix_refresh_count": float(
             policy_timing.get("vlm_prefix_refresh_count", np.nan)
         ),
+        "p3t_prefix_transport_ms": float(
+            policy_timing.get("p3t_prefix_transport_ms", np.nan)
+        ),
+        "p3t_prefix_transport_risk": p3t_risk,
+        "p3t_prefix_transport_risk_valid": p3t_risk_valid,
+        "p3t_prefix_transport_fast": p3t_fast,
         "pact_flow_tau_json": pact_tau_json,
         "pact_flow_tau_logits_json": pact_tau_logits_json,
         "pact_flow_tau_mean": pact_tau_mean,
@@ -766,7 +798,14 @@ def _warmup(
         element = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
         for mode in args.modes:
             for repeat in range(args.warmup_requests):
-                warmup_steps = [absolute_step]
+                # P3T has distinct keyframe and transported graphs. Compile
+                # both before episode timing; the non-monotonic first rollout
+                # step resets this single-client cache.
+                warmup_steps = (
+                    [absolute_step, absolute_step + 1]
+                    if args.p3t_prefix_transport
+                    else [absolute_step]
+                )
                 if (
                     args.contextual_fusion_mode
                     in {"phase_compiler_expert", "phase_expert_compiler"}
@@ -873,6 +912,22 @@ def _run_episode(
                 temporal_prefix_info = {
                     "vlm_prefix_reused": prefix_reused,
                     "vlm_prefix_refresh_count": prefix_refresh_count,
+                }
+            p3t_prefix_info: dict[str, Any] = {}
+            if args.p3t_prefix_transport:
+                p3t_prefix_info = {
+                    "p3t_prefix_transport_ms": timing[
+                        "p3t_prefix_transport_ms"
+                    ],
+                    "p3t_prefix_transport_risk": timing[
+                        "p3t_prefix_transport_risk"
+                    ],
+                    "p3t_prefix_transport_risk_valid": int(
+                        timing["p3t_prefix_transport_risk_valid"]
+                    ),
+                    "p3t_prefix_transport_fast": int(
+                        timing["p3t_prefix_transport_fast"]
+                    ),
                 }
             action_chunk = np.asarray(result["actions"], dtype=np.float32)
             horizon, selector_info = _select_horizon(
@@ -1023,6 +1078,7 @@ def _run_episode(
                     "harp_gripper_event_ms": timing["harp_gripper_event_ms"],
                     "selector_json": json.dumps(selector_info, separators=(",", ":")),
                     **temporal_prefix_info,
+                    **p3t_prefix_info,
                     **compact_router_info,
                     **selective_gripper_info,
                     **contextual_fusion_info,
@@ -1106,6 +1162,30 @@ def _run_episode(
                     temporal_prefix_reused_calls / policy_calls
                     if policy_calls
                     else float("nan")
+                ),
+            }
+        )
+    if args.p3t_prefix_transport:
+        p3t_risks = [
+            float(timing["p3t_prefix_transport_risk"])
+            for timing in timings
+            if int(timing["p3t_prefix_transport_risk_valid"]) == 1
+        ]
+        row.update(
+            {
+                "p3t_prefix_transport_fast_calls": int(
+                    sum(int(timing["p3t_prefix_transport_fast"]) for timing in timings)
+                ),
+                "p3t_prefix_transport_risk_count": len(p3t_risks),
+                "p3t_prefix_transport_risk_sum": float(np.sum(p3t_risks)),
+                "p3t_prefix_transport_risk_mean": (
+                    float(np.mean(p3t_risks)) if p3t_risks else float("nan")
+                ),
+                "p3t_prefix_transport_risk_max": (
+                    float(np.max(p3t_risks)) if p3t_risks else float("nan")
+                ),
+                "actual_p3t_prefix_transport_total_ms": total(
+                    "p3t_prefix_transport_ms"
                 ),
             }
         )
@@ -1347,6 +1427,52 @@ def _aggregate(rows: list[dict[str, Any]], mode: str, task_id: int | None = None
                 ),
             }
         )
+    if any("p3t_prefix_transport_fast_calls" in row for row in subset):
+        p3t_fast_calls = sum(
+            int(row.get("p3t_prefix_transport_fast_calls", 0)) for row in subset
+        )
+        p3t_risk_count = sum(
+            int(row.get("p3t_prefix_transport_risk_count", 0)) for row in subset
+        )
+        p3t_risk_sum = sum(
+            float(row.get("p3t_prefix_transport_risk_sum", 0.0)) for row in subset
+        )
+        p3t_risk_maxima = [
+            float(row.get("p3t_prefix_transport_risk_max", float("nan")))
+            for row in subset
+        ]
+        p3t_risk_maxima = [
+            value for value in p3t_risk_maxima if np.isfinite(value)
+        ]
+        total_transport_ms = sum(
+            float(row.get("actual_p3t_prefix_transport_total_ms", 0.0))
+            for row in subset
+        )
+        result.update(
+            {
+                "p3t_prefix_transport_fast_calls": p3t_fast_calls,
+                "p3t_prefix_transport_risk_count": p3t_risk_count,
+                "p3t_prefix_transport_risk_mean": (
+                    p3t_risk_sum / p3t_risk_count
+                    if p3t_risk_count
+                    else float("nan")
+                ),
+                "p3t_prefix_transport_risk_max": (
+                    max(p3t_risk_maxima) if p3t_risk_maxima else float("nan")
+                ),
+                "p3t_prefix_transport_ms_per_episode": mean(
+                    "actual_p3t_prefix_transport_total_ms"
+                ),
+                "p3t_prefix_transport_ms_per_policy_call": per_call(
+                    "actual_p3t_prefix_transport_total_ms"
+                ),
+                "p3t_prefix_transport_ms_per_fast_call": (
+                    total_transport_ms / p3t_fast_calls
+                    if p3t_fast_calls
+                    else float("nan")
+                ),
+            }
+        )
     return result
 
 
@@ -1392,6 +1518,8 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "selective_gripper_triggers",
         "temporal_prefix_reused_calls",
         "temporal_prefix_refresh_calls",
+        "p3t_prefix_transport_fast_calls",
+        "p3t_prefix_transport_risk_count",
     }
     floats = {
         "avg_h",
@@ -1422,6 +1550,10 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
         "actual_selective_gripper_verifier_total_ms",
         "actual_selective_gripper_refinement_total_ms",
         "temporal_prefix_reuse_rate",
+        "p3t_prefix_transport_risk_sum",
+        "p3t_prefix_transport_risk_mean",
+        "p3t_prefix_transport_risk_max",
+        "actual_p3t_prefix_transport_total_ms",
     }
     converted = {
         key: int(value) if key in integers else float(value) if key in floats else value for key, value in row.items()
@@ -1496,6 +1628,19 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("action_cot_denoising_steps must be positive.")
     if args.temporal_prefix_reuse_period < 0:
         raise ValueError("temporal_prefix_reuse_period must be non-negative.")
+    if args.p3t_prefix_transport:
+        if args.temporal_prefix_reuse_period != 2:
+            raise ValueError(
+                "p3t_prefix_transport requires --temporal-prefix-reuse-period 2."
+            )
+        if args.action_cot_denoising_steps != 1 or args.final_denoising_steps != 1:
+            raise ValueError(
+                "p3t_prefix_transport requires explicit EAR/final NFE1."
+            )
+        if args.final_token_time_warp_alpha is not None:
+            raise ValueError(
+                "p3t_prefix_transport does not support final token-time warp."
+            )
     if args.temporal_prefix_reuse_period > 0:
         temporal_conflicts = {
             "pact_flow_scheduler": args.pact_flow_scheduler,
