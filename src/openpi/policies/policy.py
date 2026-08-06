@@ -338,7 +338,11 @@ class Policy(BasePolicy):
             )
         if hasattr(model, "sample_actions_profile_tokenwise_one_step_expert"):
             self._sample_actions_profile_tokenwise_one_step_expert = nnx_utils.module_jit(
-                model.sample_actions_profile_tokenwise_one_step_expert
+                model.sample_actions_profile_tokenwise_one_step_expert,
+                # The length-T schedule is a hashable tuple at the policy
+                # boundary.  Specializing it lets XLA constant-fold the time
+                # embeddings and AdaRMS modulation like the scalar fast path.
+                static_argnums=(4,),
             )
         if hasattr(model, "sample_actions_profile_direct_endpoint_conditioned_one_step_expert"):
             self._sample_actions_profile_direct_endpoint_conditioned_one_step_expert = (
@@ -776,8 +780,8 @@ class Policy(BasePolicy):
         if token_time_warp_alpha is not None:
             sample_kwargs = {
                 **sample_kwargs,
-                "token_time_warp_alpha": jnp.asarray(
-                    token_time_warp_alpha, dtype=jnp.float32
+                "token_time_warp_alpha": tuple(
+                    float(value) for value in token_time_warp_alpha
                 ),
             }
         if final_midpoint_enabled:
@@ -1897,12 +1901,19 @@ class Policy(BasePolicy):
                 raise ValueError(
                     "Contextual fusion requires the direct one-step final expert."
                 )
-            prefix_mask = prefix_state["prefix_mask"].astype(prefix_state["prefix_out"].dtype)
-            prefix_feature = jnp.asarray(
-                jnp.sum(prefix_state["prefix_out"] * prefix_mask[..., None], axis=1)
-                / jnp.maximum(jnp.sum(prefix_mask, axis=1, keepdims=True), 1.0),
-                dtype=jnp.float32,
-            )
+            if contextual_fusion_mode != "expert":
+                prefix_mask = prefix_state["prefix_mask"].astype(
+                    prefix_state["prefix_out"].dtype
+                )
+                prefix_feature = jnp.asarray(
+                    jnp.sum(
+                        prefix_state["prefix_out"] * prefix_mask[..., None], axis=1
+                    )
+                    / jnp.maximum(
+                        jnp.sum(prefix_mask, axis=1, keepdims=True), 1.0
+                    ),
+                    dtype=jnp.float32,
+                )
             dual_contextual_branches = contextual_fusion_mode not in {
                 "compiler",
                 "expert",
@@ -2049,7 +2060,7 @@ class Policy(BasePolicy):
             result = {"actions": actions}
             if token_time_warp_alpha is not None:
                 result["token_time_warp_alpha"] = jnp.broadcast_to(
-                    token_time_warp_alpha[None, :],
+                    jnp.asarray(token_time_warp_alpha, dtype=jnp.float32)[None, :],
                     (actions.shape[0], actions.shape[1]),
                 )
             if contextual_fusion_mode in {
