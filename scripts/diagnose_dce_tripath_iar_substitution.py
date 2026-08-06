@@ -28,12 +28,12 @@ from flax import traverse_util
 import jax
 import jax.numpy as jnp
 import numpy as np
-import orbax.checkpoint as ocp
 import tyro
 
 from openpi.action_cot import multirate_dataset
 from openpi.models import dce_iar_evidence_adapter
 from openpi.models import dce_multilayer_evidence_adapter
+from openpi.models import model as model_lib
 from openpi.models import mrr_block_selector
 
 try:
@@ -75,12 +75,8 @@ def _validate_args(args: Args) -> None:
 def _restore_params(params: nnx.State, path: pathlib.Path, *, namespace: str) -> None:
     if not path.exists():
         raise FileNotFoundError(f"Missing adapter checkpoint: {path}")
-    abstract = {"params": {namespace: params.to_pure_dict()}}
-    with ocp.PyTreeCheckpointer() as checkpointer:
-        restored = checkpointer.restore(path.resolve(), item=abstract)
-    if not isinstance(restored, dict) or set(restored) != {"params"}:
-        raise ValueError(f"Invalid Orbax root at {path}.")
-    loaded_namespaces = restored["params"]
+    loaded_namespaces = model_lib.restore_params(path, restore_type=np.ndarray)
+    loaded_namespaces = model_lib.convert_str_keys_to_int(loaded_namespaces)
     if not isinstance(loaded_namespaces, dict) or set(loaded_namespaces) != {namespace}:
         raise ValueError(f"Expected adapter namespace {namespace!r} at {path}.")
     loaded = loaded_namespaces[namespace]
