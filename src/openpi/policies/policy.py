@@ -755,6 +755,9 @@ class Policy(BasePolicy):
         )
         batched_mc_samples = int(np.asarray(inputs.pop("batched_mc_samples", 0)).item())
         run_execution_horizon_predictor = _as_bool(inputs.pop("run_execution_horizon_predictor", False))
+        export_execution_horizon_prefix_tokens = _as_bool(
+            inputs.pop("export_execution_horizon_prefix_tokens", False)
+        )
         previous_actions = inputs.pop("execution_horizon_previous_actions", None)
         previous_h = inputs.pop("execution_horizon_previous_h", 1)
         budget_balance = inputs.pop("execution_horizon_budget_balance", 0.0)
@@ -806,6 +809,7 @@ class Policy(BasePolicy):
             override_inputs.pop("joint_coupled_sampler", None)
             override_inputs.pop("batched_mc_samples", None)
             override_inputs.pop("run_execution_horizon_predictor", None)
+            override_inputs.pop("export_execution_horizon_prefix_tokens", None)
             override_inputs.pop("execution_horizon_previous_actions", None)
             override_inputs.pop("execution_horizon_previous_h", None)
             override_inputs.pop("execution_horizon_budget_balance", None)
@@ -1715,10 +1719,19 @@ class Policy(BasePolicy):
                 budget_balance=jnp.asarray(budget_balance, dtype=jnp.float32).reshape((1,)),
                 episode_progress=jnp.asarray(episode_progress, dtype=jnp.float32).reshape((1,)),
                 previous_valid=jnp.asarray(previous_valid, dtype=jnp.bool_).reshape((1,)),
+                prefix_tokens=result.get("execution_horizon_prefix_tokens"),
+                prefix_mask=result.get("execution_horizon_prefix_mask"),
             )
             _block_until_ready(predictor_outputs)
             detailed_timing["execution_horizon_predictor_ms"] = (time.monotonic() - predictor_start) * 1000
             result.update({f"execution_horizon_{key}": value for key, value in predictor_outputs.items()})
+
+        if isinstance(result, dict) and not export_execution_horizon_prefix_tokens:
+            # Full prefix activations are an opt-in collection artifact. Never
+            # transfer them over the normal policy/RPC path merely because a
+            # visual-query predictor sidecar is loaded.
+            result.pop("execution_horizon_prefix_tokens", None)
+            result.pop("execution_horizon_prefix_mask", None)
 
         if isinstance(result, dict):
             outputs.update(result)
@@ -1806,7 +1819,7 @@ class Policy(BasePolicy):
 
     def _normalize_previous_actions(self, previous_actions: Any) -> np.ndarray:
         if previous_actions is None:
-            return np.zeros((10, self._action_dim), dtype=np.float32)
+            return np.zeros((self._action_horizon, self._action_dim), dtype=np.float32)
         # websocket/msgpack inputs may be backed by a read-only buffer.
         actions = np.array(previous_actions, dtype=np.float32, copy=True)
         if actions.ndim != 2:
@@ -1824,9 +1837,9 @@ class Policy(BasePolicy):
                 mean = np.asarray(stats.mean)[..., :dim]
                 std = np.asarray(stats.std)[..., :dim]
                 actions[..., :dim] = (actions[..., :dim] - mean) / (std + 1e-6)
-        actions = actions[:10]
-        if actions.shape[0] < 10:
-            actions = np.pad(actions, ((0, 10 - actions.shape[0]), (0, 0)))
+        actions = actions[: self._action_horizon]
+        if actions.shape[0] < self._action_horizon:
+            actions = np.pad(actions, ((0, self._action_horizon - actions.shape[0]), (0, 0)))
         if actions.shape[-1] < self._action_dim:
             actions = np.pad(actions, ((0, 0), (0, self._action_dim - actions.shape[-1])))
         return actions[:, : self._action_dim]

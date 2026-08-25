@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import logging
 import pathlib
 import re
@@ -41,6 +42,22 @@ _ACOT_ENDPOINT_STUDENT_PATH = re.compile(
     r"pact_flow_scheduler/.*"
     r")$"
 )
+
+
+def _execution_horizon_artifact(
+    path: pathlib.Path | str,
+) -> tuple[pathlib.Path, dict[str, Any] | None]:
+    """Resolve legacy params-only sidecars or a transformer artifact directory."""
+
+    artifact = pathlib.Path(path)
+    candidates = (
+        artifact / "predictor_config.json",
+        artifact.parent / "predictor_config.json",
+    )
+    config_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+    config = json.loads(config_path.read_text()) if config_path is not None else None
+    params_path = artifact / "params" if (artifact / "params").is_dir() else artifact
+    return params_path, config
 
 
 def _path_string(path: tuple[Any, ...]) -> str:
@@ -151,7 +168,62 @@ def create_trained_policy(
     if execution_horizon_predictor_params is not None:
         if not hasattr(model_config, "execution_horizon_predictor"):
             raise ValueError("Execution-horizon sidecars are only supported by ACOTConfig.")
-        model_config = dataclasses.replace(model_config, execution_horizon_predictor=True)
+        downloaded_sidecar = download.maybe_download(str(execution_horizon_predictor_params))
+        sidecar_path, predictor_artifact_config = _execution_horizon_artifact(downloaded_sidecar)
+        predictor_overrides: dict[str, Any] = {"execution_horizon_predictor": True}
+        if predictor_artifact_config is not None:
+            action_horizon = int(predictor_artifact_config["action_horizon"])
+            coarse_horizon = int(predictor_artifact_config["coarse_horizon"])
+            action_dim = int(predictor_artifact_config["action_dim"])
+            if (
+                action_horizon != model_config.action_horizon
+                or coarse_horizon != model_config.coarse_action_horizon
+                or action_dim != model_config.action_dim
+            ):
+                raise ValueError(
+                    "Transformer predictor/base model shape mismatch: "
+                    f"predictor action/coarse/dim={action_horizon}/{coarse_horizon}/{action_dim}, "
+                    f"base={model_config.action_horizon}/{model_config.coarse_action_horizon}/"
+                    f"{model_config.action_dim}."
+                )
+            if int(predictor_artifact_config["prefix_feature_dim"]) != 2048:
+                raise ValueError("ACoT-VLA predictor prefix_feature_dim must be 2048.")
+            predictor_overrides.update(
+                {
+                    "execution_horizon_hidden_dim": int(predictor_artifact_config["hidden_dim"]),
+                    "execution_horizon_temporal_layers": int(
+                        predictor_artifact_config["temporal_layers"]
+                    ),
+                    "execution_horizon_temporal_backbone": str(
+                        predictor_artifact_config["temporal_backbone"]
+                    ),
+                    "execution_horizon_num_heads": int(predictor_artifact_config["num_heads"]),
+                    "execution_horizon_feed_forward_multiplier": int(
+                        predictor_artifact_config["feed_forward_multiplier"]
+                    ),
+                    "execution_horizon_candidate_horizons": tuple(
+                        int(value) for value in predictor_artifact_config["candidate_horizons"]
+                    ),
+                    "execution_horizon_reference_horizon": int(
+                        predictor_artifact_config["reference_horizon"]
+                    ),
+                    "execution_horizon_coarse_stride": int(predictor_artifact_config["coarse_stride"]),
+                    "execution_horizon_final_stride": int(predictor_artifact_config["final_stride"]),
+                    "execution_horizon_visual_num_queries": int(
+                        predictor_artifact_config["visual_num_queries"]
+                    ),
+                    "execution_horizon_elapsed_advantage_scale": float(
+                        predictor_artifact_config.get("elapsed_advantage_scale", 1.0)
+                    ),
+                    "execution_horizon_calls_advantage_scale": float(
+                        predictor_artifact_config.get("calls_advantage_scale", 1.0)
+                    ),
+                    "execution_horizon_physical_action_dim": int(
+                        predictor_artifact_config.get("physical_action_dim", 7)
+                    ),
+                }
+            )
+        model_config = dataclasses.replace(model_config, **predictor_overrides)
         expected_model = nnx.eval_shape(model_config.create, jax.random.key(0))
         expected_params = nnx.state(expected_model).to_pure_dict()
         flat_merged = traverse_util.flatten_dict(base_params)
@@ -166,7 +238,6 @@ def create_trained_policy(
             raise ValueError(f"Base checkpoint is missing non-predictor parameters: {invalid_missing[:5]}")
         for key in missing:
             flat_merged[key] = flat_expected[key]
-        sidecar_path = download.maybe_download(str(execution_horizon_predictor_params))
         sidecar_params = _model.convert_str_keys_to_int(
             _model.restore_params(sidecar_path, dtype=jnp.float32)
         )

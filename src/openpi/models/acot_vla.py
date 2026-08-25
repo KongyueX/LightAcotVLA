@@ -358,6 +358,17 @@ class ACOTConfig(_model.BaseModelConfig):
     execution_horizon_predictor: bool = False
     execution_horizon_hidden_dim: int = 256
     execution_horizon_temporal_layers: int = 3
+    execution_horizon_temporal_backbone: str = "local_mlp"
+    execution_horizon_num_heads: int = 4
+    execution_horizon_feed_forward_multiplier: int = 4
+    execution_horizon_candidate_horizons: tuple[int, ...] = tuple(range(1, 11))
+    execution_horizon_reference_horizon: int = 10
+    execution_horizon_coarse_stride: int = 2
+    execution_horizon_final_stride: int = 1
+    execution_horizon_visual_num_queries: int = 0
+    execution_horizon_elapsed_advantage_scale: float = 1.0
+    execution_horizon_calls_advantage_scale: float = 1.0
+    execution_horizon_physical_action_dim: int = 7
     # Opt-in scalar calibration around the verified direct alpha=.05 path.
     # The gate is checkpointed separately in endpoint-student sidecars.
     adaptive_final_time_warp: bool = False
@@ -382,8 +393,27 @@ class ACOTConfig(_model.BaseModelConfig):
             raise ValueError(f"action_cot_step_values must be positive, got {self.action_cot_step_values}.")
         if (self.action_cot_step_loss_weight > 0 or self.action_cot_dynamic_steps) and len(self.action_cot_step_values) < 2:
             raise ValueError("action_cot_step_values must contain at least two values when step head is enabled.")
-        if self.execution_horizon_predictor and self.action_horizon != 10:
-            raise ValueError("execution_horizon_predictor currently requires action_horizon=10.")
+        if self.execution_horizon_predictor:
+            ExecutionHorizonPredictorConfig(
+                prefix_feature_dim=2048,
+                state_dim=self.action_dim,
+                action_dim=self.action_dim,
+                physical_action_dim=self.execution_horizon_physical_action_dim,
+                coarse_horizon=self.coarse_action_horizon,
+                action_horizon=self.action_horizon,
+                hidden_dim=self.execution_horizon_hidden_dim,
+                temporal_layers=self.execution_horizon_temporal_layers,
+                temporal_backbone=self.execution_horizon_temporal_backbone,
+                num_heads=self.execution_horizon_num_heads,
+                feed_forward_multiplier=self.execution_horizon_feed_forward_multiplier,
+                candidate_horizons=self.execution_horizon_candidate_horizons,
+                reference_horizon=self.execution_horizon_reference_horizon,
+                coarse_stride=self.execution_horizon_coarse_stride,
+                final_stride=self.execution_horizon_final_stride,
+                visual_num_queries=self.execution_horizon_visual_num_queries,
+                elapsed_advantage_scale=self.execution_horizon_elapsed_advantage_scale,
+                calls_advantage_scale=self.execution_horizon_calls_advantage_scale,
+            )
         if self.pact_flow_scheduler:
             if not self.adopt_explicit_action_reasoner or not self.adopt_implicit_action_reasoner:
                 raise ValueError("PACT-Flow requires both explicit and implicit action reasoners.")
@@ -569,16 +599,28 @@ class ACOT_VLA(_model.BaseModel):
                 rngs=rngs,
             )
         self.execution_horizon_predictor_enabled = config.execution_horizon_predictor
+        self.execution_horizon_visual_num_queries = config.execution_horizon_visual_num_queries
         if self.execution_horizon_predictor_enabled:
             self.execution_horizon_predictor = ExecutionHorizonPredictor(
                 ExecutionHorizonPredictorConfig(
                     prefix_feature_dim=paligemma_config.width,
                     state_dim=config.action_dim,
                     action_dim=config.action_dim,
+                    physical_action_dim=config.execution_horizon_physical_action_dim,
                     coarse_horizon=config.coarse_action_horizon,
                     action_horizon=config.action_horizon,
                     hidden_dim=config.execution_horizon_hidden_dim,
                     temporal_layers=config.execution_horizon_temporal_layers,
+                    temporal_backbone=config.execution_horizon_temporal_backbone,
+                    num_heads=config.execution_horizon_num_heads,
+                    feed_forward_multiplier=config.execution_horizon_feed_forward_multiplier,
+                    candidate_horizons=config.execution_horizon_candidate_horizons,
+                    reference_horizon=config.execution_horizon_reference_horizon,
+                    coarse_stride=config.execution_horizon_coarse_stride,
+                    final_stride=config.execution_horizon_final_stride,
+                    visual_num_queries=config.execution_horizon_visual_num_queries,
+                    elapsed_advantage_scale=config.execution_horizon_elapsed_advantage_scale,
+                    calls_advantage_scale=config.execution_horizon_calls_advantage_scale,
                 ),
                 rngs=rngs,
             )
@@ -963,6 +1005,28 @@ class ACOT_VLA(_model.BaseModel):
             jnp.sum(mask, axis=1, keepdims=True),
             1.0,
         )
+
+    def _execution_horizon_prefix_features(
+        self,
+        prefix_out: jax.Array,
+        prefix_mask: jax.Array,
+    ) -> dict[str, jax.Array]:
+        features = {
+            "execution_horizon_prefix_feature": jnp.asarray(
+                self._pool_prefix(prefix_out, prefix_mask),
+                dtype=jnp.float32,
+            )
+        }
+        if self.execution_horizon_visual_num_queries:
+            # These are reused activations from the existing VLA prefix call;
+            # the predictor adds no image encoder or base-LLM invocation.
+            features.update(
+                {
+                    "execution_horizon_prefix_tokens": jnp.asarray(prefix_out, dtype=jnp.float32),
+                    "execution_horizon_prefix_mask": jnp.asarray(prefix_mask, dtype=jnp.bool_),
+                }
+            )
+        return features
 
     def _align_pact_flow_ear(
         self,
@@ -2465,9 +2529,10 @@ class ACOT_VLA(_model.BaseModel):
                 "action_cot_denoising_steps": coarse_outputs["action_cot_denoising_steps"],
             }
             if self.execution_horizon_predictor_enabled:
-                result["execution_horizon_prefix_feature"] = jnp.asarray(
-                    self._pool_prefix(prefix_state["prefix_out"], prefix_state["prefix_mask"]),
-                    dtype=jnp.float32,
+                result.update(
+                    self._execution_horizon_prefix_features(
+                        prefix_state["prefix_out"], prefix_state["prefix_mask"]
+                    )
                 )
             return result
         return expert_outputs
@@ -2536,10 +2601,7 @@ class ACOT_VLA(_model.BaseModel):
             "joint_coupled_sampler": jnp.ones((batch_size,), dtype=jnp.bool_),
         }
         if self.execution_horizon_predictor_enabled:
-            result["execution_horizon_prefix_feature"] = jnp.asarray(
-                self._pool_prefix(prefix_state["prefix_out"], prefix_mask),
-                dtype=jnp.float32,
-            )
+            result.update(self._execution_horizon_prefix_features(prefix_state["prefix_out"], prefix_mask))
         return result
 
     def _compute_prefix_state(self, observation: _model.Observation) -> dict[str, Any]:
@@ -2581,9 +2643,10 @@ class ACOT_VLA(_model.BaseModel):
             "expert_action_noise": expert_action_noise,
         }
         if self.execution_horizon_predictor_enabled:
-            result["execution_horizon_prefix_feature"] = jnp.asarray(
-                self._pool_prefix(prefix_state["prefix_out"], prefix_state["prefix_mask"]),
-                dtype=jnp.float32,
+            result.update(
+                self._execution_horizon_prefix_features(
+                    prefix_state["prefix_out"], prefix_state["prefix_mask"]
+                )
             )
         return result
 
@@ -2789,9 +2852,8 @@ class ACOT_VLA(_model.BaseModel):
             "mrr_selected_block_ids": selected_block_ids,
         }
         if self.execution_horizon_predictor_enabled:
-            result["execution_horizon_prefix_feature"] = jnp.asarray(
-                self._pool_prefix(composite_prefix_out, current["prefix_mask"]),
-                dtype=jnp.float32,
+            result.update(
+                self._execution_horizon_prefix_features(composite_prefix_out, current["prefix_mask"])
             )
         return result
 
@@ -2861,18 +2923,28 @@ class ACOT_VLA(_model.BaseModel):
         )
         all_actions = expert_outputs["actions"]
         all_coarse_actions = coarse_outputs["explicit_action_reason"]
-        return {
+        result = {
             # Keep a leading observation batch for Policy.infer's unbatching.
             "actions": all_actions[:1],
             "coarse_actions": all_coarse_actions[:1],
             "action_cot_denoising_steps": coarse_outputs["action_cot_denoising_steps"][:1],
             "mc_actions_normalized": all_actions[None, ...],
             "mc_coarse_actions_normalized": all_coarse_actions[None, ...],
+            # Counterfactual collection must work before a predictor sidecar
+            # exists. Policy.infer removes token activations unless the
+            # collector explicitly requests their export.
             "execution_horizon_prefix_feature": jnp.asarray(
                 self._pool_prefix(prefix_state["prefix_out"], prefix_state["prefix_mask"]),
                 dtype=jnp.float32,
             ),
+            "execution_horizon_prefix_tokens": jnp.asarray(
+                prefix_state["prefix_out"], dtype=jnp.float32
+            ),
+            "execution_horizon_prefix_mask": jnp.asarray(
+                prefix_state["prefix_mask"], dtype=jnp.bool_
+            ),
         }
+        return result
 
     def predict_execution_horizon(
         self,
@@ -2886,6 +2958,8 @@ class ACOT_VLA(_model.BaseModel):
         budget_balance: jax.Array,
         episode_progress: jax.Array,
         previous_valid: jax.Array,
+        prefix_tokens: jax.Array | None = None,
+        prefix_mask: jax.Array | None = None,
     ) -> dict[str, jax.Array]:
         if not self.execution_horizon_predictor_enabled:
             raise ValueError("This model was created without execution_horizon_predictor=True.")
@@ -2899,6 +2973,8 @@ class ACOT_VLA(_model.BaseModel):
             budget_balance=budget_balance,
             episode_progress=episode_progress,
             previous_valid=previous_valid,
+            prefix_tokens=prefix_tokens,
+            prefix_mask=prefix_mask,
         )
 
     def sample_actions_profile_implicit(self, prefix_state: dict[str, Any]) -> dict[str, Any]:

@@ -1,7 +1,28 @@
+import json
+
 import numpy as np
 import pytest
 
 from openpi.policies import policy_config
+
+
+def test_execution_horizon_artifact_resolves_output_or_params_dir(tmp_path) -> None:
+    params = tmp_path / "params"
+    params.mkdir()
+    config = {
+        "action_horizon": 20,
+        "coarse_horizon": 15,
+        "action_dim": 32,
+    }
+    (tmp_path / "predictor_config.json").write_text(json.dumps(config))
+
+    output_params, output_config = policy_config._execution_horizon_artifact(tmp_path)  # noqa: SLF001
+    direct_params, direct_config = policy_config._execution_horizon_artifact(params)  # noqa: SLF001
+
+    assert output_params == params
+    assert direct_params == params
+    assert output_config == config
+    assert direct_config == config
 
 
 def test_merge_acot_endpoint_student_replaces_only_selected_params() -> None:

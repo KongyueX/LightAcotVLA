@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import collections
 import csv
+import dataclasses
 import json
 import pathlib
 import time
@@ -15,6 +16,7 @@ import eval_libero_action_cot_pruning as libero_eval
 import numpy as np
 from openpi_client import websocket_client_policy as websocket_policy
 
+from openpi.execution_horizon import hierarchical
 from openpi.execution_horizon import rl_selector
 from openpi.execution_horizon import v2
 
@@ -26,8 +28,9 @@ LEGACY_MODES = (
     "v2_value_refined",
 )
 SELECTOR_MODES = ("q_guided_selector", "sft_selector", "ppo_selector")
+HIERARCHICAL_MODE = "hierarchical_transformer"
 FIXED_H_MODE = "fixed_h"
-MODES = (*LEGACY_MODES, FIXED_H_MODE, *SELECTOR_MODES)
+MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *SELECTOR_MODES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,12 +107,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--final-token-time-warp-alpha",
         type=float,
-        nargs=10,
+        nargs="+",
         default=None,
         metavar="ALPHA",
         help=(
             "Opt-in per-action-token final time calibration. Provide exactly "
-            "10 values in [0,1), one for each action token."
+            "one value in [0,1) for each action token."
         ),
     )
     parser.add_argument(
@@ -314,6 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Use --modes fixed_h for H10/H15/H20 long-chunk comparisons."
         ),
     )
+    parser.add_argument("--model-action-horizon", type=int, default=10)
     parser.add_argument("--teacher-samples", type=int, choices=(10, 20, 32), default=20)
     parser.add_argument("--v2-min-horizon", type=int, default=3)
     parser.add_argument("--v2-risk-threshold", type=float, default=1.5)
@@ -328,6 +332,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-min-success-probability", type=float, default=0.90)
     parser.add_argument("--q-max-timeout-probability", type=float, default=0.20)
     parser.add_argument("--q-risk-slack-steps", type=int, default=0)
+    parser.add_argument("--hierarchical-calibration-json", default=None)
+    parser.add_argument("--long-success-noninferiority", type=float, default=0.01)
+    parser.add_argument("--short-max-event-probability", type=float, default=0.20)
     parser.add_argument("--q-guided-selector-params", default=None)
     parser.add_argument("--ppo-selector-params", default=None)
     parser.add_argument(
@@ -489,7 +496,7 @@ def _request(
                 "action_cot_ofp_warm_start_actions": (
                     np.asarray(previous_actions, dtype=np.float32)
                     if previous_actions is not None
-                    else np.zeros((10, 7), dtype=np.float32)
+                    else np.zeros((args.model_action_horizon, 7), dtype=np.float32)
                 ),
                 "action_cot_ofp_warm_start_valid": np.asarray(previous_actions is not None),
                 "action_cot_ofp_warm_start_time": np.asarray(
@@ -505,14 +512,14 @@ def _request(
         )
     if mode == "exact_batched_mc_v2":
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
-    if mode in {"v2_distilled", "v2_value_refined", *SELECTOR_MODES}:
+    if mode in {"v2_distilled", "v2_value_refined", HIERARCHICAL_MODE, *SELECTOR_MODES}:
         request.update(
             {
                 "run_execution_horizon_predictor": np.asarray(1, dtype=np.bool_),
                 "execution_horizon_previous_actions": (
                     np.asarray(previous_actions, dtype=np.float32)
                     if previous_actions is not None
-                    else np.zeros((10, 7), dtype=np.float32)
+                    else np.zeros((args.model_action_horizon, 7), dtype=np.float32)
                 ),
                 "execution_horizon_previous_h": np.asarray(previous_horizon, dtype=np.int32),
                 "execution_horizon_budget_balance": np.asarray(budget_fraction, dtype=np.float32),
@@ -762,6 +769,28 @@ def _select_horizon(
         return args.original_horizon, {"raw_horizon": args.original_horizon, "budget_limited": 0.0}
     if mode in {"fixed_h9", FIXED_H_MODE}:
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
+    if mode == HIERARCHICAL_MODE:
+        calibration = getattr(args, "_hierarchical_calibration", None)
+        predictor_outputs = {
+            name.removeprefix("execution_horizon_"): value
+            for name, value in result.items()
+            if name.startswith("execution_horizon_")
+        }
+        decision = hierarchical.select_horizon(
+            predictor_outputs,
+            calibration=calibration,
+            config=hierarchical.HierarchicalSelectorConfig(
+                success_noninferiority_margin=args.long_success_noninferiority,
+                maximum_short_event_probability=args.short_max_event_probability,
+                require_calibration_for_long_h=True,
+            ),
+        )
+        return decision.selected_horizon, {
+            "raw_horizon": decision.selected_horizon,
+            "budget_limited": 0.0,
+            "selector_policy": HIERARCHICAL_MODE,
+            **dataclasses.asdict(decision),
+        }
     if mode in SELECTOR_MODES:
         if selector is None:
             raise ValueError(f"{mode} requires a selector sidecar.")
@@ -854,7 +883,13 @@ def _select_horizon(
     )
     raw_h_prediction = None
     if "execution_horizon_raw_h_logits" in result:
-        raw_h_prediction = int(np.argmax(result["execution_horizon_raw_h_logits"]) + 1)
+        raw_h_index = int(np.argmax(result["execution_horizon_raw_h_logits"]))
+        if "execution_horizon_candidate_horizons" in result:
+            raw_h_prediction = int(
+                np.asarray(result["execution_horizon_candidate_horizons"], dtype=np.int64)[raw_h_index]
+            )
+        else:
+            raw_h_prediction = raw_h_index + 1
     return final_horizon, {
         "raw_horizon": raw_horizon,
         "entropy_raw_horizon": entropy_raw_horizon,
@@ -1050,10 +1085,15 @@ def _run_episode(
                     "mrr_active_replay_ms": timing["mrr_active_replay_ms"],
                 }
             action_chunk = np.asarray(result["actions"], dtype=np.float32)
-            if mode == FIXED_H_MODE and len(action_chunk) < args.fixed_horizon:
+            required_horizon = (
+                args.fixed_horizon if mode == FIXED_H_MODE else None
+            )
+            if mode == HIERARCHICAL_MODE:
+                required_horizon = max(args._hierarchical_calibration.candidate_horizons)
+            if required_horizon is not None and len(action_chunk) < required_horizon:
                 raise ValueError(
-                    "Generic fixed_h requested more actions than the served checkpoint returned: "
-                    f"requested H{args.fixed_horizon}, chunk shape={action_chunk.shape}. "
+                    f"{mode} requires more actions than the served checkpoint returned: "
+                    f"required H{required_horizon}, chunk shape={action_chunk.shape}. "
                     "Serve a checkpoint whose action_horizon is at least the requested execution horizon."
                 )
             horizon, selector_info = _select_horizon(
@@ -1825,7 +1865,11 @@ def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
 
 
 def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
-    return {key: value for key, value in vars(args).items() if key not in {"output_dir", "resume"}}
+    return {
+        key: value
+        for key, value in vars(args).items()
+        if key not in {"output_dir", "resume"} and not key.startswith("_")
+    }
 
 
 def _prepare_journal(
@@ -1889,6 +1933,33 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("action_cot_denoising_steps must be positive.")
     if args.fixed_horizon <= 0:
         raise ValueError("fixed_horizon must be positive.")
+    if args.model_action_horizon <= 0:
+        raise ValueError("model_action_horizon must be positive.")
+    if FIXED_H_MODE in args.modes and args.fixed_horizon > args.model_action_horizon:
+        raise ValueError("fixed_horizon cannot exceed model_action_horizon in generic fixed_h mode.")
+    if args.final_token_time_warp_alpha is not None and len(args.final_token_time_warp_alpha) != args.model_action_horizon:
+        raise ValueError(
+            "final_token_time_warp_alpha must contain exactly model_action_horizon values."
+        )
+    if not 0 <= args.long_success_noninferiority < 1:
+        raise ValueError("long_success_noninferiority must lie in [0, 1).")
+    if not 0 < args.short_max_event_probability < 1:
+        raise ValueError("short_max_event_probability must lie in (0, 1).")
+    if HIERARCHICAL_MODE in args.modes:
+        if args.hierarchical_calibration_json is None:
+            raise ValueError(
+                "hierarchical_transformer requires --hierarchical-calibration-json; "
+                "uncalibrated long-H deployment is forbidden."
+            )
+        args._hierarchical_calibration = hierarchical.HierarchicalCalibration.load(
+            args.hierarchical_calibration_json
+        )
+        if max(args._hierarchical_calibration.candidate_horizons) > args.model_action_horizon:
+            raise ValueError(
+                "hierarchical calibration candidates cannot exceed model_action_horizon."
+            )
+    else:
+        args._hierarchical_calibration = None
     if args.temporal_prefix_reuse_period < 0:
         raise ValueError("temporal_prefix_reuse_period must be non-negative.")
     if args.mrr_a264 and args.p3t_prefix_transport:
@@ -1997,8 +2068,10 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("final_time_warp_alpha must be in [0, 1).")
     if args.final_token_time_warp_alpha is not None:
         token_alpha = np.asarray(args.final_token_time_warp_alpha, dtype=np.float64)
-        if token_alpha.shape != (10,):
-            raise ValueError("final_token_time_warp_alpha must contain exactly 10 values.")
+        if token_alpha.shape != (args.model_action_horizon,):
+            raise ValueError(
+                "final_token_time_warp_alpha must contain exactly model_action_horizon values."
+            )
         if not np.all(np.isfinite(token_alpha)) or np.any(token_alpha < 0.0) or np.any(token_alpha >= 1.0):
             raise ValueError("Every final_token_time_warp_alpha value must be finite and in [0, 1).")
         incompatible_token_time_warp = {
@@ -2347,7 +2420,7 @@ def main(args: argparse.Namespace) -> None:
             "actual synchronized policy/server/client-RPC-wall totals plus full episode elapsed time; "
             "predictor and batched sampling are included"
         ),
-        "config": vars(args),
+        "config": {key: value for key, value in vars(args).items() if not key.startswith("_")},
         "overall": overall,
         "per_task": per_task,
         "outputs": {

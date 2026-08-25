@@ -35,12 +35,15 @@ class Args:
     output_dir: str
     resume_params: str | None = None
     seed: int = 7
+    split_seed: int | None = None
+    bootstrap_episode_groups: bool = False
     train_steps: int = 20_000
     batch_size: int = 256
     learning_rate: float = 3e-4
     weight_decay: float = 1e-4
     gradient_clip_norm: float = 1.0
     validation_fraction: float = 0.1
+    calibration_fraction: float = 0.0
     log_interval: int = 100
     checkpoint_interval: int = 5_000
     select_best_validation: bool = True
@@ -48,6 +51,17 @@ class Args:
     early_stopping_min_delta: float = 0.0
     hidden_dim: int = 256
     temporal_layers: int = 3
+    temporal_backbone: str = "local_mlp"
+    num_heads: int = 4
+    feed_forward_multiplier: int = 4
+    reference_horizon: int = 10
+    coarse_stride: int = 2
+    final_stride: int = 1
+    visual_num_queries: int = 0
+    physical_action_dim: int = 7
+    minimum_trials_per_candidate: int = 3
+    selection_false_long_upper_bound: float = 0.05
+    selection_success_noninferiority: float = 0.01
 
     focus_task_ids: tuple[int, ...] = (8, 9)
     focus_task_multiplier: float = 2.0
@@ -65,6 +79,11 @@ class Args:
     loss_event: float = 0.5
     loss_raw_h_classification: float = 0.5
     loss_raw_h_ordinal: float = 0.25
+    loss_survival: float = 1.0
+    loss_success_advantage: float = 1.0
+    loss_elapsed_advantage: float = 0.25
+    loss_calls_advantage: float = 0.10
+    loss_false_long: float = 2.0
 
     success_failure_multiplier: float = 4.0
     timeout_positive_multiplier: float = 4.0
@@ -95,11 +114,24 @@ _LABEL_FIELDS = (
     "fused_risk",
     "event_mask",
     "risk_valid",
+    "hazard_event_count",
+    "hazard_at_risk_count",
     "raw_h",
+    "success_count",
+    "timeout_count",
+    "trial_count",
+    "remaining_steps_mean",
+    "remaining_calls_mean",
+    "remaining_calls_variance",
+    "elapsed_mean",
+    "elapsed_variance",
+    "dangerous_long_count",
+    "paired_trial_count",
 )
 
 
 def _loss_weights(args: Args) -> ExecutionHorizonLossWeights:
+    hierarchical = args.temporal_backbone == "transformer"
     return ExecutionHorizonLossWeights(
         success=args.loss_success,
         timeout=args.loss_timeout,
@@ -111,6 +143,11 @@ def _loss_weights(args: Args) -> ExecutionHorizonLossWeights:
         event=args.loss_event,
         raw_h_classification=args.loss_raw_h_classification,
         raw_h_ordinal=args.loss_raw_h_ordinal,
+        survival=args.loss_survival if hierarchical else 0.0,
+        success_advantage=args.loss_success_advantage if hierarchical else 0.0,
+        elapsed_advantage=args.loss_elapsed_advantage if hierarchical else 0.0,
+        calls_advantage=args.loss_calls_advantage if hierarchical else 0.0,
+        false_long=args.loss_false_long if hierarchical else 0.0,
     )
 
 
@@ -123,39 +160,65 @@ def _label_weights(args: Args) -> ExecutionHorizonLabelWeights:
     )
 
 
-def _split_indices(arrays: dict[str, np.ndarray], args: Args) -> tuple[np.ndarray, np.ndarray]:
+def _split_indices(arrays: dict[str, np.ndarray], args: Args) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not 0 < args.validation_fraction < 0.5:
         raise ValueError("validation_fraction must be in (0, 0.5).")
+    if args.calibration_fraction < 0 or args.calibration_fraction >= 0.5:
+        raise ValueError("calibration_fraction must be in [0, 0.5).")
+    if args.validation_fraction + args.calibration_fraction >= 1.0:
+        raise ValueError("validation_fraction + calibration_fraction must be below one.")
     groups = np.asarray(arrays["task_id"], dtype=np.uint64) * np.uint64(1_000_000_000)
     groups += np.asarray(arrays["episode_id"], dtype=np.uint64)
     unique_groups = np.unique(groups)
-    rng = np.random.default_rng(args.seed)
-    if len(unique_groups) < 2:
+    split_seed = args.seed if args.split_seed is None else args.split_seed
+    rng = np.random.default_rng(split_seed)
+    required_partitions = 3 if args.calibration_fraction > 0 else 2
+    if len(unique_groups) < required_partitions:
+        if args.temporal_backbone == "transformer":
+            raise ValueError(
+                "Transformer training requires enough episodes for disjoint train/validation/calibration splits."
+            )
         indices = np.arange(len(groups), dtype=np.int64)
         rng.shuffle(indices)
         if len(indices) == 1:
-            return indices, indices
+            return indices, indices, np.empty((0,), dtype=np.int64)
         validation_count = max(1, round(len(indices) * args.validation_fraction))
         validation_count = min(validation_count, len(indices) - 1)
-        return indices[validation_count:], indices[:validation_count]
+        return indices[validation_count:], indices[:validation_count], np.empty((0,), dtype=np.int64)
     rng.shuffle(unique_groups)
     validation_count = max(1, round(len(unique_groups) * args.validation_fraction))
+    calibration_count = (
+        max(1, round(len(unique_groups) * args.calibration_fraction)) if args.calibration_fraction > 0 else 0
+    )
+    if validation_count + calibration_count >= len(unique_groups):
+        raise ValueError("Episode-level split leaves no training groups.")
     validation_groups = unique_groups[:validation_count]
+    calibration_groups = unique_groups[validation_count : validation_count + calibration_count]
     validation_mask = np.isin(groups, validation_groups)
-    train_indices = np.flatnonzero(~validation_mask)
+    calibration_mask = np.isin(groups, calibration_groups)
+    train_indices = np.flatnonzero(~validation_mask & ~calibration_mask)
     validation_indices = np.flatnonzero(validation_mask)
+    calibration_indices = np.flatnonzero(calibration_mask)
     if not train_indices.size or not validation_indices.size:
         raise ValueError("Episode-level split produced an empty train or validation partition.")
-    return train_indices, validation_indices
+    return train_indices, validation_indices, calibration_indices
 
 
 def _batch(arrays: dict[str, np.ndarray], indices: np.ndarray) -> dict[str, jax.Array]:
     fields = _INPUT_FIELDS + _LABEL_FIELDS
-    return {name: jnp.asarray(arrays[name][indices]) for name in fields}
+    batch = {name: jnp.asarray(arrays[name][indices]) for name in fields}
+    if "prefix_tokens" in arrays:
+        batch["prefix_tokens"] = jnp.asarray(arrays["prefix_tokens"][indices])
+        batch["prefix_mask"] = jnp.asarray(arrays["prefix_token_mask"][indices])
+    return batch
 
 
 def _predict(module: ExecutionHorizonPredictor, batch: dict[str, jax.Array]) -> dict[str, jax.Array]:
-    return module(**{name: batch[name] for name in _INPUT_FIELDS})
+    inputs = {name: batch[name] for name in _INPUT_FIELDS}
+    if "prefix_tokens" in batch:
+        inputs["prefix_tokens"] = batch["prefix_tokens"]
+        inputs["prefix_mask"] = batch["prefix_mask"]
+    return module(**inputs)
 
 
 def _save_sidecar(params: nnx.State, target: pathlib.Path) -> None:
@@ -180,15 +243,96 @@ def _restore_predictor(module: ExecutionHorizonPredictor, params_path: str) -> E
     return nnx.merge(graphdef, state)
 
 
+def _advantage_scale(
+    values: np.ndarray,
+    indices: np.ndarray,
+    candidate_horizons: tuple[int, ...],
+    reference_horizon: int,
+    *,
+    minimum: float,
+) -> float:
+    reference_index = candidate_horizons.index(reference_horizon)
+    long_indices = [index for index, horizon in enumerate(candidate_horizons) if horizon > reference_horizon]
+    selected = np.asarray(values[indices], dtype=np.float64)
+    differences = selected[:, long_indices] - selected[:, reference_index : reference_index + 1]
+    differences = differences[np.isfinite(differences)]
+    if not differences.size:
+        raise ValueError("Cannot determine advantage scale without finite training labels.")
+    return float(
+        max(
+            np.quantile(np.abs(differences), 0.75),
+            np.std(differences),
+            minimum,
+        )
+    )
+
+
 def main(args: Args) -> None:
     if args.train_steps <= 0 or args.batch_size <= 0:
         raise ValueError("train_steps and batch_size must be positive.")
     if args.early_stopping_patience_logs < 0 or args.early_stopping_min_delta < 0:
         raise ValueError("Early-stopping patience and min delta must be non-negative.")
+    if args.split_seed is not None and args.split_seed < 0:
+        raise ValueError("split_seed must be non-negative when set.")
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     arrays = horizon_dataset.load_counterfactual_arrays(args.dataset)
-    train_indices, validation_indices = _split_indices(arrays, args)
+    candidate_rows = np.asarray(arrays["candidate_horizons"], dtype=np.int64)
+    if not np.all(candidate_rows == candidate_rows[:1]):
+        raise ValueError("All roots must store the same ordered candidate_horizons.")
+    candidate_horizons = tuple(int(value) for value in candidate_rows[0])
+    if args.temporal_backbone not in {"local_mlp", "transformer"}:
+        raise ValueError("temporal_backbone must be local_mlp or transformer.")
+    if args.temporal_backbone == "transformer":
+        if not np.all(np.asarray(arrays["schema_version"]) == horizon_dataset.SCHEMA_VERSION):
+            raise ValueError("Transformer training requires count-aware schema v2 shards, not repeat-0 v1 labels.")
+        if args.calibration_fraction <= 0:
+            raise ValueError("Transformer training requires a non-zero independent calibration_fraction.")
+        if args.split_seed is None:
+            raise ValueError(
+                "Transformer training requires an explicit split_seed so training-seed replications share splits."
+            )
+        trial_count = np.asarray(arrays["trial_count"], dtype=np.int64)
+        if np.any(trial_count < args.minimum_trials_per_candidate):
+            raise ValueError(
+                "Transformer training requires multi-seed labels for every root/candidate; "
+                f"minimum observed trial_count={int(trial_count.min())}, "
+                f"required={args.minimum_trials_per_candidate}."
+            )
+        success_count = np.asarray(arrays["success_count"], dtype=np.int64)
+        timeout_count = np.asarray(arrays["timeout_count"], dtype=np.int64)
+        raw_trial_valid = np.asarray(arrays["trial_valid"], dtype=np.bool_)
+        raw_trial_success = np.asarray(arrays["trial_success"], dtype=np.bool_)
+        raw_trial_timeout = np.asarray(arrays["trial_timeout"], dtype=np.bool_)
+        if np.any(success_count + timeout_count != trial_count):
+            raise ValueError("Every valid continuation trial must be exactly success or timeout.")
+        if not np.array_equal(np.sum(raw_trial_valid, axis=-1), trial_count):
+            raise ValueError("trial_count does not match trial_valid raw outcomes.")
+        if not np.array_equal(np.sum(raw_trial_success & raw_trial_valid, axis=-1), success_count):
+            raise ValueError("success_count does not match raw continuation outcomes.")
+        if not np.array_equal(np.sum(raw_trial_timeout & raw_trial_valid, axis=-1), timeout_count):
+            raise ValueError("timeout_count does not match raw continuation outcomes.")
+        elapsed_mean = np.asarray(arrays["elapsed_mean"], dtype=np.float32)
+        elapsed_variance = np.asarray(arrays["elapsed_variance"], dtype=np.float32)
+        if not np.all(np.isfinite(elapsed_mean)) or not np.all(np.isfinite(elapsed_variance)):
+            raise ValueError("Transformer training requires finite elapsed mean/variance labels.")
+        if np.any(elapsed_variance < 0):
+            raise ValueError("elapsed_variance must be non-negative.")
+        dangerous = np.asarray(arrays["dangerous_long_count"], dtype=np.int64)
+        paired = np.asarray(arrays["paired_trial_count"], dtype=np.int64)
+        if np.any(dangerous < 0) or np.any(dangerous > paired):
+            raise ValueError("dangerous_long_count must lie between zero and paired_trial_count.")
+        hazard_events = np.asarray(arrays["hazard_event_count"], dtype=np.int64)
+        hazard_at_risk = np.asarray(arrays["hazard_at_risk_count"], dtype=np.int64)
+        if np.any(hazard_events < 0) or np.any(hazard_events > hazard_at_risk):
+            raise ValueError("hazard_event_count must lie between zero and hazard_at_risk_count.")
+        if args.visual_num_queries and "prefix_tokens" not in arrays:
+            raise ValueError("visual_num_queries requires prefix_tokens/prefix_token_mask in the dataset.")
+        if args.visual_num_queries and np.any(
+            np.sum(np.asarray(arrays["prefix_token_mask"], dtype=np.bool_), axis=-1) == 0
+        ):
+            raise ValueError("Every root must contain at least one valid prefix token.")
+    train_indices, validation_indices, calibration_indices = _split_indices(arrays, args)
     all_weights = horizon_dataset.sampling_weights(
         arrays,
         focus_task_ids=args.focus_task_ids,
@@ -197,18 +341,77 @@ def main(args: Args) -> None:
         gripper_multiplier=args.gripper_multiplier,
         failure_multiplier=args.failure_multiplier,
     )
-    train_probabilities = all_weights[train_indices]
+    group_ids = np.asarray(arrays["task_id"], dtype=np.uint64) * np.uint64(1_000_000_000)
+    group_ids += np.asarray(arrays["episode_id"], dtype=np.uint64)
+    bootstrap_group_counts: dict[int, int] = {}
+    train_multiplicity = np.ones((train_indices.size,), dtype=np.float64)
+    if args.bootstrap_episode_groups:
+        train_groups = np.unique(group_ids[train_indices])
+        bootstrap_rng = np.random.default_rng(args.seed)
+        sampled_groups = bootstrap_rng.choice(train_groups, size=train_groups.size, replace=True)
+        values, counts = np.unique(sampled_groups, return_counts=True)
+        bootstrap_group_counts = {int(value): int(count) for value, count in zip(values, counts, strict=True)}
+        train_multiplicity = np.asarray(
+            [bootstrap_group_counts.get(int(group), 0) for group in group_ids[train_indices]],
+            dtype=np.float64,
+        )
+    train_probabilities = all_weights[train_indices] * train_multiplicity
+    if not np.any(train_probabilities > 0):
+        raise ValueError("Episode bootstrap produced no positive-weight training roots.")
     train_probabilities /= train_probabilities.sum()
+    train_support_size = int(np.count_nonzero(train_probabilities))
+
+    elapsed_advantage_scale = 1.0
+    calls_advantage_scale = 1.0
+    if args.temporal_backbone == "transformer":
+        elapsed_advantage_scale = _advantage_scale(
+            arrays["elapsed_mean"],
+            train_indices,
+            candidate_horizons,
+            args.reference_horizon,
+            minimum=0.01,
+        )
+        calls_advantage_scale = _advantage_scale(
+            arrays["remaining_calls_mean"],
+            train_indices,
+            candidate_horizons,
+            args.reference_horizon,
+            minimum=1.0,
+        )
 
     predictor_config = ExecutionHorizonPredictorConfig(
         prefix_feature_dim=int(arrays["prefix_feature"].shape[-1]),
         state_dim=int(arrays["state"].shape[-1]),
         action_dim=int(arrays["final_actions"].shape[-1]),
+        physical_action_dim=args.physical_action_dim,
         coarse_horizon=int(arrays["coarse_actions"].shape[-2]),
         action_horizon=int(arrays["final_actions"].shape[-2]),
         hidden_dim=args.hidden_dim,
         temporal_layers=args.temporal_layers,
+        temporal_backbone=args.temporal_backbone,
+        num_heads=args.num_heads,
+        feed_forward_multiplier=args.feed_forward_multiplier,
+        candidate_horizons=candidate_horizons,
+        reference_horizon=args.reference_horizon,
+        coarse_stride=args.coarse_stride,
+        final_stride=args.final_stride,
+        visual_num_queries=args.visual_num_queries,
+        elapsed_advantage_scale=elapsed_advantage_scale,
+        calls_advantage_scale=calls_advantage_scale,
     )
+    (output_dir / "predictor_config.json").write_text(
+        json.dumps(dataclasses.asdict(predictor_config), indent=2, sort_keys=True) + "\n"
+    )
+    split_manifest = {
+        "split_seed": args.seed if args.split_seed is None else args.split_seed,
+        "training_seed": args.seed,
+        "bootstrap_episode_groups": args.bootstrap_episode_groups,
+        "bootstrap_train_group_counts": bootstrap_group_counts,
+        "train_group_ids": sorted({int(value) for value in group_ids[train_indices]}),
+        "validation_group_ids": sorted({int(value) for value in group_ids[validation_indices]}),
+        "calibration_group_ids": sorted({int(value) for value in group_ids[calibration_indices]}),
+    }
+    (output_dir / "split_manifest.json").write_text(json.dumps(split_manifest, indent=2, sort_keys=True) + "\n")
     module = ExecutionHorizonPredictor(predictor_config, rngs=nnx.Rngs(args.seed))
     if args.resume_params is not None:
         module = _restore_predictor(module, args.resume_params)
@@ -239,6 +442,8 @@ def main(args: Args) -> None:
                 label_weights=label_weights,
                 remaining_calls_scale=predictor_config.remaining_calls_scale,
                 remaining_steps_scale=predictor_config.remaining_steps_scale,
+                candidate_horizons=predictor_config.candidate_horizons,
+                reference_horizon=predictor_config.reference_horizon,
             )
 
         (loss, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(current_module)
@@ -258,7 +463,14 @@ def main(args: Args) -> None:
             label_weights=label_weights,
             remaining_calls_scale=predictor_config.remaining_calls_scale,
             remaining_steps_scale=predictor_config.remaining_steps_scale,
+            candidate_horizons=predictor_config.candidate_horizons,
+            reference_horizon=predictor_config.reference_horizon,
         )
+        trial_count = jnp.maximum(batch["trial_count"].astype(jnp.float32), 1.0)
+        success_rate = batch["success_count"].astype(jnp.float32) / trial_count
+        timeout_rate = batch["timeout_count"].astype(jnp.float32) / trial_count
+        success_label = success_rate >= 0.5
+        timeout_label = timeout_rate >= 0.5
         success_prediction = jax.nn.sigmoid(predictions["success_logits"]) >= 0.5
         timeout_prediction = jax.nn.sigmoid(predictions["timeout_logits"]) >= 0.5
         event_prediction = predictions["event_logits"] >= 0.0
@@ -267,40 +479,107 @@ def main(args: Args) -> None:
         event_valid = batch["risk_valid"].astype(jnp.bool_)
         branch_valid = batch["branch_valid"].astype(jnp.bool_)
 
-        def binary_recall(
-            prediction: jax.Array, target: jax.Array, valid: jax.Array
-        ) -> jax.Array:
+        def binary_recall(prediction: jax.Array, target: jax.Array, valid: jax.Array) -> jax.Array:
             positives = target & valid
             return jnp.sum(prediction & positives) / jnp.maximum(jnp.sum(positives), 1)
 
-        def binary_precision(
-            prediction: jax.Array, target: jax.Array, valid: jax.Array
-        ) -> jax.Array:
+        def binary_precision(prediction: jax.Array, target: jax.Array, valid: jax.Array) -> jax.Array:
             predicted_positives = prediction & valid
             return jnp.sum(target & predicted_positives) / jnp.maximum(jnp.sum(predicted_positives), 1)
 
-        metrics["success_accuracy"] = jnp.mean(success_prediction == batch["branch_success"])
-        metrics["timeout_accuracy"] = jnp.mean(timeout_prediction == batch["branch_timeout"])
-        metrics["failure_recall"] = binary_recall(~success_prediction, ~batch["branch_success"], branch_valid)
-        metrics["timeout_recall"] = binary_recall(timeout_prediction, batch["branch_timeout"], branch_valid)
+        metrics["success_accuracy"] = jnp.mean(success_prediction == success_label)
+        metrics["timeout_accuracy"] = jnp.mean(timeout_prediction == timeout_label)
+        metrics["failure_recall"] = binary_recall(~success_prediction, ~success_label, branch_valid)
+        metrics["timeout_recall"] = binary_recall(timeout_prediction, timeout_label, branch_valid)
         metrics["event_precision"] = binary_precision(event_prediction, event_label, event_valid)
         metrics["event_recall"] = binary_recall(event_prediction, event_label, event_valid)
-        metrics["fused_risk_event_precision"] = binary_precision(
-            risk_event_prediction, event_label, event_valid
-        )
+        metrics["fused_risk_event_precision"] = binary_precision(risk_event_prediction, event_label, event_valid)
         metrics["fused_risk_event_recall"] = binary_recall(risk_event_prediction, event_label, event_valid)
-        success_squared_error = (
-            jax.nn.sigmoid(predictions["success_logits"]) - batch["branch_success"]
-        ) ** 2
-        metrics["success_brier"] = jnp.sum(success_squared_error * branch_valid) / jnp.maximum(
-            jnp.sum(branch_valid), 1
-        )
-        metrics["raw_h_accuracy"] = jnp.mean(
-            (jnp.argmax(predictions["raw_h_logits"], axis=-1) + 1) == batch["raw_h"]
-        )
-        metrics["raw_h_mae"] = jnp.mean(
-            jnp.abs((jnp.argmax(predictions["raw_h_logits"], axis=-1) + 1) - batch["raw_h"])
-        )
+        success_squared_error = (jax.nn.sigmoid(predictions["success_logits"]) - success_rate) ** 2
+        metrics["success_brier"] = jnp.sum(success_squared_error * branch_valid) / jnp.maximum(jnp.sum(branch_valid), 1)
+        candidate_values = jnp.asarray(predictor_config.candidate_horizons, dtype=jnp.int32)
+        predicted_raw_h = candidate_values[jnp.argmax(predictions["raw_h_logits"], axis=-1)]
+        metrics["raw_h_accuracy"] = jnp.mean(predicted_raw_h == batch["raw_h"])
+        metrics["raw_h_mae"] = jnp.mean(jnp.abs(predicted_raw_h - batch["raw_h"]))
+        if predictor_config.temporal_backbone == "transformer":
+            long_indices = jnp.asarray(
+                [
+                    index
+                    for index, horizon in enumerate(predictor_config.candidate_horizons)
+                    if horizon > predictor_config.reference_horizon
+                ],
+                dtype=jnp.int32,
+            )
+            reference_index = predictor_config.candidate_horizons.index(predictor_config.reference_horizon)
+            eligible = (
+                predictions["success_advantage"] - 1.96 * predictions["success_advantage_std"]
+                >= -args.selection_success_noninferiority
+            ) & (predictions["elapsed_advantage"] + 1.96 * predictions["elapsed_advantage_std"] < 0.0)
+            eligible_index = jnp.max(
+                jnp.where(eligible, jnp.arange(eligible.shape[-1], dtype=jnp.int32) + 1, 0),
+                axis=-1,
+            )
+            selected = eligible_index > 0
+            selected_long_index = jnp.maximum(eligible_index - 1, 0)
+            metrics["long_coverage"] = jnp.mean(selected)
+            dangerous = jnp.take(batch["dangerous_long_count"], long_indices, axis=1)
+            paired = jnp.take(batch["paired_trial_count"], long_indices, axis=1)
+            selected_dangerous = jnp.take_along_axis(dangerous, selected_long_index[:, None], axis=1)[:, 0]
+            selected_paired = jnp.take_along_axis(paired, selected_long_index[:, None], axis=1)[:, 0]
+            dangerous_total = jnp.sum(jnp.where(selected, selected_dangerous, 0.0))
+            paired_total = jnp.sum(jnp.where(selected, selected_paired, 0.0))
+            false_long_rate = dangerous_total / jnp.maximum(paired_total, 1.0)
+            z_two_sided = jnp.asarray(1.96, dtype=jnp.float32)
+            wilson_denominator = 1.0 + z_two_sided**2 / jnp.maximum(paired_total, 1.0)
+            wilson_center = (
+                false_long_rate + z_two_sided**2 / (2.0 * jnp.maximum(paired_total, 1.0))
+            ) / wilson_denominator
+            wilson_margin = (
+                z_two_sided
+                / wilson_denominator
+                * jnp.sqrt(
+                    false_long_rate * (1.0 - false_long_rate) / jnp.maximum(paired_total, 1.0)
+                    + z_two_sided**2 / (4.0 * jnp.maximum(paired_total, 1.0) ** 2)
+                )
+            )
+            metrics["false_long_rate"] = false_long_rate
+            metrics["false_long_upper_95"] = jnp.where(
+                paired_total > 0,
+                jnp.minimum(1.0, wilson_center + wilson_margin),
+                1.0,
+            )
+            success_advantage_target = (
+                jnp.take(success_rate, long_indices, axis=1) - success_rate[:, reference_index : reference_index + 1]
+            )
+            selected_success = jnp.take_along_axis(success_advantage_target, selected_long_index[:, None], axis=1)[:, 0]
+            elapsed_target = (
+                jnp.take(batch["elapsed_mean"], long_indices, axis=1)
+                - batch["elapsed_mean"][:, reference_index : reference_index + 1]
+            )
+            selected_elapsed = jnp.take_along_axis(elapsed_target, selected_long_index[:, None], axis=1)[:, 0]
+            selected_count = jnp.sum(selected)
+
+            def mean_and_standard_error(values: jax.Array) -> tuple[jax.Array, jax.Array]:
+                mean = jnp.sum(jnp.where(selected, values, 0.0)) / jnp.maximum(selected_count, 1)
+                centered = jnp.where(selected, values - mean, 0.0)
+                variance = jnp.sum(jnp.square(centered)) / jnp.maximum(selected_count - 1, 1)
+                return mean, jnp.sqrt(variance / jnp.maximum(selected_count, 1))
+
+            success_mean, success_standard_error = mean_and_standard_error(selected_success)
+            elapsed_mean, elapsed_standard_error = mean_and_standard_error(selected_elapsed)
+            one_sided_z = jnp.asarray(1.645, dtype=jnp.float32)
+            metrics["selected_success_advantage_target"] = success_mean
+            metrics["selected_success_advantage_lcb95"] = jnp.where(
+                selected_count > 0,
+                success_mean - one_sided_z * success_standard_error,
+                -1.0,
+            )
+            metrics["selected_elapsed_advantage_target"] = elapsed_mean
+            metrics["selected_elapsed_advantage_ucb95"] = jnp.where(
+                selected_count > 0,
+                elapsed_mean + one_sided_z * elapsed_standard_error,
+                1e9,
+            )
         return metrics
 
     rng = np.random.default_rng(args.seed)
@@ -311,6 +590,12 @@ def main(args: Args) -> None:
     best_validation_loss = float("inf")
     best_validation_step = 0
     best_params: nnx.State | None = None
+    best_long_coverage = -1.0
+    best_selection_feasible = False
+    baseline_success_brier: float | None = None
+    if args.temporal_backbone == "transformer":
+        initial_validation = jax.device_get(validation_step(params, _batch(arrays, validation_indices)))
+        baseline_success_brier = float(initial_validation["success_brier"])
     logs_without_improvement = 0
     completed_steps = 0
     stopped_early = False
@@ -319,24 +604,27 @@ def main(args: Args) -> None:
             sampled = rng.choice(
                 train_indices,
                 size=args.batch_size,
-                replace=train_indices.size < args.batch_size,
+                replace=train_support_size < args.batch_size,
                 p=train_probabilities,
             )
             params, optimizer_state, train_metrics = train_step(params, optimizer_state, _batch(arrays, sampled))
             completed_steps = step
             if step == 1 or step % args.log_interval == 0 or step == args.train_steps:
-                validation_sample = rng.choice(
-                    validation_indices,
-                    size=min(args.batch_size * 4, validation_indices.size),
-                    replace=False,
+                validation_sample = (
+                    validation_indices
+                    if args.temporal_backbone == "transformer"
+                    else rng.choice(
+                        validation_indices,
+                        size=min(args.batch_size * 4, validation_indices.size),
+                        replace=False,
+                    )
                 )
                 validation_metrics = validation_step(params, _batch(arrays, validation_sample))
                 last_train_metrics = {
                     f"train/{name}": float(value) for name, value in jax.device_get(train_metrics).items()
                 }
                 last_validation_metrics = {
-                    f"validation/{name}": float(value)
-                    for name, value in jax.device_get(validation_metrics).items()
+                    f"validation/{name}": float(value) for name, value in jax.device_get(validation_metrics).items()
                 }
                 record: dict[str, Any] = {
                     "step": step,
@@ -348,9 +636,43 @@ def main(args: Args) -> None:
                 metrics_file.flush()
                 print(json.dumps(record, sort_keys=True), flush=True)
                 validation_loss = last_validation_metrics["validation/loss"]
-                if validation_loss < best_validation_loss - args.early_stopping_min_delta:
+                if baseline_success_brier is None:
+                    baseline_success_brier = last_validation_metrics["validation/success_brier"]
+                selection_feasible = False
+                long_coverage = -1.0
+                if args.temporal_backbone == "transformer":
+                    long_coverage = last_validation_metrics["validation/long_coverage"]
+                    selection_feasible = (
+                        long_coverage > 0
+                        and last_validation_metrics["validation/false_long_upper_95"]
+                        <= args.selection_false_long_upper_bound
+                        and last_validation_metrics["validation/selected_success_advantage_lcb95"]
+                        >= -args.selection_success_noninferiority
+                        and last_validation_metrics["validation/selected_elapsed_advantage_ucb95"] < 0
+                        and last_validation_metrics["validation/success_brier"] <= baseline_success_brier
+                    )
+                    improved = (
+                        selection_feasible
+                        and (
+                            not best_selection_feasible
+                            or long_coverage > best_long_coverage + 1e-6
+                            or (
+                                abs(long_coverage - best_long_coverage) <= 1e-6
+                                and validation_loss < best_validation_loss - args.early_stopping_min_delta
+                            )
+                        )
+                    ) or (
+                        not selection_feasible
+                        and not best_selection_feasible
+                        and validation_loss < best_validation_loss - args.early_stopping_min_delta
+                    )
+                else:
+                    improved = validation_loss < best_validation_loss - args.early_stopping_min_delta
+                if improved:
                     best_validation_loss = validation_loss
                     best_validation_step = step
+                    best_long_coverage = long_coverage
+                    best_selection_feasible = selection_feasible
                     # Optax returns a new state tree on each update, so keeping
                     # this immutable NNX State retains the best validation
                     # checkpoint without loading or copying the base policy.
@@ -378,17 +700,27 @@ def main(args: Args) -> None:
         "num_records": len(arrays["task_id"]),
         "num_train_records": int(train_indices.size),
         "num_validation_records": int(validation_indices.size),
+        "num_calibration_records": int(calibration_indices.size),
         "train_steps": completed_steps,
         "requested_train_steps": args.train_steps,
         "batch_size": args.batch_size,
+        "training_seed": args.seed,
+        "split_seed": args.seed if args.split_seed is None else args.split_seed,
+        "bootstrap_episode_groups": args.bootstrap_episode_groups,
+        "train_sampling_support_records": train_support_size,
         "elapsed_seconds": time.monotonic() - start_time,
         "predictor_params": str(final_params.resolve()),
         "selected_checkpoint": "best_validation" if args.select_best_validation else "last_step",
         "best_validation_step": best_validation_step,
         "best_validation_loss": best_validation_loss,
+        "best_long_coverage": best_long_coverage if args.temporal_backbone == "transformer" else None,
+        "best_selection_feasible": best_selection_feasible if args.temporal_backbone == "transformer" else None,
+        "initial_validation_success_brier": baseline_success_brier,
         "stopped_early": stopped_early,
         "loss_weights": dataclasses.asdict(weights),
         "label_weights": dataclasses.asdict(label_weights),
+        "predictor_config": dataclasses.asdict(predictor_config),
+        "calibration_split_used_for_training": False,
         "last_train_metrics": last_train_metrics,
         "last_validation_metrics": last_validation_metrics,
     }

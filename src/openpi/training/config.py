@@ -1229,6 +1229,9 @@ class TrainConfig:
     # Optional episode-disjoint validation for validation-best checkpointing.
     # A zero fraction preserves the existing no-validation training loop.
     validation_fraction: float = 0.0
+    # Optional fixed split seed so model-seed replications share exactly the
+    # same held-out episodes. None preserves the legacy seed coupling.
+    validation_split_seed: int | None = None
     validation_interval: int = 0
     validation_batches: int = 0
     validation_min_delta: float = 0.0
@@ -1307,6 +1310,8 @@ class TrainConfig:
             raise ValueError(
                 "Positive validation_fraction requires positive validation_interval and validation_batches."
             )
+        if self.validation_split_seed is not None and self.validation_split_seed < 0:
+            raise ValueError("validation_split_seed must be non-negative when set.")
         if self.validation_min_delta < 0:
             raise ValueError("validation_min_delta must be non-negative.")
         if self.early_stopping_patience is not None and self.early_stopping_patience <= 0:
@@ -1737,6 +1742,7 @@ _CONFIGS = [
         ),
         num_train_steps=5_000,
         validation_fraction=0.10,
+        validation_split_seed=42,
         validation_interval=250,
         validation_batches=32,
         validation_min_delta=1e-4,

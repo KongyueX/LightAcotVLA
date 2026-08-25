@@ -337,6 +337,7 @@ def create_data_loader(
         num_batches=num_batches,
         num_workers=config.num_workers,
         seed=config.seed,
+        episode_split_seed=config.validation_split_seed,
         skip_norm_stats=skip_norm_stats,
         episode_split=episode_split,
         validation_fraction=validation_fraction,
@@ -355,6 +356,7 @@ def create_torch_data_loader(
     num_batches: int | None = None,
     num_workers: int = 0,
     seed: int = 0,
+    episode_split_seed: int | None = None,
     episode_split: str | None = None,
     validation_fraction: float = 0.0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
@@ -374,6 +376,8 @@ def create_torch_data_loader(
         num_workers: The number of worker processes to use. If zero, the data loader will
             execute in the main process.
         seed: The seed to use for shuffling the data.
+        episode_split_seed: Optional independent seed used only to assign episodes
+            to train/validation splits.
     """
     dataset = create_torch_dataset(data_config, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
@@ -397,7 +401,7 @@ def create_torch_data_loader(
         sampler = FrameSampler(
             dataset,
             "episode_split",
-            seed=seed,
+            seed=seed if episode_split_seed is None else episode_split_seed,
             episode_split=episode_split,
             validation_fraction=validation_fraction,
         )

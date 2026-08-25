@@ -41,6 +41,14 @@ default. H15 runs retain at most two full checkpoints (the latest validation
 best and, when different, the final checkpoint) to bound disk usage; legacy
 configs keep their existing unbounded checkpoint policy.
 
+The held-out episode assignment is fixed with `validation_split_seed=42`,
+independently of the model/data-order `--seed`. First compare the three learning
+rates with the same model seed. After choosing the best LR, rerun that LR with
+at least three model seeds (for example 7, 42, and 101); these replications see
+exactly the same validation episodes. Reject a checkpoint that wins only on
+validation loss but degrades the first-10-step retention metrics or has an
+unstable multi-seed Fixed-H result.
+
 The trainable scope is the final 300M expert, its input/time/output projections,
 and final-token reasoning/fusion modules. Vision, the base LLM, coarse expert,
 and implicit prefix extractor remain frozen. The loss is:
@@ -71,6 +79,7 @@ python scripts/eval_libero_execution_horizon.py \
   --host 127.0.0.1 --port 8000 \
   --output-dir /root/autodl-tmp/acotvla/long_chunk_h15/fixed_h10 \
   --modes fixed_h --fixed-horizon 10 \
+  --model-action-horizon 15 \
   --task-suite-name libero_10 --max-tasks 10 \
   --num-trials-per-task 20 --seed 7 \
   --action-cot-denoising-steps 10
@@ -79,6 +88,7 @@ python scripts/eval_libero_execution_horizon.py \
   --host 127.0.0.1 --port 8000 \
   --output-dir /root/autodl-tmp/acotvla/long_chunk_h15/fixed_h15 \
   --modes fixed_h --fixed-horizon 15 \
+  --model-action-horizon 15 \
   --task-suite-name libero_10 --max-tasks 10 \
   --num-trials-per-task 20 --seed 7 \
   --action-cot-denoising-steps 10
