@@ -1,8 +1,9 @@
 """GPU smoke test for opt-in ACoT-VLA long-action-chunk training.
 
-The smoke uses the real training config and data pipeline. It checks the H15
-batch shapes, restores both the student and frozen prefix anchor, evaluates the
-paired long-flow/prefix-retention loss, and runs a one-step sampling forward.
+The smoke uses the real training config and data pipeline. It checks the
+configured batch shapes, restores both the student and frozen prefix anchor,
+evaluates the paired long-flow/prefix-retention loss, and runs a one-step
+sampling forward.
 It does not update parameters or write a training checkpoint.
 """
 
