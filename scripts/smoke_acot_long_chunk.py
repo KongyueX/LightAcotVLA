@@ -169,7 +169,7 @@ def main(args: Args) -> None:
         in_shardings=(train_state_sharding.params, replicated_sharding, data_sharding),
         out_shardings=replicated_sharding,
     )
-    sampled = sample_forward(jax.random.key(config.seed + 2), evaluation_params, observation)
+    sampled = sample_forward(evaluation_params, jax.random.key(config.seed + 2), observation)
     jax.block_until_ready(sampled)
     sampled_actions = np.asarray(sampled["actions"] if isinstance(sampled, dict) else sampled)
     if sampled_actions.shape != expected_actions:
