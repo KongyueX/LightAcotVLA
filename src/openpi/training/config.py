@@ -1240,6 +1240,8 @@ class TrainConfig:
     save_interval: int = 1000
     # If set, any existing checkpoints matching step % keep_period == 0 will not be deleted.
     keep_period: int | None = 5000
+    # Maximum retained checkpoints. None preserves the legacy unbounded behavior.
+    max_checkpoints_to_keep: int | None = None
 
     # If true, will overwrite the checkpoint directory if it already exists.
     overwrite: bool = False
@@ -1309,6 +1311,8 @@ class TrainConfig:
             raise ValueError("validation_min_delta must be non-negative.")
         if self.early_stopping_patience is not None and self.early_stopping_patience <= 0:
             raise ValueError("early_stopping_patience must be positive when set.")
+        if self.max_checkpoints_to_keep is not None and self.max_checkpoints_to_keep <= 0:
+            raise ValueError("max_checkpoints_to_keep must be positive when set.")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -1737,8 +1741,11 @@ _CONFIGS = [
         validation_batches=32,
         validation_min_delta=1e-4,
         early_stopping_patience=6,
-        save_interval=500,
-        keep_period=500,
+        # Validation improvements are checkpointed immediately. Only the
+        # latest best plus a possible final checkpoint need to survive.
+        save_interval=5_000,
+        keep_period=None,
+        max_checkpoints_to_keep=2,
         num_workers=24,
         batch_size=16,
         assets_base_dir="/root/autodl-tmp/acotvla/assets",

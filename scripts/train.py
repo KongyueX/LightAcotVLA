@@ -421,6 +421,7 @@ def main(config: _config.TrainConfig):
     checkpoint_manager, resuming = _checkpoints.initialize_checkpoint_dir(
         config.checkpoint_dir,
         keep_period=config.keep_period,
+        max_to_keep=config.max_checkpoints_to_keep,
         overwrite=config.overwrite if not os.getenv("DEBUG_MODE", default=False) == "true" else True,
         resume=config.resume,
     )

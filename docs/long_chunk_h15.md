@@ -24,11 +24,11 @@ The config defaults to peak LR `3e-6`. Run a small three-point scan by changing
 only the peak/decay LR and experiment name:
 
 ```bash
-scripts/train.sh acot_libero_long_chunk_h15 h15_lr1e6 \
+bash scripts/train.sh acot_libero_long_chunk_h15 h15_lr1e6 \
   --lr-schedule.peak-lr=1e-6 --lr-schedule.decay-lr=1e-7
-scripts/train.sh acot_libero_long_chunk_h15 h15_lr3e6 \
+bash scripts/train.sh acot_libero_long_chunk_h15 h15_lr3e6 \
   --lr-schedule.peak-lr=3e-6 --lr-schedule.decay-lr=3e-7
-scripts/train.sh acot_libero_long_chunk_h15 h15_lr1e5 \
+bash scripts/train.sh acot_libero_long_chunk_h15 h15_lr1e5 \
   --lr-schedule.peak-lr=1e-5 --lr-schedule.decay-lr=1e-6
 ```
 
@@ -37,7 +37,9 @@ Training uses an episode-disjoint 90/10 split. Every 250 updates it evaluates
 parameters that are actually written for inference, saves every new best, and
 stops after six non-improving checks. Read `validation_best.json` under each
 experiment directory and serve its `best_step`; do not select the last step by
-default.
+default. H15 runs retain at most two full checkpoints (the latest validation
+best and, when different, the final checkpoint) to bound disk usage; legacy
+configs keep their existing unbounded checkpoint policy.
 
 The trainable scope is the final 300M expert, its input/time/output projections,
 and final-token reasoning/fusion modules. Vision, the base LLM, coarse expert,

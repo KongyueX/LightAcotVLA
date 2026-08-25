@@ -16,3 +16,6 @@ def test_h15_long_chunk_config_is_strictly_opt_in():
     assert h15.prefix_retention_teacher_weight_loader is not None
     assert h15.validation_fraction == 0.10
     assert h15.early_stopping_patience is not None
+    assert h15.save_interval == h15.num_train_steps
+    assert h15.keep_period is None
+    assert h15.max_checkpoints_to_keep == 2
