@@ -1,9 +1,11 @@
 import dataclasses
 import functools
+import json
 import logging
+import os
 import platform
 from typing import Any
-import os
+
 import etils.epath as epath
 import flax.nnx as nnx
 from flax.training import common_utils
@@ -133,6 +135,43 @@ def init_train_state(
     return train_state, state_sharding
 
 
+def init_prefix_retention_reference_params(
+    config: _config.TrainConfig,
+    init_rng: at.KeyArrayLike,
+    mesh: jax.sharding.Mesh,
+    params_shape: nnx.State,
+    params_sharding: nnx.State,
+) -> tuple[nnx.State, nnx.State]:
+    """Restore the frozen anchor subset used by long-chunk prefix retention."""
+
+    loader = config.prefix_retention_teacher_weight_loader
+    if config.prefix_retention_loss_weight <= 0 or loader is None:
+        raise ValueError("Prefix-retention reference initialization requires an enabled anchor loader.")
+    partial_params = _load_weights_and_validate(loader, params_shape.to_pure_dict())
+    reference_sharding = params_sharding.filter(config.trainable_filter)
+
+    def init(rng: at.KeyArrayLike, loaded_params: at.Params) -> nnx.State:
+        model = config.model.create(rng)
+        graphdef, state = nnx.split(model)
+        state.replace_by_pure_dict(loaded_params)
+        model = nnx.merge(graphdef, state)
+        params = nnx.state(model)
+        params = nnx_utils.state_map(
+            params,
+            config.freeze_filter,
+            lambda parameter: parameter.replace(parameter.value.astype(jnp.bfloat16)),
+        )
+        return params.filter(config.trainable_filter)
+
+    replicated_sharding = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec())
+    reference_params = jax.jit(
+        init,
+        in_shardings=replicated_sharding,
+        out_shardings=reference_sharding,
+    )(init_rng, partial_params)
+    return reference_params, reference_sharding
+
+
 @at.typecheck
 def train_step(
     config: _config.TrainConfig,
@@ -190,23 +229,51 @@ def train_step(
     }
     return new_state, info
 
+
 @at.typecheck
 def acot_train_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
     batch,
+    prefix_retention_reference_params: nnx.State | None = None,
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
 
+    reference_model = None
+    if config.prefix_retention_loss_weight > 0:
+        if prefix_retention_reference_params is None:
+            raise ValueError("Enabled prefix retention is missing frozen reference parameters.")
+        reference_model = nnx.merge(state.model_def, state.params)
+        nnx.update(reference_model, prefix_retention_reference_params)
+        reference_model.eval()
+
     @at.typecheck
     def loss_fn(
-        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions,
-        coarse_actions: _model.CoarseActions, action_cot_skip_mask=None, action_cot_skip_valid_mask=None,
-        action_cot_step_label=None
+        model: _model.BaseModel,
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+        coarse_actions: _model.CoarseActions,
+        action_cot_skip_mask=None,
+        action_cot_skip_valid_mask=None,
+        action_cot_step_label=None,
     ):
-        return model.compute_loss(
+        if config.prefix_retention_loss_weight > 0:
+            if reference_model is None:
+                raise ValueError("Prefix-retention reference model was not constructed.")
+            return model.compute_long_chunk_loss(
+                reference_model,
+                rng,
+                observation,
+                actions,
+                coarse_actions,
+                prefix_horizon=config.prefix_retention_horizon,
+                prefix_retention_weight=config.prefix_retention_loss_weight,
+                train=True,
+            )
+        loss = model.compute_loss(
             rng,
             observation,
             actions,
@@ -216,6 +283,7 @@ def acot_train_step(
             action_cot_step_label=action_cot_step_label,
             train=True,
         )
+        return loss, {}
 
     train_rng = jax.random.fold_in(rng, state.step)
     if len(batch) == 6:
@@ -238,7 +306,11 @@ def acot_train_step(
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(
+    (loss, loss_metrics), grads = nnx.value_and_grad(
+        loss_fn,
+        argnums=diff_state,
+        has_aux=True,
+    )(
         model,
         train_rng,
         observation,
@@ -279,8 +351,54 @@ def acot_train_step(
         "loss": loss,
         "grad_norm": optax.global_norm(grads),
         "param_norm": optax.global_norm(kernel_params),
+        **loss_metrics,
     }
     return new_state, info
+
+
+@at.typecheck
+def acot_validation_step(
+    config: _config.TrainConfig,
+    rng: at.KeyArrayLike,
+    state: training_utils.TrainState,
+    batch,
+    prefix_retention_reference_params: nnx.State | None = None,
+) -> dict[str, at.Array]:
+    """Evaluate the exact inference-parameter source used by checkpoint saves."""
+
+    evaluation_params = state.ema_params if state.ema_params is not None else state.params
+    model = nnx.merge(state.model_def, evaluation_params)
+    model.eval()
+    reference_model = None
+    if config.prefix_retention_loss_weight > 0:
+        if prefix_retention_reference_params is None:
+            raise ValueError("Enabled prefix retention is missing frozen reference parameters.")
+        reference_model = nnx.merge(state.model_def, evaluation_params)
+        nnx.update(reference_model, prefix_retention_reference_params)
+        reference_model.eval()
+
+    observation, actions, coarse_actions = batch[:3]
+    if config.prefix_retention_loss_weight > 0:
+        if reference_model is None:
+            raise ValueError("Prefix-retention reference model was not constructed.")
+        loss, metrics = model.compute_long_chunk_loss(
+            reference_model,
+            rng,
+            observation,
+            actions,
+            coarse_actions,
+            prefix_horizon=config.prefix_retention_horizon,
+            prefix_retention_weight=config.prefix_retention_loss_weight,
+            train=False,
+        )
+    else:
+        loss = model.compute_loss(rng, observation, actions, coarse_actions, train=False)
+        metrics = {}
+    return {
+        "validation_loss": loss,
+        **{f"validation_{name}": value for name, value in metrics.items()},
+    }
+
 
 def main(config: _config.TrainConfig):
     init_logging()
@@ -308,11 +426,24 @@ def main(config: _config.TrainConfig):
     )
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
+    validation_enabled = config.validation_fraction > 0
     data_loader = _data_loader.create_data_loader(
         config,
         sharding=data_sharding,
         shuffle=True,
+        episode_split="train" if validation_enabled else None,
+        validation_fraction=config.validation_fraction,
     )
+    validation_loader = None
+    if validation_enabled:
+        validation_loader = _data_loader.create_data_loader(
+            config,
+            sharding=data_sharding,
+            shuffle=False,
+            num_batches=config.validation_batches,
+            episode_split="validation",
+            validation_fraction=config.validation_fraction,
+        )
     data_iter = iter(data_loader)
     batch = next(data_iter)
     logging.info(f"Initialized data loader:\n{training_utils.array_tree_to_info(batch)}")
@@ -333,14 +464,72 @@ def main(config: _config.TrainConfig):
     if resuming:
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
 
-    if config.model.model_type == _model.ModelType.ACOT_VLA_PI05 or config.model.model_type == _model.ModelType.ACOT_VLA_PI0:
+    is_acot = config.model.model_type in {
+        _model.ModelType.ACOT_VLA_PI05,
+        _model.ModelType.ACOT_VLA_PI0,
+    }
+    prefix_retention_reference_params = None
+    prefix_retention_reference_sharding = None
+    if config.prefix_retention_loss_weight > 0:
+        if not is_acot:
+            raise ValueError("Prefix-retention training requires an ACoT-VLA model.")
+        params_shape = jax.tree.map(
+            lambda value: jax.ShapeDtypeStruct(value.shape, value.dtype),
+            train_state.params,
+        )
+        prefix_retention_reference_params, prefix_retention_reference_sharding = init_prefix_retention_reference_params(
+            config,
+            jax.random.fold_in(init_rng, 17_015),
+            mesh,
+            params_shape,
+            train_state_sharding.params,
+        )
+        logging.info(
+            "Loaded frozen prefix-retention anchor with %d parameters",
+            training_utils.count_parameters(prefix_retention_reference_params),
+        )
+
+    pvalidation_step = None
+    if is_acot and prefix_retention_reference_params is not None:
+        assert prefix_retention_reference_sharding is not None
+        ptrain_step = jax.jit(
+            functools.partial(acot_train_step, config),
+            in_shardings=(
+                replicated_sharding,
+                train_state_sharding,
+                data_sharding,
+                prefix_retention_reference_sharding,
+            ),
+            out_shardings=(train_state_sharding, replicated_sharding),
+            donate_argnums=(1,),
+        )
+        if validation_enabled:
+            pvalidation_step = jax.jit(
+                functools.partial(acot_validation_step, config),
+                in_shardings=(
+                    replicated_sharding,
+                    train_state_sharding,
+                    data_sharding,
+                    prefix_retention_reference_sharding,
+                ),
+                out_shardings=replicated_sharding,
+            )
+    elif is_acot:
         ptrain_step = jax.jit(
             functools.partial(acot_train_step, config),
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
             out_shardings=(train_state_sharding, replicated_sharding),
             donate_argnums=(1,),
         )
+        if validation_enabled:
+            pvalidation_step = jax.jit(
+                functools.partial(acot_validation_step, config),
+                in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
+                out_shardings=replicated_sharding,
+            )
     else:
+        if validation_enabled:
+            raise ValueError("Episode-disjoint validation is currently implemented only for ACoT-VLA training.")
         ptrain_step = jax.jit(
             functools.partial(train_step, config),
             in_shardings=(replicated_sharding, train_state_sharding, data_sharding),
@@ -360,10 +549,28 @@ def main(config: _config.TrainConfig):
         dynamic_ncols=True,
     )
 
+    best_validation_loss = float("inf")
+    best_validation_step: int | None = None
+    validation_checks_without_improvement = 0
+    validation_best_path = config.checkpoint_dir / "validation_best.json"
+    if resuming and validation_enabled and validation_best_path.exists():
+        saved_best = json.loads(validation_best_path.read_text())
+        best_validation_loss = float(saved_best["best_validation_loss"])
+        best_validation_step = int(saved_best["best_step"])
+        validation_checks_without_improvement = int(saved_best.get("checks_without_improvement", 0))
+
     infos = []
     for step in pbar:
         with sharding.set_mesh(mesh):
-            train_state, info = ptrain_step(train_rng, train_state, batch)
+            if prefix_retention_reference_params is None:
+                train_state, info = ptrain_step(train_rng, train_state, batch)
+            else:
+                train_state, info = ptrain_step(
+                    train_rng,
+                    train_state,
+                    batch,
+                    prefix_retention_reference_params,
+                )
         infos.append(info)
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)
@@ -374,8 +581,104 @@ def main(config: _config.TrainConfig):
             infos = []
         batch = next(data_iter)
 
-        if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
+        saved_this_step = False
+        checkpoint_step = int(train_state.step)
+        should_stop_early = False
+        if validation_enabled and checkpoint_step % config.validation_interval == 0:
+            if validation_loader is None or pvalidation_step is None:
+                raise ValueError("Validation was enabled but its loader or compiled step is missing.")
+            validation_infos = []
+            for validation_index, validation_batch in enumerate(validation_loader):
+                validation_rng = jax.random.fold_in(
+                    jax.random.key(config.seed + 1_000_003),
+                    validation_index,
+                )
+                with sharding.set_mesh(mesh):
+                    if prefix_retention_reference_params is None:
+                        validation_info = pvalidation_step(
+                            validation_rng,
+                            train_state,
+                            validation_batch,
+                        )
+                    else:
+                        validation_info = pvalidation_step(
+                            validation_rng,
+                            train_state,
+                            validation_batch,
+                            prefix_retention_reference_params,
+                        )
+                validation_infos.append(validation_info)
+            reduced_validation = jax.device_get(
+                jax.tree.map(
+                    jnp.mean,
+                    common_utils.stack_forest(validation_infos),
+                )
+            )
+            validation_loss = float(reduced_validation["validation_loss"])
+            if not np.isfinite(validation_loss):
+                raise FloatingPointError(f"Validation loss is non-finite at step {checkpoint_step}: {validation_loss}")
+            validation_text = ", ".join(f"{name}={value:.4f}" for name, value in reduced_validation.items())
+            pbar.write(f"Validation step {checkpoint_step}: {validation_text}")
+            wandb.log(reduced_validation, step=checkpoint_step)
+
+            improved = validation_loss < best_validation_loss - config.validation_min_delta
+            if improved:
+                best_validation_loss = validation_loss
+                best_validation_step = checkpoint_step
+                validation_checks_without_improvement = 0
+                _checkpoints.save_state(
+                    checkpoint_manager,
+                    train_state,
+                    data_loader,
+                    checkpoint_step,
+                )
+                saved_this_step = True
+            else:
+                validation_checks_without_improvement += 1
+
+            validation_best_path.write_text(
+                json.dumps(
+                    {
+                        "best_step": best_validation_step,
+                        "best_validation_loss": best_validation_loss,
+                        "checks_without_improvement": validation_checks_without_improvement,
+                        "last_validation_step": checkpoint_step,
+                        "last_validation_loss": validation_loss,
+                        "selection_params": "ema" if train_state.ema_params is not None else "online",
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            should_stop_early = (
+                config.early_stopping_patience is not None
+                and validation_checks_without_improvement >= config.early_stopping_patience
+            )
+
+        if validation_enabled:
+            scheduled_save = checkpoint_step % config.save_interval == 0
+            final_save = checkpoint_step == config.num_train_steps
+            if (scheduled_save or final_save) and not saved_this_step:
+                _checkpoints.save_state(
+                    checkpoint_manager,
+                    train_state,
+                    data_loader,
+                    checkpoint_step,
+                )
+        elif (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
+            # Preserve the checkpoint numbering and cadence of every legacy config.
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
+
+        if should_stop_early:
+            logging.info(
+                "Early stopping at step %d after %d validation checks without improvement; best step=%s loss=%.6f",
+                checkpoint_step,
+                validation_checks_without_improvement,
+                best_validation_step,
+                best_validation_loss,
+            )
+            break
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()

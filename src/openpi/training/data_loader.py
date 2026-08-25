@@ -303,6 +303,8 @@ def create_data_loader(
     shuffle: bool = False,
     num_batches: int | None = None,
     skip_norm_stats: bool = False,
+    episode_split: str | None = None,
+    validation_fraction: float = 0.0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training."""
     data_config = config.data.create(config.assets_dirs, config.model)
@@ -314,6 +316,8 @@ def create_data_loader(
     object.__setattr__(data_config, "action_cot_step_thresholds", config.action_cot_step_thresholds)
 
     if data_config.rlds_data_dir is not None:
+        if episode_split is not None:
+            raise ValueError("Episode-disjoint validation is currently supported only for LeRobot datasets.")
         return create_rlds_data_loader(
             data_config,
             action_horizon=config.model.action_horizon,
@@ -334,6 +338,8 @@ def create_data_loader(
         num_workers=config.num_workers,
         seed=config.seed,
         skip_norm_stats=skip_norm_stats,
+        episode_split=episode_split,
+        validation_fraction=validation_fraction,
     )
 
 
@@ -349,6 +355,8 @@ def create_torch_data_loader(
     num_batches: int | None = None,
     num_workers: int = 0,
     seed: int = 0,
+    episode_split: str | None = None,
+    validation_fraction: float = 0.0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
 
@@ -381,7 +389,20 @@ def create_torch_data_loader(
         )
 
     sampler = None
-    if data_config.dataloader_sampler:
+    if episode_split is not None:
+        if data_config.dataloader_sampler:
+            raise ValueError("Episode-disjoint validation cannot be combined with a configured data sampler.")
+        from openpi.training.sampler import FrameSampler
+
+        sampler = FrameSampler(
+            dataset,
+            "episode_split",
+            seed=seed,
+            episode_split=episode_split,
+            validation_fraction=validation_fraction,
+        )
+        shuffle = False
+    elif data_config.dataloader_sampler:
         from openpi.training.sampler import FrameSampler
 
         sampler = FrameSampler(

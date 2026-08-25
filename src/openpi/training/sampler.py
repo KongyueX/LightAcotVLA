@@ -104,6 +104,51 @@ def _target_frame_indices(dataset: Any, target_tasks: Sequence[str]) -> list[int
     return indices
 
 
+def _episode_split_frame_indices(
+    dataset: Any,
+    split: str,
+    validation_fraction: float,
+    seed: int,
+) -> list[int]:
+    """Build deterministic, episode-disjoint train/validation frame indices."""
+
+    if split not in {"train", "validation"}:
+        raise ValueError(f"episode split must be train or validation, got {split!r}")
+    if not 0 < validation_fraction < 0.5:
+        raise ValueError("validation_fraction must lie in (0, 0.5) for episode splitting")
+
+    indices: list[int] = []
+    selected_episodes = 0
+    total_episodes = 0
+    for dataset_index, (inner_dataset, global_offset) in enumerate(_subdatasets(dataset)):
+        num_episodes = len(inner_dataset.episode_data_index["from"])
+        if num_episodes < 2:
+            raise ValueError(
+                "Episode-disjoint validation needs at least two episodes in every dataset; "
+                f"dataset {dataset_index} has {num_episodes}."
+            )
+        validation_count = max(1, int(round(num_episodes * validation_fraction)))
+        validation_count = min(validation_count, num_episodes - 1)
+        shuffled_episodes = list(range(num_episodes))
+        random.Random(seed + dataset_index * 1_000_003).shuffle(shuffled_episodes)
+        validation_episodes = set(shuffled_episodes[:validation_count])
+        chosen_episodes = (
+            validation_episodes if split == "validation" else set(range(num_episodes)).difference(validation_episodes)
+        )
+        for episode_index in sorted(chosen_episodes):
+            start, end = _episode_bounds(inner_dataset, episode_index)
+            indices.extend(range(global_offset + start, global_offset + end))
+        selected_episodes += len(chosen_episodes)
+        total_episodes += num_episodes
+
+    random.Random(seed + (0 if split == "train" else 1)).shuffle(indices)
+    print(
+        f"Episode split {split}: episodes={selected_episodes}/{total_episodes}, "
+        f"frames={len(indices)}, validation_fraction={validation_fraction:.3f}"
+    )
+    return indices
+
+
 def _manifest_frame_weights(
     dataset: Any,
     manifest_path: str | None,
@@ -247,6 +292,8 @@ class FrameSampler(torch.utils.data.Sampler[int]):
         target_fraction: float = 0.0,
         manifest_fraction: float = 0.0,
         num_samples: int | None = None,
+        episode_split: str | None = None,
+        validation_fraction: float = 0.0,
     ) -> None:
         self._generator = torch.Generator()
         self._generator.manual_seed(seed)
@@ -256,6 +303,18 @@ class FrameSampler(torch.utils.data.Sampler[int]):
             valid_intervals = sample_subtask(dataset)
             self._valid_indices = self._sample_frames(valid_intervals, len(dataset), seed)
             self._num_samples = len(self._valid_indices)
+        elif sampler_type == "episode_split":
+            if episode_split is None:
+                raise ValueError("episode_split sampler requires an explicit train/validation split")
+            self._valid_indices = _episode_split_frame_indices(
+                dataset,
+                episode_split,
+                validation_fraction,
+                seed,
+            )
+            self._num_samples = len(self._valid_indices)
+            if self._num_samples <= 0:
+                raise ValueError(f"Episode split {episode_split!r} contains no frames")
         elif sampler_type == "mixture":
             self._valid_indices = []
             self._weights = _mixture_weights(

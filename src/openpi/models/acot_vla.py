@@ -1259,6 +1259,117 @@ class ACOT_VLA(_model.BaseModel):
 
         return total_loss
 
+    def compute_long_chunk_loss(
+        self,
+        reference_model: "ACOT_VLA",
+        rng: at.KeyArrayLike,
+        observation: _model.Observation,
+        actions: _model.Actions,
+        coarse_actions: _model.CoarseActions,
+        *,
+        prefix_horizon: int = 10,
+        prefix_retention_weight: float = 1.0,
+        train: bool = False,
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
+        """Train a longer final-action chunk while retaining a frozen prefix.
+
+        The student and frozen reference use the same preprocessed observation,
+        flow time, and first ``prefix_horizon`` action-noise tokens. The full
+        student chunk receives the ordinary flow objective; prefix retention
+        matches both reference velocity and its implied clean action.
+
+        ``reference_model`` may share the student's frozen prefix/implicit
+        features, but its final expert and fusion parameters must be restored
+        from the anchor checkpoint and kept outside the differentiated state.
+        This method is opt-in and does not change ``compute_loss``.
+        """
+
+        if prefix_horizon <= 0 or prefix_horizon >= self.action_horizon:
+            raise ValueError(
+                "prefix_horizon must be positive and shorter than the student action horizon; "
+                f"got prefix_horizon={prefix_horizon}, action_horizon={self.action_horizon}."
+            )
+        if prefix_retention_weight < 0:
+            raise ValueError("prefix_retention_weight must be non-negative.")
+        if actions.shape[-2:] != (self.action_horizon, self.action_dim):
+            raise ValueError(
+                "Long-chunk actions must match the configured model shape "
+                f"{(self.action_horizon, self.action_dim)}, got {actions.shape[-2:]}."
+            )
+        if coarse_actions.shape[-2:] != (self.coarse_action_horizon, self.action_dim):
+            raise ValueError(
+                "Coarse actions must match the configured model shape "
+                f"{(self.coarse_action_horizon, self.action_dim)}, got {coarse_actions.shape[-2:]}."
+            )
+        if reference_model.action_dim != self.action_dim:
+            raise ValueError("Student and prefix-retention reference must use the same action dimension.")
+        if (
+            reference_model.adopt_explicit_action_reasoner != self.adopt_explicit_action_reasoner
+            or reference_model.adopt_implicit_action_reasoner != self.adopt_implicit_action_reasoner
+        ):
+            raise ValueError("Student and prefix-retention reference must use the same reasoning branches.")
+
+        preprocess_rng, time_rng, coarse_noise_rng, action_noise_rng = jax.random.split(rng, 4)
+        observation = _model.preprocess_observation(preprocess_rng, observation, train=train)
+        batch_shape = actions.shape[:-2]
+        coarse_noise = jax.random.normal(coarse_noise_rng, coarse_actions.shape)
+        action_noise = jax.random.normal(action_noise_rng, actions.shape)
+        time = jax.random.beta(time_rng, 1.5, 1, batch_shape) * 0.999 + 0.001
+        time_expanded = time[..., None, None]
+
+        coarse_x_t = time_expanded * coarse_noise + (1.0 - time_expanded) * coarse_actions
+        coarse_target_velocity = coarse_noise - coarse_actions
+        action_x_t = time_expanded * action_noise + (1.0 - time_expanded) * actions
+        action_target_velocity = action_noise - actions
+
+        # Prefix/IAR parameters are frozen by the H15 config, so one shared
+        # prefix pass is exactly the intended anchor context for both branches.
+        prefix_state = self._compute_prefix_state(observation)
+        implicit_action_reason = self.sample_actions_profile_implicit(prefix_state)["implicit_action_reason"]
+        if self.adopt_explicit_action_reasoner:
+            coarse_velocity = self._coarse_velocity_at_time(prefix_state, coarse_x_t, time)
+            coarse_flow_loss = jnp.mean(jnp.square(coarse_target_velocity - coarse_velocity))
+            explicit_action_reason = coarse_actions
+        else:
+            coarse_flow_loss = jnp.asarray(0.0, dtype=jnp.float32)
+            explicit_action_reason = None
+
+        student_velocity = self._action_velocity_at_time(
+            prefix_state,
+            action_x_t,
+            time,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        final_flow_loss = jnp.mean(jnp.square(action_target_velocity - student_velocity))
+        long_flow_loss = coarse_flow_loss + final_flow_loss
+
+        prefix_x_t = action_x_t[..., :prefix_horizon, :]
+        reference_velocity = reference_model._action_velocity_at_time(
+            prefix_state,
+            prefix_x_t,
+            time,
+            explicit_action_reason,
+            implicit_action_reason,
+        )
+        reference_velocity = jax.lax.stop_gradient(reference_velocity)
+        student_prefix_velocity = student_velocity[..., :prefix_horizon, :]
+        prefix_velocity_mse = jnp.mean(jnp.square(student_prefix_velocity - reference_velocity))
+
+        student_prefix_actions = prefix_x_t - time_expanded * student_prefix_velocity
+        reference_prefix_actions = prefix_x_t - time_expanded * reference_velocity
+        prefix_action_mse = jnp.mean(jnp.square(student_prefix_actions - reference_prefix_actions))
+        prefix_retention_loss = 0.5 * (prefix_velocity_mse + prefix_action_mse)
+        total_loss = long_flow_loss + prefix_retention_weight * prefix_retention_loss
+        return total_loss, {
+            "long_flow_loss": long_flow_loss,
+            "coarse_flow_loss": coarse_flow_loss,
+            "final_flow_loss": final_flow_loss,
+            "prefix_retention_loss": prefix_retention_loss,
+            "prefix_velocity_mse": prefix_velocity_mse,
+            "prefix_action_mse": prefix_action_mse,
+        }
+
     def _one_step_coarse_endpoint(
         self,
         prefix_state: dict[str, Any],
@@ -1410,7 +1521,7 @@ class ACOT_VLA(_model.BaseModel):
             kv_cache=kv_cache,
             adarms_cond=[None, None, adarms_cond],
         )
-        return self.action_out_proj(suffix_out[:, -self.action_horizon :])
+        return self.action_out_proj(suffix_out[:, -action_x_t.shape[1] :])
 
     def _action_interval_velocity(
         self,

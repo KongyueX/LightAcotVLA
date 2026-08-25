@@ -1191,6 +1191,13 @@ class TrainConfig:
     # Specifies which weights should be frozen.
     freeze_filter: tyro.conf.Suppress[Filter] = dataclasses.field(default_factory=nnx.Nothing)
 
+    # Strictly opt-in long-action-chunk training. The anchor loader restores the
+    # frozen pre-extension checkpoint used to supervise the retained prefix;
+    # ordinary configs leave the weight at zero and never construct a teacher.
+    prefix_retention_loss_weight: float = 0.0
+    prefix_retention_horizon: int = 10
+    prefix_retention_teacher_weight_loader: tyro.conf.Suppress[weight_loaders.WeightLoader | None] = None
+
     # Determines the data to be trained on.
     data: DataConfigFactory = dataclasses.field(default_factory=FakeDataConfig)
 
@@ -1218,6 +1225,14 @@ class TrainConfig:
     num_workers: int = 2
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
+
+    # Optional episode-disjoint validation for validation-best checkpointing.
+    # A zero fraction preserves the existing no-validation training loop.
+    validation_fraction: float = 0.0
+    validation_interval: int = 0
+    validation_batches: int = 0
+    validation_min_delta: float = 0.0
+    early_stopping_patience: int | None = None
 
     # How often (in steps) to log training metrics.
     log_interval: int = 100
@@ -1266,6 +1281,34 @@ class TrainConfig:
     def __post_init__(self) -> None:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
+        if self.prefix_retention_loss_weight < 0:
+            raise ValueError("prefix_retention_loss_weight must be non-negative.")
+        if self.prefix_retention_loss_weight > 0:
+            if not isinstance(self.model, acot_vla.ACOTConfig):
+                raise ValueError("Prefix retention is supported only for ACoT-VLA training.")
+            if not 0 < self.prefix_retention_horizon < self.model.action_horizon:
+                raise ValueError(
+                    "prefix_retention_horizon must be positive and shorter than the model action horizon."
+                )
+            if self.prefix_retention_teacher_weight_loader is None:
+                raise ValueError("Prefix retention requires prefix_retention_teacher_weight_loader.")
+        if self.validation_fraction == 0:
+            if (
+                self.validation_interval != 0
+                or self.validation_batches != 0
+                or self.early_stopping_patience is not None
+            ):
+                raise ValueError("Validation interval/batches/early stopping require a positive validation_fraction.")
+        elif not 0 < self.validation_fraction < 0.5:
+            raise ValueError("validation_fraction must be zero or lie in (0, 0.5).")
+        elif self.validation_interval <= 0 or self.validation_batches <= 0:
+            raise ValueError(
+                "Positive validation_fraction requires positive validation_interval and validation_batches."
+            )
+        if self.validation_min_delta < 0:
+            raise ValueError("validation_min_delta must be non-negative.")
+        if self.early_stopping_patience is not None and self.early_stopping_patience <= 0:
+            raise ValueError("early_stopping_patience must be positive when set.")
 
 
 # Use `get_config` if you need to get a config by name in your code.
@@ -1637,6 +1680,87 @@ _CONFIGS = [
         num_workers=48 if not os.getenv("DEBUG_MODE", default=False) == "true" else 1,
         batch_size=16,
         freeze_filter=acot_vla.ACOTConfig().get_freeze_filter(freeze_vision = False, freeze_llm = True, freeze_dual_ae=[False, False]),
+    ),
+    # Phase-1 reliable long-chunk pilot. This is deliberately separate from all
+    # existing H10 configs: it warm-starts from 50999, emits 15 final actions,
+    # freezes vision/base-LLM/coarse/IAR extraction, and anchors the first ten
+    # final-action tokens to the frozen 50999 reference under paired noise/time.
+    TrainConfig(
+        name="acot_libero_long_chunk_h15",
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=15,
+            action_horizon=15,
+            pi05=True,
+            discrete_state_input=False,
+            coarse_action_expert_variant="gemma_300m",
+            action_expert_variant="gemma_300m",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+        ),
+        data=LeRobotACOTLiberoDataConfig(
+            repo_id="your_hf_username/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/root/autodl-tmp/acotvla/assets/"
+                    "acot_libero_action_cot_explicit_implicit_co_fusion"
+                ),
+                asset_id="your_hf_username/libero",
+            ),
+            extra_delta_transform=(False, False),
+            joint_action_shifts=(2, 1),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100,
+            peak_lr=3e-6,
+            decay_steps=5_000,
+            decay_lr=3e-7,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/"
+            "acot_libero_action_cot_explicit_implicit_co_fusion/"
+            "acot_libero_long_run1/50999/params"
+        ),
+        prefix_retention_loss_weight=1.0,
+        prefix_retention_horizon=10,
+        prefix_retention_teacher_weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/"
+            "acot_libero_action_cot_explicit_implicit_co_fusion/"
+            "acot_libero_long_run1/50999/params"
+        ),
+        num_train_steps=5_000,
+        validation_fraction=0.10,
+        validation_interval=250,
+        validation_batches=32,
+        validation_min_delta=1e-4,
+        early_stopping_patience=6,
+        save_interval=500,
+        keep_period=500,
+        num_workers=24,
+        batch_size=16,
+        assets_base_dir="/root/autodl-tmp/acotvla/assets",
+        checkpoint_base_dir="/root/autodl-tmp/acotvla/checkpoints",
+        # Only the final 300M expert, its local projections, and the two
+        # final-token reasoning/fusion paths can update.
+        freeze_filter=nnx.Not(
+            nnx.Any(
+                nnx_utils.PathRegex(r"PaliGemma/llm/.*_2(?:/.*)?"),
+                nnx_utils.PathRegex(r"action_in_proj/.*"),
+                nnx_utils.PathRegex(r"time_mlp_in/.*"),
+                nnx_utils.PathRegex(r"time_mlp_out/.*"),
+                nnx_utils.PathRegex(r"action_time_mlp_in/.*"),
+                nnx_utils.PathRegex(r"action_time_mlp_out/.*"),
+                nnx_utils.PathRegex(r"action_out_proj/.*"),
+                nnx_utils.PathRegex(r"explicit_action_reasoner/.*"),
+                nnx_utils.PathRegex(r"implicit_action_reasoner_interact/.*"),
+                nnx_utils.PathRegex(r"explicit_action_reason_proj/.*"),
+                nnx_utils.PathRegex(r"implicit_action_reason_proj/.*"),
+                nnx_utils.PathRegex(r"action_reasoning_fusion/.*"),
+            )
+        ),
     ),
     # Phase-0 Task8/9 targeted SFT. Evaluation refers to these as Task8/9,
     # while the LeRobot dataset assigns them task indices 6 and 2, so the

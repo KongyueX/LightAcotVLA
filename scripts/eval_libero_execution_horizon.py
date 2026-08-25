@@ -26,7 +26,8 @@ LEGACY_MODES = (
     "v2_value_refined",
 )
 SELECTOR_MODES = ("q_guided_selector", "sft_selector", "ppo_selector")
-MODES = (*LEGACY_MODES, *SELECTOR_MODES)
+FIXED_H_MODE = "fixed_h"
+MODES = (*LEGACY_MODES, FIXED_H_MODE, *SELECTOR_MODES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -304,7 +305,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--original-horizon", type=int, default=5)
-    parser.add_argument("--fixed-horizon", type=int, default=9)
+    parser.add_argument(
+        "--fixed-horizon",
+        type=int,
+        default=9,
+        help=(
+            "Execution length for fixed_h9 and the generic fixed_h mode. "
+            "Use --modes fixed_h for H10/H15/H20 long-chunk comparisons."
+        ),
+    )
     parser.add_argument("--teacher-samples", type=int, choices=(10, 20, 32), default=20)
     parser.add_argument("--v2-min-horizon", type=int, default=3)
     parser.add_argument("--v2-risk-threshold", type=float, default=1.5)
@@ -751,7 +760,7 @@ def _select_horizon(
 ) -> tuple[int, dict[str, Any]]:
     if mode == "original":
         return args.original_horizon, {"raw_horizon": args.original_horizon, "budget_limited": 0.0}
-    if mode == "fixed_h9":
+    if mode in {"fixed_h9", FIXED_H_MODE}:
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
     if mode in SELECTOR_MODES:
         if selector is None:
@@ -1041,6 +1050,12 @@ def _run_episode(
                     "mrr_active_replay_ms": timing["mrr_active_replay_ms"],
                 }
             action_chunk = np.asarray(result["actions"], dtype=np.float32)
+            if mode == FIXED_H_MODE and len(action_chunk) < args.fixed_horizon:
+                raise ValueError(
+                    "Generic fixed_h requested more actions than the served checkpoint returned: "
+                    f"requested H{args.fixed_horizon}, chunk shape={action_chunk.shape}. "
+                    "Serve a checkpoint whose action_horizon is at least the requested execution horizon."
+                )
             horizon, selector_info = _select_horizon(
                 mode,
                 result,
@@ -1872,6 +1887,8 @@ def _prepare_journal(
 def main(args: argparse.Namespace) -> None:
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action_cot_denoising_steps must be positive.")
+    if args.fixed_horizon <= 0:
+        raise ValueError("fixed_horizon must be positive.")
     if args.temporal_prefix_reuse_period < 0:
         raise ValueError("temporal_prefix_reuse_period must be non-negative.")
     if args.mrr_a264 and args.p3t_prefix_transport:
@@ -1931,7 +1948,8 @@ def main(args: argparse.Namespace) -> None:
             "ofp_interval_flow": args.ofp_interval_flow,
             "contextual_fusion": args.contextual_fusion_mode != "compiler",
             "complex_execution_mode": any(
-                mode not in {"original", "fixed_h9"} for mode in args.modes
+                mode not in {"original", "fixed_h9", FIXED_H_MODE}
+                for mode in args.modes
             ),
         }
         active_temporal_conflicts = sorted(
