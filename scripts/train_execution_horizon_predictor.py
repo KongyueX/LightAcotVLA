@@ -62,6 +62,7 @@ class Args:
     minimum_trials_per_candidate: int = 3
     selection_false_long_upper_bound: float = 0.05
     selection_success_noninferiority: float = 0.01
+    selection_max_long_event_probability: float = 0.20
 
     focus_task_ids: tuple[int, ...] = (8, 9)
     focus_task_multiplier: float = 2.0
@@ -272,6 +273,8 @@ def main(args: Args) -> None:
         raise ValueError("train_steps and batch_size must be positive.")
     if args.early_stopping_patience_logs < 0 or args.early_stopping_min_delta < 0:
         raise ValueError("Early-stopping patience and min delta must be non-negative.")
+    if not 0 < args.selection_max_long_event_probability < 1:
+        raise ValueError("selection_max_long_event_probability must lie in (0, 1).")
     if args.split_seed is not None and args.split_seed < 0:
         raise ValueError("split_seed must be non-negative when set.")
     output_dir = pathlib.Path(args.output_dir)
@@ -510,11 +513,25 @@ def main(args: Args) -> None:
                 ],
                 dtype=jnp.int32,
             )
+            long_horizons = jnp.asarray(
+                [
+                    horizon
+                    for horizon in predictor_config.candidate_horizons
+                    if horizon > predictor_config.reference_horizon
+                ],
+                dtype=jnp.int32,
+            )
             reference_index = predictor_config.candidate_horizons.index(predictor_config.reference_horizon)
             eligible = (
                 predictions["success_advantage"] - 1.96 * predictions["success_advantage_std"]
                 >= -args.selection_success_noninferiority
             ) & (predictions["elapsed_advantage"] + 1.96 * predictions["elapsed_advantage_std"] < 0.0)
+            long_event_probability = 1.0 - jnp.take(
+                predictions["survival"],
+                long_horizons - 1,
+                axis=1,
+            )
+            eligible &= long_event_probability <= args.selection_max_long_event_probability
             eligible_index = jnp.max(
                 jnp.where(eligible, jnp.arange(eligible.shape[-1], dtype=jnp.int32) + 1, 0),
                 axis=-1,
@@ -522,6 +539,14 @@ def main(args: Args) -> None:
             selected = eligible_index > 0
             selected_long_index = jnp.maximum(eligible_index - 1, 0)
             metrics["long_coverage"] = jnp.mean(selected)
+            selected_long_event_probability = jnp.take_along_axis(
+                long_event_probability,
+                selected_long_index[:, None],
+                axis=1,
+            )[:, 0]
+            metrics["selected_long_event_probability"] = jnp.sum(
+                jnp.where(selected, selected_long_event_probability, 0.0)
+            ) / jnp.maximum(jnp.sum(selected), 1)
             dangerous = jnp.take(batch["dangerous_long_count"], long_indices, axis=1)
             paired = jnp.take(batch["paired_trial_count"], long_indices, axis=1)
             selected_dangerous = jnp.take_along_axis(dangerous, selected_long_index[:, None], axis=1)[:, 0]

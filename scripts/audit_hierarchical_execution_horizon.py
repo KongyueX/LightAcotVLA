@@ -37,6 +37,7 @@ class Args:
     bootstrap_samples: int = 5_000
     success_noninferiority_margin: float = 0.01
     maximum_short_event_probability: float = 0.20
+    maximum_long_event_probability: float = 0.20
     false_long_upper_bound: float = 0.05
 
 
@@ -193,6 +194,7 @@ def main(args: Args) -> None:
     selector_config = hierarchical.HierarchicalSelectorConfig(
         success_noninferiority_margin=args.success_noninferiority_margin,
         maximum_short_event_probability=args.maximum_short_event_probability,
+        maximum_long_event_probability=args.maximum_long_event_probability,
         require_calibration_for_long_h=True,
     )
     decisions = [
@@ -284,6 +286,7 @@ def main(args: Args) -> None:
         "calibration_json": str(calibration_path),
         "dataset_inputs": list(args.dataset),
         "split_name": args.split_name,
+        "reference_horizon": config.reference_horizon,
         "num_roots": int(indices.size),
         "selected_h_distribution": _distribution(selected_horizons),
         "long_h_coverage": float(np.mean(selected_long)),
@@ -293,15 +296,15 @@ def main(args: Args) -> None:
         ),
         "counterfactual_success_rate": float(np.mean(selected_success)),
         "counterfactual_timeout_rate": float(np.mean(selected_timeout)),
-        "success_advantage_vs_h10_cluster_bootstrap": success_interval,
-        "elapsed_advantage_vs_h10_cluster_bootstrap": elapsed_interval,
-        "calls_advantage_vs_h10_cluster_bootstrap": calls_interval,
+        "success_advantage_vs_reference_cluster_bootstrap": success_interval,
+        "elapsed_advantage_vs_reference_cluster_bootstrap": elapsed_interval,
+        "calls_advantage_vs_reference_cluster_bootstrap": calls_interval,
         "false_long_rate": dangerous_total / max(paired_total, 1.0),
         "false_long_upper_95": false_long_upper_95,
         "false_long_paired_trials": int(paired_total),
-        "rescues_vs_h10": rescues,
-        "regressions_vs_h10": regressions,
-        "paired_seed_outcomes_vs_h10": paired_outcomes,
+        "rescues_vs_reference": rescues,
+        "regressions_vs_reference": regressions,
+        "paired_seed_outcomes_vs_reference": paired_outcomes,
         "calibrated_success_brier": brier,
         "offline_engineering_gate": bool(
             success_interval["ci95"][0] is not None
@@ -314,6 +317,17 @@ def main(args: Args) -> None:
         "fixed_h_baselines": fixed_baselines,
         "config": dataclasses.asdict(args),
     }
+    if config.reference_horizon == 10:
+        result.update(
+            {
+                "success_advantage_vs_h10_cluster_bootstrap": success_interval,
+                "elapsed_advantage_vs_h10_cluster_bootstrap": elapsed_interval,
+                "calls_advantage_vs_h10_cluster_bootstrap": calls_interval,
+                "rescues_vs_h10": rescues,
+                "regressions_vs_h10": regressions,
+                "paired_seed_outcomes_vs_h10": paired_outcomes,
+            }
+        )
     payload = json.dumps(result, indent=2, sort_keys=True)
     if args.output_json is not None:
         output_path = pathlib.Path(args.output_json).resolve()

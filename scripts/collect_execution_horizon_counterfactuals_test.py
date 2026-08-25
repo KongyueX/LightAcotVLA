@@ -61,23 +61,37 @@ def test_prefix_tokens_are_exported_only_for_collected_teacher_root() -> None:
     assert "export_execution_horizon_prefix_tokens" not in client.requests[1]
 
 
+def test_fixed_h5_continuation_is_explicit_and_legacy_h9_is_preserved() -> None:
+    assert (
+        collector._fixed_continuation_horizon(  # noqa: SLF001
+            SimpleNamespace(continuation_policy="fixed_h", fixed_continuation_horizon=5)
+        )
+        == 5
+    )
+    assert (
+        collector._fixed_continuation_horizon(  # noqa: SLF001
+            SimpleNamespace(continuation_policy="fixed_h9")
+        )
+        == 9
+    )
+
+
 def test_root_record_aggregates_counts_elapsed_and_paired_regressions() -> None:
     shape = dataset.DatasetShape(
         prefix_feature_dim=8,
         state_dim=4,
         action_dim=7,
         coarse_horizon=5,
-        action_horizon=20,
-        candidate_horizons=(3, 5, 7, 10, 15, 20),
+        action_horizon=25,
+        candidate_horizons=(5, 10, 15, 20, 25),
         max_trials=3,
         prefix_token_count=6,
     )
     success_patterns = (
         (True, True, True),
         (True, True, True),
-        (True, True, True),
-        (True, True, True),
         (True, False, True),
+        (False, False, True),
         (False, False, True),
     )
     branches = [
@@ -125,13 +139,16 @@ def test_root_record_aggregates_counts_elapsed_and_paired_regressions() -> None:
         reference_horizon=10,
     )
 
-    np.testing.assert_array_equal(record["trial_count"], np.full((6,), 3))
-    np.testing.assert_array_equal(record["success_count"], np.asarray([3, 3, 3, 3, 2, 1]))
-    np.testing.assert_array_equal(record["dangerous_long_count"], np.asarray([0, 0, 0, 0, 1, 2]))
-    np.testing.assert_array_equal(record["paired_trial_count"], np.asarray([0, 0, 0, 0, 3, 3]))
-    assert record["hazard_event_count"].sum() == 0
-    np.testing.assert_array_equal(record["hazard_at_risk_count"][:10], 3)
-    np.testing.assert_array_equal(record["hazard_at_risk_count"][10:], 0)
+    np.testing.assert_array_equal(record["trial_count"], np.full((5,), 3))
+    np.testing.assert_array_equal(record["success_count"], np.asarray([3, 3, 2, 1, 1]))
+    np.testing.assert_array_equal(record["dangerous_long_count"], np.asarray([0, 0, 1, 2, 2]))
+    np.testing.assert_array_equal(record["paired_trial_count"], np.asarray([0, 0, 3, 3, 3]))
+    assert record["hazard_event_count"][14] == 1
+    assert record["hazard_event_count"][19] == 1
+    assert record["hazard_event_count"].sum() == 2
+    np.testing.assert_array_equal(record["hazard_at_risk_count"][:15], 3)
+    np.testing.assert_array_equal(record["hazard_at_risk_count"][15:20], 2)
+    np.testing.assert_array_equal(record["hazard_at_risk_count"][20:], 1)
     np.testing.assert_allclose(record["elapsed_mean"], 1.1)
     np.testing.assert_allclose(record["elapsed_variance"], 0.01, rtol=1e-5)
     assert record["raw_h"] == 10
@@ -145,17 +162,16 @@ def test_root_record_excludes_nonmonotone_short_hazard_trials() -> None:
         state_dim=4,
         action_dim=7,
         coarse_horizon=5,
-        action_horizon=20,
-        candidate_horizons=(3, 5, 7, 10, 15, 20),
+        action_horizon=25,
+        candidate_horizons=(5, 10, 15, 20, 25),
         max_trials=3,
     )
-    # repeat0: T,T,F,F -> event before H7; repeat1: all safe ->
-    # right-censored at H10; repeat2: T,F,T,F -> contradictory and excluded.
+    # repeat0: T,T,F,F -> event before H15; repeat1: all safe ->
+    # right-censored at H20; repeat2: T,F,T,F -> contradictory and excluded.
     success_patterns = (
         (True, True, True),
         (True, True, False),
         (False, True, True),
-        (False, True, False),
         (False, True, False),
         (False, True, False),
     )
@@ -200,8 +216,7 @@ def test_root_record_excludes_nonmonotone_short_hazard_trials() -> None:
         reference_horizon=10,
     )
 
-    assert record["hazard_event_count"][6] == 1
+    assert record["hazard_event_count"][14] == 1
     assert record["hazard_event_count"].sum() == 1
-    np.testing.assert_array_equal(record["hazard_at_risk_count"][:7], 2)
-    np.testing.assert_array_equal(record["hazard_at_risk_count"][7:10], 1)
-    np.testing.assert_array_equal(record["hazard_at_risk_count"][10:], 0)
+    np.testing.assert_array_equal(record["hazard_at_risk_count"][:15], 2)
+    np.testing.assert_array_equal(record["hazard_at_risk_count"][15:], 1)

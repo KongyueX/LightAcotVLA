@@ -74,7 +74,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Store this many already-computed prefix tokens per root; zero preserves the compact legacy input.",
     )
-    parser.add_argument("--continuation-policy", choices=("fixed_h9", "current_student"), default="fixed_h9")
+    parser.add_argument(
+        "--continuation-policy",
+        choices=("fixed_h9", "fixed_h", "current_student"),
+        default="fixed_h9",
+        help=(
+            "Policy used after the one forced candidate-H chunk. fixed_h9 preserves the legacy protocol; "
+            "fixed_h uses --fixed-continuation-horizon."
+        ),
+    )
+    parser.add_argument(
+        "--fixed-continuation-horizon",
+        type=int,
+        default=5,
+        help="Execution horizon after the forced root chunk when --continuation-policy=fixed_h.",
+    )
     parser.add_argument(
         "--branch-repeats",
         type=int,
@@ -102,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hierarchical-calibration-json", default=None)
     parser.add_argument("--long-success-noninferiority", type=float, default=0.01)
     parser.add_argument("--short-max-event-probability", type=float, default=0.20)
+    parser.add_argument("--long-max-event-probability", type=float, default=0.20)
     parser.add_argument("--student-candidates", nargs="+", type=int, default=list(range(1, 11)))
     parser.add_argument("--v2-min-horizon", type=int, default=3)
     parser.add_argument("--v2-risk-threshold", type=float, default=1.5)
@@ -276,6 +291,7 @@ def _student_horizon(
             config=hierarchical.HierarchicalSelectorConfig(
                 success_noninferiority_margin=args.long_success_noninferiority,
                 maximum_short_event_probability=args.short_max_event_probability,
+                maximum_long_event_probability=args.long_max_event_probability,
                 require_calibration_for_long_h=True,
             ),
         )
@@ -333,6 +349,14 @@ def _advance_forced_budget(horizon: int, args: argparse.Namespace, state: v2.Epi
     state.decisions += 1
     state.horizon_sum += horizon
     state.interventions += int(horizon < max(args.student_candidates))
+
+
+def _fixed_continuation_horizon(args: argparse.Namespace) -> int:
+    if args.continuation_policy == "fixed_h9":
+        return 9
+    if args.continuation_policy == "fixed_h":
+        return int(args.fixed_continuation_horizon)
+    raise ValueError("A fixed continuation horizon was requested for a non-fixed continuation policy.")
 
 
 def _frame(observation: dict[str, Any]) -> np.ndarray | None:
@@ -414,7 +438,7 @@ def _run_branch(
         if use_student:
             _, continuation_horizon = _student_horizon(result, args=args, budget_state=budget_state)
         else:
-            continuation_horizon = 9
+            continuation_horizon = _fixed_continuation_horizon(args)
         continuation_horizon = min(continuation_horizon, len(action_plan))
         previous_actions = action_plan
         previous_h = continuation_horizon
@@ -512,22 +536,22 @@ def _root_record(
 
     hazard_event_count = np.zeros((shape.action_horizon,), dtype=np.uint16)
     hazard_at_risk_count = np.zeros((shape.action_horizon,), dtype=np.uint16)
-    short_indices = [index for index, horizon in enumerate(shape.candidate_horizons) if horizon <= reference_horizon]
+    hazard_indices = list(range(num_candidates))
     for repeat_index in range(shape.max_trials):
-        if not np.all(trial_valid[short_indices, repeat_index]):
+        if not np.all(trial_valid[hazard_indices, repeat_index]):
             continue
-        short_success = trial_success[short_indices, repeat_index]
-        failed_positions = np.flatnonzero(~short_success)
-        if failed_positions.size and np.any(short_success[failed_positions[0] + 1 :]):
+        candidate_success = trial_success[hazard_indices, repeat_index]
+        failed_positions = np.flatnonzero(~candidate_success)
+        if failed_positions.size and np.any(candidate_success[failed_positions[0] + 1 :]):
             # Episode success is a noisy, non-local outcome. A pattern such as
-            # H3=fail,H5=success cannot identify a monotone re-observation
+            # H5=fail,H10=success cannot identify a monotone re-observation
             # boundary, so exclude it from survival supervision rather than
             # injecting a contradictory event time.
             continue
         event_step = (
-            shape.candidate_horizons[short_indices[int(failed_positions[0])]] - 1 if failed_positions.size else None
+            shape.candidate_horizons[hazard_indices[int(failed_positions[0])]] - 1 if failed_positions.size else None
         )
-        observed_last_step = reference_horizon - 1 if event_step is None else event_step
+        observed_last_step = shape.candidate_horizons[-1] - 1 if event_step is None else event_step
         observed_last_step = min(observed_last_step, shape.action_horizon - 1)
         hazard_at_risk_count[: observed_last_step + 1] += 1
         if event_step is not None and event_step < shape.action_horizon:
@@ -623,6 +647,12 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("candidate_horizons must be positive and no larger than model_action_horizon.")
     if args.reference_horizon not in candidate_horizons:
         raise ValueError("reference_horizon must be included in candidate_horizons.")
+    if args.continuation_policy == "fixed_h" and not (
+        1 <= args.fixed_continuation_horizon <= args.model_action_horizon
+    ):
+        raise ValueError("fixed_continuation_horizon must lie within the model action horizon.")
+    if not 0 < args.short_max_event_probability < 1 or not 0 < args.long_max_event_probability < 1:
+        raise ValueError("short/long max event probabilities must lie in (0, 1).")
     repeated_horizons = sorted(
         set(candidate_horizons if args.repeat_branch_horizons is None else args.repeat_branch_horizons)
     )
@@ -681,6 +711,9 @@ def main(args: argparse.Namespace) -> None:
         "task_suite": args.task_suite_name,
         "teacher_samples": args.teacher_samples,
         "continuation_policy": args.continuation_policy,
+        "fixed_continuation_horizon": (
+            _fixed_continuation_horizon(args) if args.continuation_policy != "current_student" else None
+        ),
         "student_mode": args.student_mode,
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "source_iteration": args.source_iteration,

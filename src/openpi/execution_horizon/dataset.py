@@ -125,8 +125,8 @@ def _fixed_specs(shape: DatasetShape) -> dict[str, tuple[np.dtype, tuple[str, ..
         "trial_remaining_calls": (np.dtype(np.uint16), ("num_candidates", "max_trials")),
         "trial_elapsed": (np.dtype(np.float32), ("num_candidates", "max_trials")),
         "trial_valid": (np.dtype(np.bool_), ("num_candidates", "max_trials")),
-        # H10-success/long-H-failure pair counts. Arrays use candidate width so
-        # arbitrary long-H sets remain representable.
+        # Reference-success/long-H-failure pair counts. Arrays use candidate
+        # width so arbitrary reference and long-H sets remain representable.
         "dangerous_long_count": (np.dtype(np.uint16), ("num_candidates",)),
         "paired_trial_count": (np.dtype(np.uint16), ("num_candidates",)),
         "task_id": (np.dtype(np.uint8), ()),

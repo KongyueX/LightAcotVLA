@@ -3,8 +3,8 @@
 This module is intentionally independent from ``action_cot_step_head``. The
 latter predicts flow-denoising iterations, while this module predicts how many
 environment actions should be executed before the next policy call. The legacy
-H1-H10 local MLP remains checkpoint-compatible; the opt-in transformer path is
-the hierarchical H3/H5/H7/H10/H15/H20 predictor.
+H1-H10 local MLP remains checkpoint-compatible; the opt-in transformer path
+supports an arbitrary ordered candidate set within the generated action chunk.
 """
 
 from __future__ import annotations

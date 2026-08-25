@@ -1,4 +1,4 @@
-"""Calibrated hierarchical selection for H3/H5/H7/H10/H15/H20."""
+"""Calibrated hierarchical selection over parameterized execution horizons."""
 
 from __future__ import annotations
 
@@ -94,7 +94,16 @@ class HierarchicalCalibration:
 class HierarchicalSelectorConfig:
     success_noninferiority_margin: float = 0.01
     maximum_short_event_probability: float = 0.20
+    maximum_long_event_probability: float = 0.20
     require_calibration_for_long_h: bool = True
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.success_noninferiority_margin < 1:
+            raise ValueError("success_noninferiority_margin must lie in [0, 1).")
+        for name in ("maximum_short_event_probability", "maximum_long_event_probability"):
+            value = float(getattr(self, name))
+            if not 0 < value < 1:
+                raise ValueError(f"{name} must lie in (0, 1).")
 
 
 DEFAULT_SELECTOR_CONFIG = HierarchicalSelectorConfig()
@@ -107,6 +116,7 @@ class HierarchicalDecision:
     success_lcb: tuple[float, ...]
     elapsed_ucb: tuple[float, ...]
     long_eligible: tuple[bool, ...]
+    long_event_probability: tuple[float, ...]
     short_event_probability: tuple[float, ...]
     ood_probability: float
 
@@ -149,6 +159,20 @@ def select_horizon(
     long_horizons = tuple(value for value in candidates if value > reference_horizon)
     short_horizons = tuple(value for value in candidates if value <= reference_horizon)
 
+    hazard_logits = np.asarray(predictions["hazard_logits"], dtype=np.float64).reshape((-1,))
+    temperature = calibration.hazard_temperature if calibration is not None else 1.0
+    hazard = _sigmoid(hazard_logits / temperature)
+    survival = np.cumprod(1.0 - hazard)
+
+    def event_probability(horizons: tuple[int, ...]) -> np.ndarray:
+        return np.asarray(
+            [1.0 - survival[min(horizon, survival.size) - 1] for horizon in horizons],
+            dtype=np.float64,
+        )
+
+    long_event_probability = event_probability(long_horizons)
+    short_event_probability = event_probability(short_horizons)
+
     if calibration is not None and calibration.has_ood_calibration:
         feature = np.asarray(predictions["temporal_feature"], dtype=np.float64).reshape((-1,))
         center = np.asarray(calibration.ood_feature_center, dtype=np.float64)
@@ -184,6 +208,7 @@ def select_horizon(
         success_lcb = success_mean - success_quantile * np.maximum(success_std, 1e-6)
         elapsed_ucb = elapsed_mean + elapsed_quantile * np.maximum(elapsed_std, 1e-6)
         eligible = (success_lcb >= -config.success_noninferiority_margin) & (elapsed_ucb < 0.0)
+        eligible &= long_event_probability <= config.maximum_long_event_probability
         eligible &= ood_probability < ood_threshold
         if np.any(eligible):
             selected = long_horizons[int(np.flatnonzero(eligible)[-1])]
@@ -193,18 +218,11 @@ def select_horizon(
                 success_lcb=tuple(float(value) for value in success_lcb),
                 elapsed_ucb=tuple(float(value) for value in elapsed_ucb),
                 long_eligible=tuple(bool(value) for value in eligible),
-                short_event_probability=(),
+                long_event_probability=tuple(float(value) for value in long_event_probability),
+                short_event_probability=tuple(float(value) for value in short_event_probability),
                 ood_probability=ood_probability,
             )
 
-    hazard_logits = np.asarray(predictions["hazard_logits"], dtype=np.float64).reshape((-1,))
-    temperature = calibration.hazard_temperature if calibration is not None else 1.0
-    hazard = _sigmoid(hazard_logits / temperature)
-    survival = np.cumprod(1.0 - hazard)
-    short_event_probability = np.asarray(
-        [1.0 - survival[min(horizon, survival.size) - 1] for horizon in short_horizons],
-        dtype=np.float64,
-    )
     short_eligible = short_event_probability <= config.maximum_short_event_probability
     if np.any(short_eligible):
         selected = short_horizons[int(np.flatnonzero(short_eligible)[-1])]
@@ -220,6 +238,7 @@ def select_horizon(
         success_lcb=tuple(float(value) for value in success_lcb),
         elapsed_ucb=tuple(float(value) for value in elapsed_ucb),
         long_eligible=tuple(bool(value) for value in eligible),
+        long_event_probability=tuple(float(value) for value in long_event_probability),
         short_event_probability=tuple(float(value) for value in short_event_probability),
         ood_probability=ood_probability,
     )

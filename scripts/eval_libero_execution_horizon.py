@@ -314,7 +314,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=9,
         help=(
             "Execution length for fixed_h9 and the generic fixed_h mode. "
-            "Use --modes fixed_h for H10/H15/H20 long-chunk comparisons."
+            "Use --modes fixed_h for H10/H15/H20/H25 long-chunk comparisons."
         ),
     )
     parser.add_argument("--model-action-horizon", type=int, default=10)
@@ -335,6 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hierarchical-calibration-json", default=None)
     parser.add_argument("--long-success-noninferiority", type=float, default=0.01)
     parser.add_argument("--short-max-event-probability", type=float, default=0.20)
+    parser.add_argument("--long-max-event-probability", type=float, default=0.20)
     parser.add_argument("--q-guided-selector-params", default=None)
     parser.add_argument("--ppo-selector-params", default=None)
     parser.add_argument(
@@ -782,6 +783,7 @@ def _select_horizon(
             config=hierarchical.HierarchicalSelectorConfig(
                 success_noninferiority_margin=args.long_success_noninferiority,
                 maximum_short_event_probability=args.short_max_event_probability,
+                maximum_long_event_probability=args.long_max_event_probability,
                 require_calibration_for_long_h=True,
             ),
         )
@@ -1945,6 +1947,8 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("long_success_noninferiority must lie in [0, 1).")
     if not 0 < args.short_max_event_probability < 1:
         raise ValueError("short_max_event_probability must lie in (0, 1).")
+    if not 0 < args.long_max_event_probability < 1:
+        raise ValueError("long_max_event_probability must lie in (0, 1).")
     if HIERARCHICAL_MODE in args.modes:
         if args.hierarchical_calibration_json is None:
             raise ValueError(

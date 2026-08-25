@@ -16,12 +16,12 @@ def _transformer_config() -> predictor_lib.ExecutionHorizonPredictorConfig:
         action_dim=7,
         physical_action_dim=7,
         coarse_horizon=15,
-        action_horizon=20,
+        action_horizon=25,
         hidden_dim=32,
         temporal_layers=2,
         temporal_backbone="transformer",
         num_heads=4,
-        candidate_horizons=(3, 5, 7, 10, 15, 20),
+        candidate_horizons=(5, 10, 15, 20, 25),
         reference_horizon=10,
         coarse_stride=2,
         final_stride=1,
@@ -36,8 +36,8 @@ def _inputs(batch_size: int = 2) -> dict[str, jax.Array]:
         "prefix_mask": jnp.asarray([[True] * 10 + [False] * 2] * batch_size),
         "state": jnp.zeros((batch_size, 4), dtype=jnp.float32),
         "coarse_actions": jnp.zeros((batch_size, 15, 7), dtype=jnp.float32),
-        "final_actions": jnp.zeros((batch_size, 20, 7), dtype=jnp.float32),
-        "previous_actions": jnp.zeros((batch_size, 20, 7), dtype=jnp.float32),
+        "final_actions": jnp.zeros((batch_size, 25, 7), dtype=jnp.float32),
+        "previous_actions": jnp.zeros((batch_size, 25, 7), dtype=jnp.float32),
         "previous_h": jnp.full((batch_size,), 10, dtype=jnp.int32),
         "budget_balance": jnp.full((batch_size,), 0.5, dtype=jnp.float32),
         "episode_progress": jnp.full((batch_size,), 0.25, dtype=jnp.float32),
@@ -55,13 +55,13 @@ def test_transformer_outputs_hierarchical_shapes_and_monotonic_survival():
     module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
     outputs = module(**_inputs())
 
-    assert outputs["hazard"].shape == (2, 20)
-    assert outputs["survival"].shape == (2, 20)
-    assert outputs["success_advantage"].shape == (2, 2)
-    assert outputs["elapsed_advantage"].shape == (2, 2)
-    assert outputs["calls_advantage"].shape == (2, 2)
-    assert outputs["raw_h_logits"].shape == (2, 6)
-    assert outputs["candidate_horizons"].shape == (2, 6)
+    assert outputs["hazard"].shape == (2, 25)
+    assert outputs["survival"].shape == (2, 25)
+    assert outputs["success_advantage"].shape == (2, 3)
+    assert outputs["elapsed_advantage"].shape == (2, 3)
+    assert outputs["calls_advantage"].shape == (2, 3)
+    assert outputs["raw_h_logits"].shape == (2, 5)
+    assert outputs["candidate_horizons"].shape == (2, 5)
     np.testing.assert_array_equal(np.asarray(outputs["reference_horizon"]), 10)
     assert np.all(np.diff(np.asarray(outputs["survival"]), axis=-1) <= 1e-6)
 
@@ -72,13 +72,13 @@ def test_transformer_coarse_alignment_uses_physical_stride():
     coarse = jnp.arange(15, dtype=jnp.float32)[None, :, None]
     aligned = np.asarray(module._align_coarse(coarse))[0, :, 0]  # noqa: SLF001
 
-    np.testing.assert_allclose(aligned, np.arange(20, dtype=np.float32) / 2.0)
+    np.testing.assert_allclose(aligned, np.arange(25, dtype=np.float32) / 2.0)
 
 
 def test_transformer_masks_previous_disagreement_without_overlap():
     config = _transformer_config()
     module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
-    final_actions = jnp.ones((1, 20, 7), dtype=jnp.float32)
+    final_actions = jnp.ones((1, 25, 7), dtype=jnp.float32)
     aligned_previous, overlap_valid, consistency = module._previous_overlap(  # noqa: SLF001
         final_actions,
         jnp.zeros_like(final_actions),
@@ -102,32 +102,32 @@ def test_transformer_count_survival_and_advantage_loss_is_finite():
     config = _transformer_config()
     module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
     predictions = module(**_inputs())
-    success_count = jnp.asarray([[3, 3, 3, 3, 2, 1], [2, 2, 2, 2, 2, 2]], dtype=jnp.float32)
-    trial_count = jnp.full((2, 6), 3, dtype=jnp.float32)
+    success_count = jnp.asarray([[3, 3, 2, 1, 1], [2, 2, 2, 2, 2]], dtype=jnp.float32)
+    trial_count = jnp.full((2, 5), 3, dtype=jnp.float32)
     labels = {
         "branch_success": success_count > 0,
         "branch_timeout": success_count == 0,
         "success_count": success_count,
         "timeout_count": trial_count - success_count,
         "trial_count": trial_count,
-        "remaining_calls": jnp.ones((2, 6), dtype=jnp.float32),
-        "remaining_steps": jnp.ones((2, 6), dtype=jnp.float32),
-        "remaining_calls_mean": jnp.ones((2, 6), dtype=jnp.float32),
-        "remaining_calls_variance": jnp.full((2, 6), 0.25, dtype=jnp.float32),
-        "remaining_steps_mean": jnp.ones((2, 6), dtype=jnp.float32),
-        "elapsed_mean": jnp.asarray([[10, 9, 8, 7, 6, 5], [10, 9, 8, 7, 6, 5]], dtype=jnp.float32),
-        "elapsed_variance": jnp.full((2, 6), 0.25, dtype=jnp.float32),
-        "branch_valid": jnp.ones((2, 6), dtype=jnp.bool_),
-        "final_risk": jnp.zeros((2, 20), dtype=jnp.float32),
-        "action_cot_risk": jnp.zeros((2, 20), dtype=jnp.float32),
-        "fused_risk": jnp.zeros((2, 20), dtype=jnp.float32),
-        "event_mask": jnp.zeros((2, 20), dtype=jnp.bool_),
-        "risk_valid": jnp.ones((2, 20), dtype=jnp.bool_),
-        "hazard_event_count": jnp.zeros((2, 20), dtype=jnp.float32),
-        "hazard_at_risk_count": jnp.full((2, 20), 3, dtype=jnp.float32),
+        "remaining_calls": jnp.ones((2, 5), dtype=jnp.float32),
+        "remaining_steps": jnp.ones((2, 5), dtype=jnp.float32),
+        "remaining_calls_mean": jnp.ones((2, 5), dtype=jnp.float32),
+        "remaining_calls_variance": jnp.full((2, 5), 0.25, dtype=jnp.float32),
+        "remaining_steps_mean": jnp.ones((2, 5), dtype=jnp.float32),
+        "elapsed_mean": jnp.asarray([[10, 9, 8, 7, 6], [10, 9, 8, 7, 6]], dtype=jnp.float32),
+        "elapsed_variance": jnp.full((2, 5), 0.25, dtype=jnp.float32),
+        "branch_valid": jnp.ones((2, 5), dtype=jnp.bool_),
+        "final_risk": jnp.zeros((2, 25), dtype=jnp.float32),
+        "action_cot_risk": jnp.zeros((2, 25), dtype=jnp.float32),
+        "fused_risk": jnp.zeros((2, 25), dtype=jnp.float32),
+        "event_mask": jnp.zeros((2, 25), dtype=jnp.bool_),
+        "risk_valid": jnp.ones((2, 25), dtype=jnp.bool_),
+        "hazard_event_count": jnp.zeros((2, 25), dtype=jnp.float32),
+        "hazard_at_risk_count": jnp.full((2, 25), 3, dtype=jnp.float32),
         "raw_h": jnp.asarray([10, 15], dtype=jnp.int32),
-        "dangerous_long_count": jnp.asarray([[1, 2], [0, 0]], dtype=jnp.float32),
-        "paired_trial_count": jnp.full((2, 2), 3, dtype=jnp.float32),
+        "dangerous_long_count": jnp.asarray([[1, 2, 2], [0, 0, 0]], dtype=jnp.float32),
+        "paired_trial_count": jnp.full((2, 3), 3, dtype=jnp.float32),
     }
     weights = predictor_lib.ExecutionHorizonLossWeights(
         success=1.0,

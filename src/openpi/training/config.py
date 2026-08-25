@@ -1854,6 +1854,85 @@ _CONFIGS = [
             )
         ),
     ),
+    # Phase-3 long-chunk extension. Start from the validation-best H20 model
+    # and anchor its complete 20-action prefix while learning five additional
+    # final actions. This is the maximum-length model used by the opt-in
+    # {5,10,15,20,25} execution-horizon predictor.
+    TrainConfig(
+        name="acot_libero_long_chunk_h25",
+        model=acot_vla.ACOTConfig(
+            coarse_action_horizon=15,
+            action_horizon=25,
+            pi05=True,
+            discrete_state_input=False,
+            coarse_action_expert_variant="gemma_300m",
+            action_expert_variant="gemma_300m",
+            adopt_explicit_action_reasoner=True,
+            adopt_implicit_action_reasoner=True,
+            downsample_based_implicit_extractor=True,
+        ),
+        data=LeRobotACOTLiberoDataConfig(
+            repo_id="your_hf_username/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            assets=AssetsConfig(
+                assets_dir=(
+                    "/root/autodl-tmp/acotvla/assets/"
+                    "acot_libero_action_cot_explicit_implicit_co_fusion"
+                ),
+                asset_id="your_hf_username/libero",
+            ),
+            extra_delta_transform=(False, False),
+            joint_action_shifts=(2, 1),
+        ),
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=100,
+            peak_lr=1e-5,
+            decay_steps=5_000,
+            decay_lr=1e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/acot_libero_long_chunk_h20/"
+            "h20_from_h15_lr1e5_seed42_split42_6e35bad/4000/params"
+        ),
+        prefix_retention_loss_weight=1.0,
+        prefix_retention_horizon=20,
+        prefix_retention_teacher_weight_loader=weight_loaders.CheckpointWeightLoader(
+            "/root/autodl-tmp/acotvla/checkpoints/acot_libero_long_chunk_h20/"
+            "h20_from_h15_lr1e5_seed42_split42_6e35bad/4000/params"
+        ),
+        num_train_steps=5_000,
+        validation_fraction=0.10,
+        validation_split_seed=42,
+        validation_interval=250,
+        validation_batches=32,
+        validation_min_delta=1e-4,
+        early_stopping_patience=6,
+        save_interval=5_000,
+        keep_period=None,
+        max_checkpoints_to_keep=2,
+        num_workers=24,
+        batch_size=16,
+        assets_base_dir="/root/autodl-tmp/acotvla/assets",
+        checkpoint_base_dir="/root/autodl-tmp/acotvla/checkpoints",
+        freeze_filter=nnx.Not(
+            nnx.Any(
+                nnx_utils.PathRegex(r"PaliGemma/llm/.*_2(?:/.*)?"),
+                nnx_utils.PathRegex(r"action_in_proj/.*"),
+                nnx_utils.PathRegex(r"time_mlp_in/.*"),
+                nnx_utils.PathRegex(r"time_mlp_out/.*"),
+                nnx_utils.PathRegex(r"action_time_mlp_in/.*"),
+                nnx_utils.PathRegex(r"action_time_mlp_out/.*"),
+                nnx_utils.PathRegex(r"action_out_proj/.*"),
+                nnx_utils.PathRegex(r"explicit_action_reasoner/.*"),
+                nnx_utils.PathRegex(r"implicit_action_reasoner_interact/.*"),
+                nnx_utils.PathRegex(r"explicit_action_reason_proj/.*"),
+                nnx_utils.PathRegex(r"implicit_action_reason_proj/.*"),
+                nnx_utils.PathRegex(r"action_reasoning_fusion/.*"),
+            )
+        ),
+    ),
     # Phase-0 Task8/9 targeted SFT. Evaluation refers to these as Task8/9,
     # while the LeRobot dataset assigns them task indices 6 and 2, so the
     # sampler intentionally matches task text instead of numeric task IDs.
