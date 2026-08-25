@@ -65,8 +65,9 @@ flow time, and first ten noise tokens.
 Serve the selected H15 checkpoint:
 
 ```bash
-python scripts/serve_policy.py policy:checkpoint \
+python scripts/serve_policy.py \
   --env LIBERO --port 8000 \
+  policy:checkpoint \
   --policy.config acot_libero_long_chunk_h15 \
   --policy.dir /root/autodl-tmp/acotvla/checkpoints/acot_libero_long_chunk_h15/EXP/BEST_STEP
 ```
