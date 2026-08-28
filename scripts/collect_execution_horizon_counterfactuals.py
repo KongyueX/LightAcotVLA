@@ -359,6 +359,15 @@ def _fixed_continuation_horizon(args: argparse.Namespace) -> int:
     raise ValueError("A fixed continuation horizon was requested for a non-fixed continuation policy.")
 
 
+def _nonstudent_source_horizon(args: argparse.Namespace) -> int:
+    """Choose the rollout horizon used to reach later collection roots."""
+    if args.continuation_policy == "fixed_h9":
+        return 9
+    if args.continuation_policy == "fixed_h":
+        return int(args.reference_horizon)
+    raise ValueError("A non-student source horizon was requested for current_student continuation.")
+
+
 def _frame(observation: dict[str, Any]) -> np.ndarray | None:
     image = observation.get("agentview_image")
     return np.asarray(image)[::-1, ::-1] if image is not None else None
@@ -921,7 +930,7 @@ def main(args: argparse.Namespace) -> None:
                         if use_student:
                             _, rollout_horizon = _student_horizon(result, args=args, budget_state=budget_state)
                         else:
-                            rollout_horizon = 9
+                            rollout_horizon = _nonstudent_source_horizon(args)
                         rollout_horizon = min(rollout_horizon, len(primary_actions))
                         for action in primary_actions[:rollout_horizon]:
                             if step >= episode_step_limit:

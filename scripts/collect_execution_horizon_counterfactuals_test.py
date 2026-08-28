@@ -76,6 +76,21 @@ def test_fixed_h5_continuation_is_explicit_and_legacy_h9_is_preserved() -> None:
     )
 
 
+def test_fixed_h_source_rollout_uses_reference_and_legacy_h9_is_preserved() -> None:
+    assert (
+        collector._nonstudent_source_horizon(  # noqa: SLF001
+            SimpleNamespace(continuation_policy="fixed_h", reference_horizon=10)
+        )
+        == 10
+    )
+    assert (
+        collector._nonstudent_source_horizon(  # noqa: SLF001
+            SimpleNamespace(continuation_policy="fixed_h9", reference_horizon=10)
+        )
+        == 9
+    )
+
+
 def test_root_record_aggregates_counts_elapsed_and_paired_regressions() -> None:
     shape = dataset.DatasetShape(
         prefix_feature_dim=8,

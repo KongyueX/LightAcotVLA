@@ -53,7 +53,8 @@ python scripts/collect_execution_horizon_counterfactuals.py \
   --branch-repeats 3 \
   --repeat-branch-horizons 5 10 15 20 25 \
   --prefix-token-count 1024 \
-  --root-stride-calls 1 --max-roots-per-episode 1 \
+  --root-stride-calls 1 --root-call-offset-cycle 20 \
+  --max-roots-per-episode 1 \
   --num-trials-per-task 20 --max-tasks 10 --seed 7
 ```
 
@@ -67,6 +68,9 @@ remains count-aware through H25 instead of treating a single repeat as certain.
 Non-monotone outcome patterns are excluded from survival timing labels instead
 of being forced into a contradictory event step. Only the first chunk differs
 between branches; every continuation uses Fixed H5 from the same H25 model.
+For the new `fixed_h` protocol, collection episodes use the reference H10 to
+reach staggered roots; the legacy `fixed_h9` protocol continues to use H9.
+The 20-call offset cycle spreads roots across early and later episode phases.
 Splitting is episode-disjoint, so no H or continuation seed from an episode can
 cross partitions. Branches are
 interleaved by repeat and deterministically shuffled across H to avoid a
