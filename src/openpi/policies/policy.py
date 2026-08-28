@@ -2821,8 +2821,13 @@ class Policy(BasePolicy):
                     "mrr_block_logits": block_logits,
                 }
             )
-        if "execution_horizon_prefix_feature" in prefix_state:
-            result["execution_horizon_prefix_feature"] = prefix_state["execution_horizon_prefix_feature"]
+        for name in (
+            "execution_horizon_prefix_feature",
+            "execution_horizon_prefix_tokens",
+            "execution_horizon_prefix_mask",
+        ):
+            if name in prefix_state:
+                result[name] = prefix_state[name]
         if export_acot_cache:
             implicit_action_reason = implicit_outputs.get("implicit_action_reason")
             if implicit_action_reason is None:
