@@ -39,3 +39,27 @@ def test_transformer_split_is_episode_disjoint_and_independent_of_training_seed(
     assert partition_groups[0].isdisjoint(partition_groups[1])
     assert partition_groups[0].isdisjoint(partition_groups[2])
     assert partition_groups[1].isdisjoint(partition_groups[2])
+
+
+def test_transformer_split_can_stratify_every_partition_by_task(tmp_path) -> None:
+    arrays = _arrays()
+    args = trainer.Args(
+        dataset=(str(tmp_path),),
+        output_dir=str(tmp_path / "out"),
+        temporal_backbone="transformer",
+        validation_fraction=0.25,
+        calibration_fraction=0.25,
+        split_seed=42,
+        stratify_splits_by_task=True,
+    )
+
+    partitions = trainer._split_indices(arrays, args)  # noqa: SLF001
+
+    for indices in partitions:
+        assert set(arrays["task_id"][indices].tolist()) == {0, 1, 2}
+    group_ids = arrays["task_id"].astype(np.uint64) * np.uint64(1_000_000_000)
+    group_ids += arrays["episode_id"].astype(np.uint64)
+    partition_groups = [set(group_ids[indices].tolist()) for indices in partitions]
+    assert partition_groups[0].isdisjoint(partition_groups[1])
+    assert partition_groups[0].isdisjoint(partition_groups[2])
+    assert partition_groups[1].isdisjoint(partition_groups[2])

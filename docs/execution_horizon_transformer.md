@@ -84,6 +84,9 @@ for long H.
 Use the same explicit `split_seed=42` for every fit and vary only the training
 seed. The 70/15/15 split is train/validation/calibration; validation selects the
 checkpoint and calibration is never used by gradient updates or early stopping.
+Use task-stratified splitting so every LIBERO task contributes to every
+partition; this avoids a small pilot split mistaking task mix for a horizon
+advantage.
 The Transformer path refuses schema-v1 labels, fewer than three trials for any
 root/H, missing elapsed labels, missing prefix tokens, or an implicit split
 seed.
@@ -94,7 +97,7 @@ Run the command below for seeds 7, 42, and 101 with distinct output directories:
 python scripts/train_execution_horizon_predictor.py \
   --dataset /root/autodl-tmp/acotvla/execution_horizon_h25/full \
   --output-dir /root/autodl-tmp/acotvla/execution_horizon_h25/predictor_s7 \
-  --seed 7 --split-seed 42 --bootstrap-episode-groups \
+  --seed 7 --split-seed 42 --stratify-splits-by-task --bootstrap-episode-groups \
   --temporal-backbone transformer --temporal-layers 2 \
   --hidden-dim 256 --num-heads 4 --feed-forward-multiplier 4 \
   --reference-horizon 10 --coarse-stride 2 --final-stride 1 \

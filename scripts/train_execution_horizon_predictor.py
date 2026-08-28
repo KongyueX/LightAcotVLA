@@ -36,6 +36,7 @@ class Args:
     resume_params: str | None = None
     seed: int = 7
     split_seed: int | None = None
+    stratify_splits_by_task: bool = False
     bootstrap_episode_groups: bool = False
     train_steps: int = 20_000
     batch_size: int = 256
@@ -186,15 +187,44 @@ def _split_indices(arrays: dict[str, np.ndarray], args: Args) -> tuple[np.ndarra
         validation_count = max(1, round(len(indices) * args.validation_fraction))
         validation_count = min(validation_count, len(indices) - 1)
         return indices[validation_count:], indices[:validation_count], np.empty((0,), dtype=np.int64)
-    rng.shuffle(unique_groups)
-    validation_count = max(1, round(len(unique_groups) * args.validation_fraction))
-    calibration_count = (
-        max(1, round(len(unique_groups) * args.calibration_fraction)) if args.calibration_fraction > 0 else 0
-    )
-    if validation_count + calibration_count >= len(unique_groups):
-        raise ValueError("Episode-level split leaves no training groups.")
-    validation_groups = unique_groups[:validation_count]
-    calibration_groups = unique_groups[validation_count : validation_count + calibration_count]
+    if args.stratify_splits_by_task:
+        task_ids = np.asarray(arrays["task_id"], dtype=np.int64)
+        group_tasks = np.empty(unique_groups.shape, dtype=np.int64)
+        for index, group in enumerate(unique_groups):
+            tasks = np.unique(task_ids[groups == group])
+            if tasks.size != 1:
+                raise ValueError(f"Episode group {int(group)} spans multiple tasks: {tasks.tolist()}.")
+            group_tasks[index] = tasks[0]
+        validation_parts: list[np.ndarray] = []
+        calibration_parts: list[np.ndarray] = []
+        for task_id in np.unique(group_tasks):
+            task_groups = unique_groups[group_tasks == task_id].copy()
+            rng.shuffle(task_groups)
+            validation_count = max(1, round(len(task_groups) * args.validation_fraction))
+            calibration_count = (
+                max(1, round(len(task_groups) * args.calibration_fraction)) if args.calibration_fraction > 0 else 0
+            )
+            if validation_count + calibration_count >= len(task_groups):
+                raise ValueError(
+                    "Task-stratified split leaves no training groups for "
+                    f"task {int(task_id)} with {len(task_groups)} groups."
+                )
+            validation_parts.append(task_groups[:validation_count])
+            calibration_parts.append(task_groups[validation_count : validation_count + calibration_count])
+        validation_groups = np.concatenate(validation_parts)
+        calibration_groups = (
+            np.concatenate(calibration_parts) if args.calibration_fraction > 0 else np.empty((0,), dtype=np.uint64)
+        )
+    else:
+        rng.shuffle(unique_groups)
+        validation_count = max(1, round(len(unique_groups) * args.validation_fraction))
+        calibration_count = (
+            max(1, round(len(unique_groups) * args.calibration_fraction)) if args.calibration_fraction > 0 else 0
+        )
+        if validation_count + calibration_count >= len(unique_groups):
+            raise ValueError("Episode-level split leaves no training groups.")
+        validation_groups = unique_groups[:validation_count]
+        calibration_groups = unique_groups[validation_count : validation_count + calibration_count]
     validation_mask = np.isin(groups, validation_groups)
     calibration_mask = np.isin(groups, calibration_groups)
     train_indices = np.flatnonzero(~validation_mask & ~calibration_mask)
@@ -408,6 +438,7 @@ def main(args: Args) -> None:
     split_manifest = {
         "split_seed": args.seed if args.split_seed is None else args.split_seed,
         "training_seed": args.seed,
+        "stratify_splits_by_task": args.stratify_splits_by_task,
         "bootstrap_episode_groups": args.bootstrap_episode_groups,
         "bootstrap_train_group_counts": bootstrap_group_counts,
         "train_group_ids": sorted({int(value) for value in group_ids[train_indices]}),
@@ -731,6 +762,7 @@ def main(args: Args) -> None:
         "batch_size": args.batch_size,
         "training_seed": args.seed,
         "split_seed": args.seed if args.split_seed is None else args.split_seed,
+        "stratify_splits_by_task": args.stratify_splits_by_task,
         "bootstrap_episode_groups": args.bootstrap_episode_groups,
         "train_sampling_support_records": train_support_size,
         "elapsed_seconds": time.monotonic() - start_time,
