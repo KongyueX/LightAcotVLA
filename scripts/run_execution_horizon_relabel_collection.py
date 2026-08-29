@@ -15,6 +15,7 @@ import h5py
 
 from openpi.execution_horizon import dataset as horizon_dataset
 
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selection-manifest", required=True)
