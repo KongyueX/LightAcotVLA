@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-from typing import Any
 import warnings
+from typing import Any
 
 import h5py
 import numpy as np
@@ -246,7 +246,7 @@ def main(args: argparse.Namespace) -> None:
         "elapsed_variance_quantile": float(args.elapsed_variance_quantile),
         "elapsed_variance_threshold": float(metrics["elapsed_variance_threshold"]),
         "target_trials": int(args.target_trials),
-        "num_input_roots": int(len(selected)),
+        "num_input_roots": len(selected),
         "num_selected_roots": int(np.sum(selected)),
         "num_dangerous_roots": int(np.sum(danger)),
         "num_rescue_roots": int(np.sum(rescue)),

@@ -1,7 +1,5 @@
 """Consolidate counterfactual roots and replace selected roots with denser relabels."""
 
-# ruff: noqa: SLF001
-
 from __future__ import annotations
 
 import argparse
@@ -124,13 +122,13 @@ def _read_field(reference: RowRef, field: str) -> np.ndarray:
 
 def _read_record(reference: RowRef, target_shape: horizon_dataset.DatasetShape) -> dict[str, Any]:
     record: dict[str, Any] = {}
-    target_specs = horizon_dataset._fixed_specs(target_shape)
+    target_specs = horizon_dataset._fixed_specs(target_shape)  # noqa: SLF001
     with h5py.File(reference.shard, "r") as handle:
         for field, (dtype, shape_names) in target_specs.items():
             if field not in handle:
                 raise KeyError(f"{reference.shard} is missing required field {field!r}.")
             value = np.asarray(handle[field][reference.row])
-            target_field_shape = horizon_dataset._shape_for(shape_names, target_shape)
+            target_field_shape = horizon_dataset._shape_for(shape_names, target_shape)  # noqa: SLF001
             if field in _TRIAL_FIELDS and value.shape[-1] < target_field_shape[-1]:
                 fill = np.nan if field == "trial_elapsed" else 0
                 padded = np.full(target_field_shape, fill, dtype=dtype)
