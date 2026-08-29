@@ -155,7 +155,7 @@ def main(args: argparse.Namespace) -> None:
         _write_json(result_path, result)
         _write_json(status_path, {"status": "offline_gate_not_met", "pilot_started": False})
         _notify(
-            "【H25 predictor门控】seed7未同时通过development与fresh-final的预注册95%门，动态10×20 pilot未启动；将按held-out失败模式继续定向relabel/DAgger。",
+            "【H25 predictor门控】seed7未同时通过development与fresh-final的预注册95%门, 动态10x20 pilot未启动; 将按held-out失败模式继续定向relabel/DAgger。",
             output_dir,
             code_dir,
         )
@@ -211,7 +211,7 @@ def main(args: argparse.Namespace) -> None:
         },
     )
     _notify(
-        "【H25 predictor门控】seed7已同时通过development与fresh-final的预注册95%长H门，开始动态10 tasks×20闭环pilot。",
+        "【H25 predictor门控】seed7已同时通过development与fresh-final的预注册95%长H门, 开始动态10 tasks x 20闭环pilot。",
         output_dir,
         code_dir,
     )
@@ -299,7 +299,7 @@ def main(args: argparse.Namespace) -> None:
     _write_json(result_path, result)
     _write_json(status_path, {"status": "complete", "pilot_summary": str(pilot_summary_path)})
     _notify(
-        f"【H25 predictor完成】通过双重95%门控的分层Transformer已完成动态10×{args.num_trials_per_task} pilot；下一步审计success、实际elapsed及H分布。",
+        f"【H25 predictor完成】通过双重95%门控的分层Transformer已完成动态10x{args.num_trials_per_task} pilot; 下一步审计success、实际elapsed及H分布。",
         output_dir,
         code_dir,
     )
