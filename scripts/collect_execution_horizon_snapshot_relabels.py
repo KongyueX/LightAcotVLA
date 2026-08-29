@@ -88,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
+    parser.add_argument("--prefix-token-count", type=int, default=0)
     parser.add_argument("--fixed-continuation-horizon", type=int, default=5)
     parser.add_argument("--branch-repeat-seed-stride", type=int, default=20_000_000)
     parser.add_argument("--physical-action-dim", type=int, default=7)
