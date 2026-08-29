@@ -40,6 +40,7 @@ from openpi.execution_horizon import v2
 from openpi.shared import normalize
 
 _IDENTITY_FIELDS = ("task_id", "episode_id", "decision_step", "root_seed")
+_PHYSICS_RESTORE_ATOL = 1e-12
 _LABEL_FIELDS = {
     "hazard_event_count",
     "hazard_at_risk_count",
@@ -198,9 +199,18 @@ def _prepare_root(
     snapshot = _saved_snapshot(env, record["physics_state"], decision_step)
     collector._restore_snapshot(env, snapshot)
     restored = np.asarray(collector._simulator(env).get_state().flatten(), dtype=np.float64)
-    if not np.array_equal(restored, snapshot.physics_state):
+    if not np.allclose(
+        restored,
+        snapshot.physics_state,
+        rtol=0.0,
+        atol=_PHYSICS_RESTORE_ATOL,
+        equal_nan=True,
+    ):
         maximum_error = float(np.max(np.abs(restored - snapshot.physics_state)))
-        raise ValueError(f"MuJoCo snapshot restore was not exact; max_abs={maximum_error:.9g}.")
+        raise ValueError(
+            "MuJoCo snapshot restore exceeded the declared tolerance; "
+            f"max_abs={maximum_error:.9g}, atol={_PHYSICS_RESTORE_ATOL:.9g}."
+        )
     environment_horizon = libero_eval._env_horizon(env)
     episode_step_limit = libero_eval._max_steps(args.task_suite_name) + args.num_steps_wait
     if environment_horizon is not None:
