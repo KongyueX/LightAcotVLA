@@ -5,14 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import warnings
 from typing import Any
+import warnings
 
 import h5py
 import numpy as np
 
 from openpi.execution_horizon import dataset as horizon_dataset
-
 
 _FIELDS = (
     "candidate_horizons",

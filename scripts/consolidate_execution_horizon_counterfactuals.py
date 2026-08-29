@@ -13,7 +13,6 @@ import numpy as np
 
 from openpi.execution_horizon import dataset as horizon_dataset
 
-
 _IDENTITY_FIELDS = ("task_id", "episode_id", "decision_step", "root_seed")
 _TRIAL_FIELDS = (
     "trial_success",
