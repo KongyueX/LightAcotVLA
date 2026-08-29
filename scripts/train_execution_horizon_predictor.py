@@ -59,6 +59,7 @@ class Args:
     coarse_stride: int = 2
     final_stride: int = 1
     visual_num_queries: int = 0
+    paired_advantage_heads: bool = False
     physical_action_dim: int = 7
     minimum_trials_per_candidate: int = 3
     selection_false_long_upper_bound: float = 0.05
@@ -86,6 +87,9 @@ class Args:
     loss_elapsed_advantage: float = 0.25
     loss_calls_advantage: float = 0.10
     loss_false_long: float = 2.0
+    loss_danger_rescue: float = 0.0
+    loss_paired_elapsed: float = 0.0
+    loss_faster_long: float = 0.0
 
     success_failure_multiplier: float = 4.0
     timeout_positive_multiplier: float = 4.0
@@ -129,6 +133,9 @@ _LABEL_FIELDS = (
     "elapsed_variance",
     "dangerous_long_count",
     "paired_trial_count",
+    "trial_success",
+    "trial_elapsed",
+    "trial_valid",
 )
 
 
@@ -150,6 +157,9 @@ def _loss_weights(args: Args) -> ExecutionHorizonLossWeights:
         elapsed_advantage=args.loss_elapsed_advantage if hierarchical else 0.0,
         calls_advantage=args.loss_calls_advantage if hierarchical else 0.0,
         false_long=args.loss_false_long if hierarchical else 0.0,
+        danger_rescue=args.loss_danger_rescue if hierarchical else 0.0,
+        paired_elapsed=args.loss_paired_elapsed if hierarchical else 0.0,
+        faster_long=args.loss_faster_long if hierarchical else 0.0,
     )
 
 
@@ -316,6 +326,13 @@ def main(args: Args) -> None:
     candidate_horizons = tuple(int(value) for value in candidate_rows[0])
     if args.temporal_backbone not in {"local_mlp", "transformer"}:
         raise ValueError("temporal_backbone must be local_mlp or transformer.")
+    paired_losses_enabled = any(
+        value > 0 for value in (args.loss_danger_rescue, args.loss_paired_elapsed, args.loss_faster_long)
+    )
+    if args.paired_advantage_heads and args.temporal_backbone != "transformer":
+        raise ValueError("paired_advantage_heads require temporal_backbone=transformer.")
+    if paired_losses_enabled and not args.paired_advantage_heads:
+        raise ValueError("Paired loss weights require --paired-advantage-heads.")
     if args.temporal_backbone == "transformer":
         if not np.all(np.asarray(arrays["schema_version"]) == horizon_dataset.SCHEMA_VERSION):
             raise ValueError("Transformer training requires count-aware schema v2 shards, not repeat-0 v1 labels.")
@@ -337,6 +354,7 @@ def main(args: Args) -> None:
         raw_trial_valid = np.asarray(arrays["trial_valid"], dtype=np.bool_)
         raw_trial_success = np.asarray(arrays["trial_success"], dtype=np.bool_)
         raw_trial_timeout = np.asarray(arrays["trial_timeout"], dtype=np.bool_)
+        raw_trial_elapsed = np.asarray(arrays["trial_elapsed"], dtype=np.float32)
         if np.any(success_count + timeout_count != trial_count):
             raise ValueError("Every valid continuation trial must be exactly success or timeout.")
         if not np.array_equal(np.sum(raw_trial_valid, axis=-1), trial_count):
@@ -345,6 +363,8 @@ def main(args: Args) -> None:
             raise ValueError("success_count does not match raw continuation outcomes.")
         if not np.array_equal(np.sum(raw_trial_timeout & raw_trial_valid, axis=-1), timeout_count):
             raise ValueError("timeout_count does not match raw continuation outcomes.")
+        if not np.all(np.isfinite(raw_trial_elapsed[raw_trial_valid])):
+            raise ValueError("Every valid continuation trial must contain a finite elapsed label.")
         elapsed_mean = np.asarray(arrays["elapsed_mean"], dtype=np.float32)
         elapsed_variance = np.asarray(arrays["elapsed_variance"], dtype=np.float32)
         if not np.all(np.isfinite(elapsed_mean)) or not np.all(np.isfinite(elapsed_variance)):
@@ -355,6 +375,23 @@ def main(args: Args) -> None:
         paired = np.asarray(arrays["paired_trial_count"], dtype=np.int64)
         if np.any(dangerous < 0) or np.any(dangerous > paired):
             raise ValueError("dangerous_long_count must lie between zero and paired_trial_count.")
+        reference_index = candidate_horizons.index(args.reference_horizon)
+        long_indices = [index for index, horizon in enumerate(candidate_horizons) if horizon > args.reference_horizon]
+        paired_from_raw = (
+            raw_trial_valid[:, long_indices]
+            & raw_trial_valid[:, reference_index : reference_index + 1, :]
+        )
+        dangerous_from_raw = paired_from_raw & raw_trial_success[
+            :, reference_index : reference_index + 1, :
+        ] & ~raw_trial_success[:, long_indices]
+        expected_paired = np.zeros_like(paired)
+        expected_dangerous = np.zeros_like(dangerous)
+        expected_paired[:, long_indices] = np.sum(paired_from_raw, axis=-1)
+        expected_dangerous[:, long_indices] = np.sum(dangerous_from_raw, axis=-1)
+        if not np.array_equal(expected_paired, paired):
+            raise ValueError("paired_trial_count does not match raw continuation outcomes.")
+        if not np.array_equal(expected_dangerous, dangerous):
+            raise ValueError("dangerous_long_count does not match raw continuation outcomes.")
         hazard_events = np.asarray(arrays["hazard_event_count"], dtype=np.int64)
         hazard_at_risk = np.asarray(arrays["hazard_at_risk_count"], dtype=np.int64)
         if np.any(hazard_events < 0) or np.any(hazard_events > hazard_at_risk):
@@ -429,6 +466,7 @@ def main(args: Args) -> None:
         coarse_stride=args.coarse_stride,
         final_stride=args.final_stride,
         visual_num_queries=args.visual_num_queries,
+        paired_advantage_heads=args.paired_advantage_heads,
         elapsed_advantage_scale=elapsed_advantage_scale,
         calls_advantage_scale=calls_advantage_scale,
     )
@@ -476,6 +514,7 @@ def main(args: Args) -> None:
                 label_weights=label_weights,
                 remaining_calls_scale=predictor_config.remaining_calls_scale,
                 remaining_steps_scale=predictor_config.remaining_steps_scale,
+                elapsed_advantage_scale=predictor_config.elapsed_advantage_scale,
                 candidate_horizons=predictor_config.candidate_horizons,
                 reference_horizon=predictor_config.reference_horizon,
             )
@@ -497,6 +536,7 @@ def main(args: Args) -> None:
             label_weights=label_weights,
             remaining_calls_scale=predictor_config.remaining_calls_scale,
             remaining_steps_scale=predictor_config.remaining_steps_scale,
+            elapsed_advantage_scale=predictor_config.elapsed_advantage_scale,
             candidate_horizons=predictor_config.candidate_horizons,
             reference_horizon=predictor_config.reference_horizon,
         )
@@ -520,6 +560,10 @@ def main(args: Args) -> None:
         def binary_precision(prediction: jax.Array, target: jax.Array, valid: jax.Array) -> jax.Array:
             predicted_positives = prediction & valid
             return jnp.sum(target & predicted_positives) / jnp.maximum(jnp.sum(predicted_positives), 1)
+
+        def masked_mean(values: jax.Array, valid: jax.Array) -> jax.Array:
+            valid = jnp.asarray(valid, dtype=values.dtype)
+            return jnp.sum(values * valid) / jnp.maximum(jnp.sum(valid), 1.0)
 
         metrics["success_accuracy"] = jnp.mean(success_prediction == success_label)
         metrics["timeout_accuracy"] = jnp.mean(timeout_prediction == timeout_label)
@@ -636,6 +680,48 @@ def main(args: Args) -> None:
                 elapsed_mean + one_sided_z * elapsed_standard_error,
                 1e9,
             )
+            if predictor_config.paired_advantage_heads:
+                raw_valid = batch["trial_valid"].astype(jnp.bool_)
+                raw_success = batch["trial_success"].astype(jnp.bool_)
+                raw_elapsed = batch["trial_elapsed"].astype(jnp.float32)
+                reference_valid = raw_valid[:, reference_index : reference_index + 1, :]
+                reference_success = raw_success[:, reference_index : reference_index + 1, :]
+                reference_elapsed = raw_elapsed[:, reference_index : reference_index + 1, :]
+                long_valid = jnp.take(raw_valid, long_indices, axis=1)
+                long_success = jnp.take(raw_success, long_indices, axis=1)
+                long_elapsed = jnp.take(raw_elapsed, long_indices, axis=1)
+                pair_valid = reference_valid & long_valid
+                pair_valid &= jnp.isfinite(reference_elapsed) & jnp.isfinite(long_elapsed)
+                pair_count = jnp.sum(pair_valid, axis=-1)
+                danger_rate = jnp.sum(pair_valid & reference_success & ~long_success, axis=-1) / jnp.maximum(
+                    pair_count, 1
+                )
+                rescue_rate = jnp.sum(pair_valid & ~reference_success & long_success, axis=-1) / jnp.maximum(
+                    pair_count, 1
+                )
+                elapsed_delta = long_elapsed - reference_elapsed
+                faster_rate = jnp.sum(pair_valid & (elapsed_delta < 0.0), axis=-1) / jnp.maximum(pair_count, 1)
+                pair_mask = pair_count > 0
+                metrics["danger_brier"] = masked_mean(
+                    jnp.square(predictions["danger_probability"] - danger_rate), pair_mask
+                )
+                metrics["rescue_brier"] = masked_mean(
+                    jnp.square(predictions["rescue_probability"] - rescue_rate), pair_mask
+                )
+                metrics["faster_long_brier"] = masked_mean(
+                    jnp.square(predictions["faster_long_probability"] - faster_rate), pair_mask
+                )
+                metrics["paired_elapsed_mae"] = masked_mean(
+                    jnp.abs(predictions["elapsed_advantage"][..., None] - jnp.nan_to_num(elapsed_delta)),
+                    pair_valid,
+                )
+                metrics["pairwise_selection_score"] = (
+                    metrics["danger_rescue_binomial"]
+                    + metrics["paired_elapsed_huber"]
+                    + metrics["faster_long_binomial"]
+                    + 0.25 * metrics["success_advantage_nll"]
+                    + 0.25 * metrics["elapsed_advantage_nll"]
+                )
         return metrics
 
     rng = np.random.default_rng(args.seed)
@@ -644,6 +730,7 @@ def main(args: Args) -> None:
     last_train_metrics: dict[str, float] = {}
     last_validation_metrics: dict[str, float] = {}
     best_validation_loss = float("inf")
+    best_validation_objective = float("inf")
     best_validation_step = 0
     best_params: nnx.State | None = None
     best_long_coverage = -1.0
@@ -692,6 +779,11 @@ def main(args: Args) -> None:
                 metrics_file.flush()
                 print(json.dumps(record, sort_keys=True), flush=True)
                 validation_loss = last_validation_metrics["validation/loss"]
+                validation_objective = (
+                    last_validation_metrics["validation/pairwise_selection_score"]
+                    if predictor_config.paired_advantage_heads
+                    else validation_loss
+                )
                 if baseline_success_brier is None:
                     baseline_success_brier = last_validation_metrics["validation/success_brier"]
                 selection_feasible = False
@@ -714,18 +806,20 @@ def main(args: Args) -> None:
                             or long_coverage > best_long_coverage + 1e-6
                             or (
                                 abs(long_coverage - best_long_coverage) <= 1e-6
-                                and validation_loss < best_validation_loss - args.early_stopping_min_delta
+                                and validation_objective
+                                < best_validation_objective - args.early_stopping_min_delta
                             )
                         )
                     ) or (
                         not selection_feasible
                         and not best_selection_feasible
-                        and validation_loss < best_validation_loss - args.early_stopping_min_delta
+                        and validation_objective < best_validation_objective - args.early_stopping_min_delta
                     )
                 else:
                     improved = validation_loss < best_validation_loss - args.early_stopping_min_delta
                 if improved:
                     best_validation_loss = validation_loss
+                    best_validation_objective = validation_objective
                     best_validation_step = step
                     best_long_coverage = long_coverage
                     best_selection_feasible = selection_feasible
@@ -770,6 +864,7 @@ def main(args: Args) -> None:
         "selected_checkpoint": "best_validation" if args.select_best_validation else "last_step",
         "best_validation_step": best_validation_step,
         "best_validation_loss": best_validation_loss,
+        "best_validation_objective": best_validation_objective,
         "best_long_coverage": best_long_coverage if args.temporal_backbone == "transformer" else None,
         "best_selection_feasible": best_selection_feasible if args.temporal_backbone == "transformer" else None,
         "initial_validation_success_brier": baseline_success_brier,

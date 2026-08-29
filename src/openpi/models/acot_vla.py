@@ -366,6 +366,7 @@ class ACOTConfig(_model.BaseModelConfig):
     execution_horizon_coarse_stride: int = 2
     execution_horizon_final_stride: int = 1
     execution_horizon_visual_num_queries: int = 0
+    execution_horizon_paired_advantage_heads: bool = False
     execution_horizon_elapsed_advantage_scale: float = 1.0
     execution_horizon_calls_advantage_scale: float = 1.0
     execution_horizon_physical_action_dim: int = 7
@@ -411,6 +412,7 @@ class ACOTConfig(_model.BaseModelConfig):
                 coarse_stride=self.execution_horizon_coarse_stride,
                 final_stride=self.execution_horizon_final_stride,
                 visual_num_queries=self.execution_horizon_visual_num_queries,
+                paired_advantage_heads=self.execution_horizon_paired_advantage_heads,
                 elapsed_advantage_scale=self.execution_horizon_elapsed_advantage_scale,
                 calls_advantage_scale=self.execution_horizon_calls_advantage_scale,
             )
@@ -619,6 +621,7 @@ class ACOT_VLA(_model.BaseModel):
                     coarse_stride=config.execution_horizon_coarse_stride,
                     final_stride=config.execution_horizon_final_stride,
                     visual_num_queries=config.execution_horizon_visual_num_queries,
+                    paired_advantage_heads=config.execution_horizon_paired_advantage_heads,
                     elapsed_advantage_scale=config.execution_horizon_elapsed_advantage_scale,
                     calls_advantage_scale=config.execution_horizon_calls_advantage_scale,
                 ),

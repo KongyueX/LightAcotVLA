@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 from flax import nnx
 import jax
 import jax.numpy as jnp
@@ -50,6 +52,11 @@ def test_predictor_config_rejects_unknown_backbone():
         predictor_lib.ExecutionHorizonPredictorConfig(temporal_backbone="unknown")
 
 
+def test_predictor_config_rejects_paired_heads_on_legacy_backbone():
+    with pytest.raises(ValueError, match="paired_advantage_heads"):
+        predictor_lib.ExecutionHorizonPredictorConfig(paired_advantage_heads=True)
+
+
 def test_transformer_outputs_hierarchical_shapes_and_monotonic_survival():
     config = _transformer_config()
     module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
@@ -64,6 +71,20 @@ def test_transformer_outputs_hierarchical_shapes_and_monotonic_survival():
     assert outputs["candidate_horizons"].shape == (2, 5)
     np.testing.assert_array_equal(np.asarray(outputs["reference_horizon"]), 10)
     assert np.all(np.diff(np.asarray(outputs["survival"]), axis=-1) <= 1e-6)
+
+
+def test_transformer_paired_heads_define_success_treatment_effect():
+    config = dataclasses.replace(_transformer_config(), paired_advantage_heads=True)
+    module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
+    outputs = module(**_inputs())
+
+    assert outputs["danger_logits"].shape == (2, 3)
+    assert outputs["rescue_logits"].shape == (2, 3)
+    assert outputs["faster_long_logits"].shape == (2, 3)
+    np.testing.assert_allclose(
+        np.asarray(outputs["success_advantage"]),
+        np.asarray(outputs["rescue_probability"] - outputs["danger_probability"]),
+    )
 
 
 def test_transformer_coarse_alignment_uses_physical_stride():
@@ -99,7 +120,7 @@ def test_transformer_masks_previous_disagreement_without_overlap():
 
 
 def test_transformer_count_survival_and_advantage_loss_is_finite():
-    config = _transformer_config()
+    config = dataclasses.replace(_transformer_config(), paired_advantage_heads=True)
     module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
     predictions = module(**_inputs())
     success_count = jnp.asarray([[3, 3, 2, 1, 1], [2, 2, 2, 2, 2]], dtype=jnp.float32)
@@ -128,6 +149,21 @@ def test_transformer_count_survival_and_advantage_loss_is_finite():
         "raw_h": jnp.asarray([10, 15], dtype=jnp.int32),
         "dangerous_long_count": jnp.asarray([[1, 2, 2], [0, 0, 0]], dtype=jnp.float32),
         "paired_trial_count": jnp.full((2, 3), 3, dtype=jnp.float32),
+        "trial_success": jnp.asarray(
+            [
+                [[1, 1, 1], [1, 1, 1], [1, 1, 0], [1, 0, 0], [1, 0, 0]],
+                [[1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0]],
+            ],
+            dtype=jnp.bool_,
+        ),
+        "trial_elapsed": jnp.asarray(
+            [
+                [[10, 9, 11], [9, 8, 10], [8, 7, 9], [7, 6, 8], [6, 5, 7]],
+                [[10, 9, 11], [9, 8, 10], [8, 7, 9], [7, 6, 8], [6, 5, 7]],
+            ],
+            dtype=jnp.float32,
+        ),
+        "trial_valid": jnp.ones((2, 5, 3), dtype=jnp.bool_),
     }
     weights = predictor_lib.ExecutionHorizonLossWeights(
         success=1.0,
@@ -145,6 +181,9 @@ def test_transformer_count_survival_and_advantage_loss_is_finite():
         elapsed_advantage=0.1,
         calls_advantage=0.1,
         false_long=2.0,
+        danger_rescue=1.0,
+        paired_elapsed=1.0,
+        faster_long=1.0,
     )
     loss, metrics = predictor_lib.execution_horizon_loss(
         predictions,
@@ -158,6 +197,9 @@ def test_transformer_count_survival_and_advantage_loss_is_finite():
     assert np.isfinite(np.asarray(metrics["success_advantage_nll"]))
     assert np.isfinite(np.asarray(metrics["elapsed_advantage_nll"]))
     assert np.isfinite(np.asarray(metrics["calls_advantage_nll"]))
+    assert np.isfinite(np.asarray(metrics["danger_rescue_binomial"]))
+    assert np.isfinite(np.asarray(metrics["paired_elapsed_huber"]))
+    assert np.isfinite(np.asarray(metrics["faster_long_binomial"]))
 
 
 def test_legacy_local_mlp_default_shapes_are_unchanged():

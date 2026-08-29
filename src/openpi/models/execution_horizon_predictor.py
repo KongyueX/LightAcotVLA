@@ -37,6 +37,7 @@ class ExecutionHorizonPredictorConfig:
     coarse_stride: int = 2
     final_stride: int = 1
     visual_num_queries: int = 0
+    paired_advantage_heads: bool = False
     remaining_calls_scale: float = 64.0
     remaining_steps_scale: float = 512.0
     elapsed_advantage_scale: float = 1.0
@@ -90,6 +91,8 @@ class ExecutionHorizonPredictorConfig:
             raise ValueError("visual_num_queries must be non-negative.")
         if self.visual_num_queries and not 4 <= self.visual_num_queries <= 8:
             raise ValueError("visual_num_queries must be zero (disabled) or lie in [4, 8].")
+        if self.paired_advantage_heads and self.temporal_backbone != "transformer":
+            raise ValueError("paired_advantage_heads are supported only by the transformer backbone.")
         if not math.isfinite(self.elapsed_advantage_scale) or self.elapsed_advantage_scale <= 0:
             raise ValueError("elapsed_advantage_scale must be finite and positive.")
         if not math.isfinite(self.calls_advantage_scale) or self.calls_advantage_scale <= 0:
@@ -125,6 +128,9 @@ class ExecutionHorizonLossWeights:
     elapsed_advantage: float = 0.0
     calls_advantage: float = 0.0
     false_long: float = 0.0
+    danger_rescue: float = 0.0
+    paired_elapsed: float = 0.0
+    faster_long: float = 0.0
 
 
 DEFAULT_LOSS_WEIGHTS = ExecutionHorizonLossWeights()
@@ -333,7 +339,12 @@ class ExecutionHorizonPredictor(nnx.Module):
         if config.temporal_backbone == "transformer":
             long_width = len(config.long_horizons)
             self.hazard_head = nnx.Linear(h, 1, rngs=rngs, param_dtype=param_dtype)
-            self.success_advantage_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
+            if config.paired_advantage_heads:
+                self.danger_logits_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
+                self.rescue_logits_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
+                self.faster_long_logits_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
+            else:
+                self.success_advantage_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.success_advantage_log_scale_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.elapsed_advantage_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.elapsed_advantage_log_scale_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
@@ -548,7 +559,29 @@ class ExecutionHorizonPredictor(nnx.Module):
         if cfg.temporal_backbone == "transformer":
             hazard_logits = self.hazard_head(tokens)[..., 0]
             hazard = jax.nn.sigmoid(hazard_logits)
-            success_advantage = jnp.tanh(self.success_advantage_head(summary))
+            paired_outputs: dict[str, jax.Array] = {}
+            if cfg.paired_advantage_heads:
+                danger_logits = self.danger_logits_head(summary)
+                rescue_logits = self.rescue_logits_head(summary)
+                danger_probability = jax.nn.sigmoid(danger_logits)
+                rescue_probability = jax.nn.sigmoid(rescue_logits)
+                # For paired continuations, the success-rate treatment effect
+                # is exactly P(rescue) - P(regression).  Predicting these two
+                # rare events directly retains the causal supervision that is
+                # lost when three seed outcomes are collapsed to one noisy
+                # empirical rate difference.
+                success_advantage = rescue_probability - danger_probability
+                faster_long_logits = self.faster_long_logits_head(summary)
+                paired_outputs = {
+                    "danger_logits": danger_logits,
+                    "danger_probability": danger_probability,
+                    "rescue_logits": rescue_logits,
+                    "rescue_probability": rescue_probability,
+                    "faster_long_logits": faster_long_logits,
+                    "faster_long_probability": jax.nn.sigmoid(faster_long_logits),
+                }
+            else:
+                success_advantage = jnp.tanh(self.success_advantage_head(summary))
             success_advantage_log_scale = jnp.clip(
                 self.success_advantage_log_scale_head(summary),
                 -7.0,
@@ -601,6 +634,7 @@ class ExecutionHorizonPredictor(nnx.Module):
                         jnp.asarray(cfg.long_horizons, dtype=jnp.int32),
                         (summary.shape[0], len(cfg.long_horizons)),
                     ),
+                    **paired_outputs,
                 }
             )
         return result
@@ -614,6 +648,7 @@ def execution_horizon_loss(
     label_weights: ExecutionHorizonLabelWeights = DEFAULT_LABEL_WEIGHTS,
     remaining_calls_scale: float = 64.0,
     remaining_steps_scale: float = 512.0,
+    elapsed_advantage_scale: float = 1.0,
     candidate_horizons: tuple[int, ...] | None = None,
     reference_horizon: int = 10,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
@@ -736,12 +771,20 @@ def execution_horizon_loss(
     elapsed_advantage_loss = jnp.asarray(0.0, dtype=jnp.float32)
     calls_advantage_loss = jnp.asarray(0.0, dtype=jnp.float32)
     false_long_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    danger_rescue_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    danger_binomial_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    rescue_binomial_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_elapsed_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    faster_long_loss = jnp.asarray(0.0, dtype=jnp.float32)
     long_indices = tuple(index for index, value in enumerate(candidate_horizons) if value > reference_horizon)
     if (
         weights.success_advantage > 0
         or weights.elapsed_advantage > 0
         or weights.calls_advantage > 0
         or weights.false_long > 0
+        or weights.danger_rescue > 0
+        or weights.paired_elapsed > 0
+        or weights.faster_long > 0
     ):
         if reference_horizon not in candidate_horizons:
             raise ValueError("reference_horizon must be included in candidate_horizons.")
@@ -752,6 +795,30 @@ def execution_horizon_loss(
         reference_trials = trial_count[:, reference_index : reference_index + 1]
         long_trials = jnp.take(trial_count, long_index_array, axis=1)
         advantage_valid = (reference_trials > 0) & (long_trials > 0)
+
+        pair_valid = None
+        dangerous_pair = None
+        rescue_pair = None
+        paired_elapsed_delta = None
+        if weights.danger_rescue > 0 or weights.paired_elapsed > 0 or weights.faster_long > 0:
+            required = ("trial_success", "trial_elapsed", "trial_valid")
+            missing = [name for name in required if name not in labels]
+            if missing:
+                raise ValueError(f"Paired advantage losses require raw continuation labels: {missing}.")
+            trial_valid_raw = jnp.asarray(labels["trial_valid"], dtype=jnp.bool_)
+            trial_success_raw = jnp.asarray(labels["trial_success"], dtype=jnp.bool_)
+            trial_elapsed_raw = jnp.asarray(labels["trial_elapsed"], dtype=jnp.float32)
+            reference_valid_raw = trial_valid_raw[:, reference_index : reference_index + 1, :]
+            reference_success_raw = trial_success_raw[:, reference_index : reference_index + 1, :]
+            reference_elapsed_raw = trial_elapsed_raw[:, reference_index : reference_index + 1, :]
+            long_valid_raw = jnp.take(trial_valid_raw, long_index_array, axis=1)
+            long_success_raw = jnp.take(trial_success_raw, long_index_array, axis=1)
+            long_elapsed_raw = jnp.take(trial_elapsed_raw, long_index_array, axis=1)
+            pair_valid = reference_valid_raw & long_valid_raw
+            pair_valid &= jnp.isfinite(reference_elapsed_raw) & jnp.isfinite(long_elapsed_raw)
+            dangerous_pair = pair_valid & reference_success_raw & ~long_success_raw
+            rescue_pair = pair_valid & ~reference_success_raw & long_success_raw
+            paired_elapsed_delta = long_elapsed_raw - reference_elapsed_raw
 
         if weights.success_advantage > 0:
             if "success_advantage" not in predictions or "success_count" not in labels:
@@ -848,6 +915,42 @@ def execution_horizon_loss(
                 paired_count > 0,
             )
 
+        if weights.danger_rescue > 0:
+            if "danger_logits" not in predictions or "rescue_logits" not in predictions:
+                raise ValueError("danger/rescue loss requires paired_advantage_heads predictor outputs.")
+            paired_count_raw = jnp.sum(pair_valid, axis=-1)
+            dangerous_count_raw = jnp.sum(dangerous_pair, axis=-1)
+            rescue_count_raw = jnp.sum(rescue_pair, axis=-1)
+            danger_binomial_loss = _masked_mean(
+                _binomial_nll(predictions["danger_logits"], dangerous_count_raw, paired_count_raw)
+                / jnp.maximum(paired_count_raw, 1.0),
+                paired_count_raw > 0,
+            )
+            rescue_binomial_loss = _masked_mean(
+                _binomial_nll(predictions["rescue_logits"], rescue_count_raw, paired_count_raw)
+                / jnp.maximum(paired_count_raw, 1.0),
+                paired_count_raw > 0,
+            )
+            danger_rescue_loss = 0.5 * (danger_binomial_loss + rescue_binomial_loss)
+
+        if weights.paired_elapsed > 0:
+            scale = jnp.asarray(max(float(elapsed_advantage_scale), 1e-3), dtype=jnp.float32)
+            paired_elapsed_error = (
+                predictions["elapsed_advantage"][..., None] - jnp.nan_to_num(paired_elapsed_delta)
+            ) / scale
+            paired_elapsed_loss = _masked_mean(_huber(paired_elapsed_error), pair_valid)
+
+        if weights.faster_long > 0:
+            if "faster_long_logits" not in predictions:
+                raise ValueError("faster-long loss requires paired_advantage_heads predictor outputs.")
+            paired_count_raw = jnp.sum(pair_valid, axis=-1)
+            faster_count = jnp.sum(pair_valid & (paired_elapsed_delta < 0.0), axis=-1)
+            faster_long_loss = _masked_mean(
+                _binomial_nll(predictions["faster_long_logits"], faster_count, paired_count_raw)
+                / jnp.maximum(paired_count_raw, 1.0),
+                paired_count_raw > 0,
+            )
+
     metrics = {
         "success_bce": success_loss,
         "timeout_bce": timeout_loss,
@@ -864,6 +967,11 @@ def execution_horizon_loss(
         "elapsed_advantage_nll": elapsed_advantage_loss,
         "calls_advantage_nll": calls_advantage_loss,
         "false_long_penalty": false_long_loss,
+        "danger_rescue_binomial": danger_rescue_loss,
+        "danger_binomial": danger_binomial_loss,
+        "rescue_binomial": rescue_binomial_loss,
+        "paired_elapsed_huber": paired_elapsed_loss,
+        "faster_long_binomial": faster_long_loss,
     }
     total = (
         weights.success * success_loss
@@ -881,6 +989,9 @@ def execution_horizon_loss(
         + weights.elapsed_advantage * elapsed_advantage_loss
         + weights.calls_advantage * calls_advantage_loss
         + weights.false_long * false_long_loss
+        + weights.danger_rescue * danger_rescue_loss
+        + weights.paired_elapsed * paired_elapsed_loss
+        + weights.faster_long * faster_long_loss
     )
     metrics["loss"] = total
     return total, metrics

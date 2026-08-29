@@ -212,6 +212,9 @@ def create_trained_policy(
                     "execution_horizon_visual_num_queries": int(
                         predictor_artifact_config["visual_num_queries"]
                     ),
+                    "execution_horizon_paired_advantage_heads": bool(
+                        predictor_artifact_config.get("paired_advantage_heads", False)
+                    ),
                     "execution_horizon_elapsed_advantage_scale": float(
                         predictor_artifact_config.get("elapsed_advantage_scale", 1.0)
                     ),
