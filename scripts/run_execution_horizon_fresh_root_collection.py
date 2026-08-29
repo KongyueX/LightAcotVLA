@@ -60,10 +60,10 @@ def _episode_roots(data_dir: pathlib.Path, task_id: int) -> dict[int, tuple[int,
             episodes = handle["episode_id"][:]
             steps = handle["decision_step"][:]
             seeds = handle["root_seed"][:]
-            for task, episode, step, seed in zip(tasks, episodes, steps, seeds, strict=True):
+            for task, episode_value, step, seed in zip(tasks, episodes, steps, seeds, strict=True):
                 if int(task) != task_id:
                     raise ValueError(f"Unexpected task {int(task)} in task{task_id} fresh-root output.")
-                episode = int(episode)
+                episode = int(episode_value)
                 if episode in roots:
                     raise ValueError(f"Episode {episode} has multiple roots in task{task_id} output.")
                 roots[episode] = (int(step), int(seed))
