@@ -21,7 +21,6 @@ the action representation that is actually used to train the predictor.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import copy
 import dataclasses
 import json
@@ -39,7 +38,6 @@ from openpi_client import websocket_client_policy as websocket_policy
 from openpi.execution_horizon import dataset as horizon_dataset
 from openpi.execution_horizon import v2
 from openpi.shared import normalize
-
 
 _IDENTITY_FIELDS = ("task_id", "episode_id", "decision_step", "root_seed")
 _LABEL_FIELDS = {
@@ -142,7 +140,7 @@ def _read_record(source: SourceRow) -> dict[str, Any]:
     return record
 
 
-def _replacement_scalar(value: Any, replacement: int | bool) -> Any:
+def _replacement_scalar(value: Any, *, replacement: int | bool) -> Any:
     if isinstance(value, np.ndarray):
         return np.full_like(value, replacement)
     if isinstance(value, np.generic):
@@ -161,11 +159,12 @@ def _saved_snapshot(
     template = collector._capture_snapshot(env)
     scalar_attributes = []
     for owner, name, value in template.scalar_attributes:
+        replacement = value
         if name in ("timestep", "_timestep"):
-            value = _replacement_scalar(value, decision_step)
+            replacement = _replacement_scalar(value, replacement=decision_step)
         elif name in ("done", "_done"):
-            value = _replacement_scalar(value, False)
-        scalar_attributes.append((owner, name, value))
+            replacement = _replacement_scalar(value, replacement=False)
+        scalar_attributes.append((owner, name, replacement))
     return collector.SimulatorSnapshot(
         physics_state=np.asarray(physics_state, dtype=np.float64).copy(),
         scalar_attributes=scalar_attributes,
@@ -259,20 +258,19 @@ def _base_branches(
         raise ValueError("Existing trial validity must be a contiguous paired prefix.")
     result: list[list[dict[str, Any]]] = []
     for candidate_index, _ in enumerate(candidates):
-        outcomes = []
-        for repeat_index in range(existing_trials):
-            outcomes.append(
-                {
-                    "repeat_index": repeat_index,
-                    "policy_seed": root_seed + repeat_index * repeat_seed_stride,
-                    "success": bool(record["trial_success"][candidate_index, repeat_index]),
-                    "timeout": bool(record["trial_timeout"][candidate_index, repeat_index]),
-                    "remaining_steps": int(record["trial_remaining_steps"][candidate_index, repeat_index]),
-                    "remaining_calls": int(record["trial_remaining_calls"][candidate_index, repeat_index]),
-                    "elapsed_seconds": float(record["trial_elapsed"][candidate_index, repeat_index]),
-                    "source": "preserved_base_trial",
-                }
-            )
+        outcomes = [
+            {
+                "repeat_index": repeat_index,
+                "policy_seed": root_seed + repeat_index * repeat_seed_stride,
+                "success": bool(record["trial_success"][candidate_index, repeat_index]),
+                "timeout": bool(record["trial_timeout"][candidate_index, repeat_index]),
+                "remaining_steps": int(record["trial_remaining_steps"][candidate_index, repeat_index]),
+                "remaining_calls": int(record["trial_remaining_calls"][candidate_index, repeat_index]),
+                "elapsed_seconds": float(record["trial_elapsed"][candidate_index, repeat_index]),
+                "source": "preserved_base_trial",
+            }
+            for repeat_index in range(existing_trials)
+        ]
         result.append(outcomes)
     return result, existing_trials
 
