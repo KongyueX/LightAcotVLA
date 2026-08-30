@@ -19,6 +19,7 @@ from openpi_client import websocket_client_policy as websocket_policy
 
 from openpi.execution_horizon import dataset as horizon_dataset
 from openpi.execution_horizon import hierarchical
+from openpi.execution_horizon import initial_states as horizon_initial_states
 from openpi.execution_horizon import v2
 
 
@@ -39,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-start", type=int, default=0)
     parser.add_argument("--max-tasks", type=int, default=None)
     parser.add_argument("--num-trials-per-task", type=int, default=1)
+    parser.add_argument(
+        "--initial-state-bank",
+        default=None,
+        help="Optional frozen initial-state bank; episode IDs are looked up exactly, never modulo the presets.",
+    )
     parser.add_argument(
         "--episode-ids",
         nargs="+",
@@ -711,6 +717,18 @@ def main(args: argparse.Namespace) -> None:
     task_end = (
         task_suite.n_tasks if args.max_tasks is None else min(task_suite.n_tasks, args.task_start + args.max_tasks)
     )
+    initial_state_bank = (
+        horizon_initial_states.InitialStateBank(args.initial_state_bank)
+        if args.initial_state_bank is not None
+        else None
+    )
+    if initial_state_bank is not None:
+        if initial_state_bank.manifest["task_suite"] != args.task_suite_name:
+            raise ValueError("Initial-state bank uses a different task suite.")
+        for task_id in range(args.task_start, task_end):
+            initial_state_bank.validate_presets(task_id, task_suite.get_task_init_states(task_id))
+            for episode_id in episode_ids:
+                initial_state_bank.state(task_id, episode_id)
     risk_config = v2.V2RiskConfig(
         risk_threshold=args.v2_risk_threshold,
         final_weight=args.v2_final_weight,
@@ -737,6 +755,8 @@ def main(args: argparse.Namespace) -> None:
         "dataset_shape": dataclasses.asdict(shape),
         "risk_config": dataclasses.asdict(risk_config),
     }
+    if initial_state_bank is not None:
+        metadata.update(initial_state_bank.metadata())
     total_records = 0
     branch_successes = np.zeros((shape.num_candidates,), dtype=np.int64)
     repeated_branch_successes = np.zeros((shape.num_candidates,), dtype=np.int64)
@@ -763,7 +783,20 @@ def main(args: argparse.Namespace) -> None:
                 env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
                 try:
                     env.reset()
-                    observation = env.set_init_state(initial_states[episode_id % len(initial_states)])
+                    initial_state = (
+                        initial_states[episode_id % len(initial_states)]
+                        if initial_state_bank is None
+                        else initial_state_bank.state(task_id, episode_id)
+                    )
+                    observation = env.set_init_state(initial_state)
+                    if initial_state_bank is not None:
+                        np.testing.assert_allclose(
+                            env.env.sim.get_state().flatten(),
+                            initial_state,
+                            rtol=0.0,
+                            atol=1e-12,
+                            err_msg="Frozen initial state was not restored faithfully.",
+                        )
                     environment_horizon = libero_eval._env_horizon(env)
                     episode_step_limit = max_steps + args.num_steps_wait
                     if environment_horizon is not None:

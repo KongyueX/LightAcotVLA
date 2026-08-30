@@ -13,6 +13,8 @@ import sys
 import time
 from typing import Any
 
+from openpi.execution_horizon import initial_states
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -28,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--server-timeout-seconds", type=float, default=600.0)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--num-trials-per-task", type=int, default=20)
+    parser.add_argument("--require-initial-state-isolation", action="store_true")
     return parser
 
 
@@ -94,7 +97,10 @@ def _notify(message: str, output_dir: pathlib.Path, code_dir: pathlib.Path) -> N
         check=False,
     )
     if completed.returncode:
-        print(f"Warning: Feishu notification exited with code {completed.returncode}; experiment continues.", file=sys.stderr)
+        print(
+            f"Warning: Feishu notification exited with code {completed.returncode}; experiment continues.",
+            file=sys.stderr,
+        )
 
 
 def _find_pilot_summary(pilot_output_dir: pathlib.Path) -> pathlib.Path:
@@ -166,6 +172,13 @@ def main(args: argparse.Namespace) -> None:
         audit = post_summary.get(name)
         if not isinstance(audit, dict) or not bool(audit.get("offline_engineering_gate", False)):
             raise ValueError(f"dual_official_gate conflicts with {name} audit.")
+    if args.require_initial_state_isolation:
+        isolation = post_summary.get("initial_state_isolation") or {}
+        if isolation.get("status") != "complete" or isolation.get("pairwise_initial_state_overlap") != 0:
+            raise ValueError("Dynamic pilot requires verified initial-state isolation.")
+        bank = initial_states.InitialStateBank(isolation["initial_state_bank"])
+        if bank.sha256 != isolation.get("initial_state_bank_sha256"):
+            raise ValueError("Initial-state bank changed after the offline audit.")
     predictor_dir = pathlib.Path(post_summary["predictor_dir"]).resolve()
     calibration_path = predictor_dir / "calibration.json"
     predictor_summary = _complete_json(predictor_dir / "summary.json")
@@ -198,9 +211,7 @@ def main(args: argparse.Namespace) -> None:
         return
     resume_pilot = (pilot_output_dir / "run_config.json").exists()
     if any(pilot_output_dir.iterdir()) and not resume_pilot:
-        raise FileExistsError(
-            f"Pilot output is non-empty but has no resume signature: {pilot_output_dir}"
-        )
+        raise FileExistsError(f"Pilot output is non-empty but has no resume signature: {pilot_output_dir}")
 
     _write_json(
         status_path,

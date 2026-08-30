@@ -10,6 +10,8 @@ import sys
 import time
 from typing import Any
 
+from openpi.execution_horizon import initial_states
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -24,6 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-replacements", type=int, default=137)
     parser.add_argument("--poll-seconds", type=float, default=60.0)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--require-initial-state-isolation", action="store_true")
     return parser
 
 
@@ -58,12 +61,15 @@ def _episode_groups(data_dirs: list[str]) -> set[int]:
 
 
 def _stop_policy_server(tmux_name: str) -> None:
-    present = subprocess.run(
-        ["tmux", "has-session", "-t", tmux_name],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    ).returncode == 0
+    present = (
+        subprocess.run(
+            ["tmux", "has-session", "-t", tmux_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
     if present:
         subprocess.run(["tmux", "kill-session", "-t", tmux_name], check=True)
     deadline = time.monotonic() + 180.0
@@ -133,7 +139,30 @@ def main(args: argparse.Namespace) -> None:
     final_dirs = [str(pathlib.Path(value).resolve()) for value in fresh_final_summary["data_dirs"]]
     overlay_dirs = [str(pathlib.Path(value).resolve()) for value in relabel_summary["group_data_dirs"]]
     base_dirs = [str(pathlib.Path(value).resolve()) for value in args.base_dataset]
-    if _episode_groups(base_dirs + development_dirs).intersection(_episode_groups(final_dirs)):
+    bank_dir = fresh_summary.get("initial_state_bank")
+    isolation = None
+    if bank_dir is not None:
+        bank = initial_states.InitialStateBank(bank_dir)
+        if fresh_summary.get("initial_state_bank_sha256") != bank.sha256:
+            raise ValueError("Fresh summary initial-state bank changed after collection.")
+        isolation = bank.audit_partitions(
+            {
+                "base": initial_states.dataset_groups(base_dirs, bank, allow_legacy_presets=True),
+                "fresh_development": initial_states.dataset_groups(development_dirs, bank),
+                "final": initial_states.dataset_groups(final_dirs, bank),
+            }
+        )
+        expected_groups = {
+            "base": 500,
+            "fresh_development": args.expected_development_roots - 500,
+            "final": args.expected_final_roots,
+        }
+        if isolation["partition_group_counts"] != expected_groups:
+            raise ValueError("Initial-state partition counts differ from the expansion contract.")
+        _write_json(output_dir / "initial_state_isolation.json", isolation)
+    elif args.require_initial_state_isolation:
+        raise ValueError("Fresh expansion lacks frozen initial-state provenance; training is forbidden.")
+    elif _episode_groups(base_dirs + development_dirs).intersection(_episode_groups(final_dirs)):
         raise ValueError("Fresh final episode groups overlap development/training inputs.")
 
     _write_json(status_path, {"status": "stopping_policy_server", "tmux": args.policy_server_tmux})
@@ -352,6 +381,7 @@ def main(args: argparse.Namespace) -> None:
         "consolidation_report": str(consolidation_report),
         "predictor_dir": str(predictor_dir),
         "fresh_final_data_dirs": final_dirs,
+        "initial_state_isolation": isolation,
         "development_official": _audit_summary(predictor_dir / "development_official_audit.json"),
         "final_official": _audit_summary(predictor_dir / "final_official_audit.json"),
         "development_mean_only": _audit_summary(predictor_dir / "development_mean_only_audit.json"),

@@ -14,6 +14,7 @@ from typing import Any
 import h5py
 
 from openpi.execution_horizon import dataset as horizon_dataset
+from openpi.execution_horizon import initial_states
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--collector-script", default=None)
+    parser.add_argument("--initial-state-bank", default=None)
     parser.add_argument("--task-suite-name", default="libero_10")
     parser.add_argument("--task-start", type=int, default=0)
     parser.add_argument("--max-tasks", type=int, default=10)
@@ -70,7 +72,12 @@ def _episode_roots(data_dir: pathlib.Path, task_id: int) -> dict[int, tuple[int,
     return roots
 
 
-def _complete_output(data_dir: pathlib.Path, task_id: int, expected_episodes: set[int]) -> bool:
+def _complete_output(
+    data_dir: pathlib.Path,
+    task_id: int,
+    expected_episodes: set[int],
+    bank: initial_states.InitialStateBank | None = None,
+) -> bool:
     summary_path = data_dir / "summary.json"
     manifest_path = data_dir / "manifest.json"
     if not summary_path.exists() or not manifest_path.exists():
@@ -81,6 +88,8 @@ def _complete_output(data_dir: pathlib.Path, task_id: int, expected_episodes: se
     observed = set(_episode_roots(data_dir, task_id))
     if not observed.issubset(expected_episodes):
         raise ValueError(f"Unexpected episodes in {data_dir}: {sorted(observed - expected_episodes)}")
+    if bank is not None:
+        initial_states.dataset_groups([str(data_dir)], bank)
     return True
 
 
@@ -93,7 +102,7 @@ def _collector_command(
     output_dir: pathlib.Path,
     offset_cycle: int,
 ) -> list[str]:
-    return [
+    command = [
         sys.executable,
         str(collector_script),
         "--host",
@@ -153,6 +162,9 @@ def _collector_command(
         "--source-iteration",
         str(args.source_iteration),
     ]
+    if args.initial_state_bank is not None:
+        command.extend(("--initial-state-bank", str(pathlib.Path(args.initial_state_bank).resolve())))
+    return command
 
 
 def _run_group(command: list[str], log_path: pathlib.Path) -> None:
@@ -180,9 +192,16 @@ def main(args: argparse.Namespace) -> None:
     )
     if not collector_script.exists():
         raise FileNotFoundError(collector_script)
+    bank = initial_states.InitialStateBank(args.initial_state_bank) if args.initial_state_bank is not None else None
     episodes = list(range(args.episode_start, args.episode_end + 1))
     expected_episodes = set(episodes)
     task_end = args.task_start + args.max_tasks
+    if bank is not None:
+        if bank.manifest["task_suite"] != args.task_suite_name:
+            raise ValueError("Fresh collection task suite differs from the initial-state bank.")
+        bank.audit_partitions(
+            {"requested": {(task, episode) for task in range(args.task_start, task_end) for episode in episodes}}
+        )
     data_dirs: list[str] = []
     total_roots = 0
     started = time.monotonic()
@@ -202,7 +221,7 @@ def main(args: argparse.Namespace) -> None:
         )
         main_dir = output_dir / f"task{task_id:02d}_main" / "data"
         if main_dir.exists():
-            if not _complete_output(main_dir, task_id, expected_episodes):
+            if not _complete_output(main_dir, task_id, expected_episodes, bank):
                 raise FileExistsError(f"Refusing to overwrite incomplete main fresh-root output: {main_dir}")
         else:
             command = _collector_command(
@@ -214,7 +233,7 @@ def main(args: argparse.Namespace) -> None:
                 offset_cycle=args.root_call_offset_cycle,
             )
             _run_group(command, main_dir.parent / "collector_stdout.log")
-            if not _complete_output(main_dir, task_id, expected_episodes):
+            if not _complete_output(main_dir, task_id, expected_episodes, bank):
                 raise RuntimeError(f"Main fresh-root collector did not finish cleanly: {main_dir}")
         observed_main = _episode_roots(main_dir, task_id)
         missing = sorted(expected_episodes.difference(observed_main))
@@ -231,7 +250,7 @@ def main(args: argparse.Namespace) -> None:
             )
             supplement_dir = output_dir / f"task{task_id:02d}_supplement" / "data"
             if supplement_dir.exists():
-                if not _complete_output(supplement_dir, task_id, set(missing)):
+                if not _complete_output(supplement_dir, task_id, set(missing), bank):
                     raise FileExistsError(f"Refusing to overwrite incomplete supplement: {supplement_dir}")
             else:
                 command = _collector_command(
@@ -243,7 +262,7 @@ def main(args: argparse.Namespace) -> None:
                     offset_cycle=1,
                 )
                 _run_group(command, supplement_dir.parent / "collector_stdout.log")
-                if not _complete_output(supplement_dir, task_id, set(missing)):
+                if not _complete_output(supplement_dir, task_id, set(missing), bank):
                     raise RuntimeError(f"Fresh-root supplement did not finish cleanly: {supplement_dir}")
             observed_supplement = _episode_roots(supplement_dir, task_id)
             if set(observed_supplement) != set(missing):
@@ -262,8 +281,7 @@ def main(args: argparse.Namespace) -> None:
             data_dirs.append(str(data_dir))
         if combined_episodes != expected_episodes:
             raise ValueError(
-                f"Fresh-root task{task_id} remains incomplete: "
-                f"missing={sorted(expected_episodes - combined_episodes)}"
+                f"Fresh-root task{task_id} remains incomplete: missing={sorted(expected_episodes - combined_episodes)}"
             )
         total_roots += len(combined_episodes)
 
@@ -283,6 +301,8 @@ def main(args: argparse.Namespace) -> None:
         "data_dirs": data_dirs,
         "elapsed_seconds": time.monotonic() - started,
     }
+    if bank is not None:
+        summary.update(bank.metadata())
     _write_json(output_dir / "summary.json", summary)
     _write_json(status_path, {"status": "complete", "num_roots": total_roots})
     print(json.dumps(summary, indent=2, sort_keys=True))

@@ -10,6 +10,8 @@ import sys
 import time
 from typing import Any
 
+from openpi.execution_horizon import initial_states
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -22,6 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-relabel-roots", type=int, default=137)
     parser.add_argument("--expected-relabel-trials", type=int, default=10)
     parser.add_argument("--fresh-runner", default=None)
+    parser.add_argument("--initial-state-bank", default=None)
+    parser.add_argument("--relabel-audit-summary", default=None)
+    parser.add_argument("--relabel-audit-exit-file", default=None)
     return parser
 
 
@@ -39,6 +44,7 @@ def _run_phase(
     episode_end: int,
     host: str,
     port: int,
+    initial_state_bank: pathlib.Path,
 ) -> None:
     command = [
         sys.executable,
@@ -53,6 +59,8 @@ def _run_phase(
         host,
         "--port",
         str(port),
+        "--initial-state-bank",
+        str(initial_state_bank),
         "--task-suite-name",
         "libero_10",
         "--task-start",
@@ -84,6 +92,8 @@ def _run_phase(
 def main(args: argparse.Namespace) -> None:
     if args.poll_seconds <= 0:
         raise ValueError("poll_seconds must be positive.")
+    if bool(args.relabel_audit_summary) != bool(args.relabel_audit_exit_file):
+        raise ValueError("Both relabel-audit-summary and relabel-audit-exit-file must be provided together.")
     relabel_exit = pathlib.Path(args.relabel_exit_file).resolve()
     relabel_summary = pathlib.Path(args.relabel_summary).resolve()
     output_dir = pathlib.Path(args.output_dir).resolve()
@@ -112,6 +122,46 @@ def main(args: argparse.Namespace) -> None:
     ):
         raise ValueError(f"Dense relabel summary failed the completion contract: {summary}")
 
+    if args.relabel_audit_summary is not None:
+        audit_exit = pathlib.Path(args.relabel_audit_exit_file)
+        _write_json(status_path, {"status": "waiting_for_relabel_audit", "audit_exit": str(audit_exit)})
+        while not audit_exit.exists():
+            time.sleep(args.poll_seconds)
+        if int(audit_exit.read_text().strip()) != 0:
+            raise RuntimeError("Dense incremental audit exited nonzero; fresh collection is forbidden.")
+        audit = json.loads(pathlib.Path(args.relabel_audit_summary).read_text())
+        if audit.get("status") != "complete" or int(audit.get("checked_roots", -1)) != args.expected_relabel_roots:
+            raise ValueError("Dense incremental audit did not verify every expected root.")
+
+    bank_dir = (
+        pathlib.Path(args.initial_state_bank).resolve()
+        if args.initial_state_bank is not None
+        else output_dir / "initial_state_bank"
+    )
+    _write_json(status_path, {"status": "preparing_initial_state_bank", "initial_state_bank": str(bank_dir)})
+    if args.initial_state_bank is None:
+        with (output_dir / "initial_state_generation.log").open("w", encoding="utf-8") as log:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(pathlib.Path(__file__).with_name("generate_execution_horizon_initial_states.py")),
+                    "--output-dir",
+                    str(bank_dir),
+                ],
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                check=True,
+            )
+    bank = initial_states.InitialStateBank(bank_dir)
+    planned_isolation = bank.audit_partitions(
+        {
+            "base": {(task, episode) for task in range(10) for episode in range(50)},
+            "fresh_development": {(task, episode) for task in range(10) for episode in range(50, 90)},
+            "final": {(task, episode) for task in range(10) for episode in range(90, 100)},
+        }
+    )
+    _write_json(output_dir / "planned_initial_state_isolation.json", planned_isolation)
+
     development_dir = output_dir / "fresh_development_e50_89_r3"
     _write_json(status_path, {"status": "collecting_fresh_development", "output_dir": str(development_dir)})
     _run_phase(
@@ -121,6 +171,7 @@ def main(args: argparse.Namespace) -> None:
         episode_end=89,
         host=args.host,
         port=args.port,
+        initial_state_bank=bank_dir,
     )
     development_summary = json.loads((development_dir / "summary.json").read_text())
     if development_summary.get("status") != "complete" or int(development_summary.get("num_roots", -1)) != 400:
@@ -135,6 +186,7 @@ def main(args: argparse.Namespace) -> None:
         episode_end=99,
         host=args.host,
         port=args.port,
+        initial_state_bank=bank_dir,
     )
     final_summary = json.loads((final_dir / "summary.json").read_text())
     if final_summary.get("status") != "complete" or int(final_summary.get("num_roots", -1)) != 100:
@@ -148,6 +200,8 @@ def main(args: argparse.Namespace) -> None:
         "num_relabel_roots": args.expected_relabel_roots,
         "num_fresh_development_roots": 400,
         "num_fresh_final_roots": 100,
+        **bank.metadata(),
+        "planned_initial_state_isolation": planned_isolation,
         "semantics": "Fresh final roots are isolated and must not enter training, checkpoint selection, or calibration.",
     }
     _write_json(output_dir / "summary.json", result)
