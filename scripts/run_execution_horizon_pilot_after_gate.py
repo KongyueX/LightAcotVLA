@@ -229,7 +229,28 @@ def main(args: argparse.Namespace) -> None:
     if _tmux_present(args.policy_server_tmux):
         raise RuntimeError(f"Scoped pilot server tmux already exists: {args.policy_server_tmux}")
     server_log = output_dir / "policy_server.log"
+    # A new tmux session inherits the tmux server's environment, not this process's.
+    # Pin the same source snapshot and forward only non-secret runtime settings.
+    runtime_environment = {
+        key: os.environ[key]
+        for key in (
+            "HF_HOME",
+            "LD_LIBRARY_PATH",
+            "HF_HUB_OFFLINE",
+            "TRANSFORMERS_OFFLINE",
+            "XLA_PYTHON_CLIENT_MEM_FRACTION",
+            "XLA_PYTHON_CLIENT_PREALLOCATE",
+            "JAX_PLATFORMS",
+        )
+        if key in os.environ
+    }
+    source_paths = [str(code_dir), str(code_dir.parent / "src"), str(code_dir.parent / "packages/openpi-client/src")]
+    if os.environ.get("PYTHONPATH"):
+        source_paths.append(os.environ["PYTHONPATH"])
+    runtime_environment["PYTHONPATH"] = os.pathsep.join(source_paths)
     server_command = [
+        "env",
+        *[f"{key}={value}" for key, value in sorted(runtime_environment.items())],
         sys.executable,
         str(code_dir / "serve_policy.py"),
         "--env",
