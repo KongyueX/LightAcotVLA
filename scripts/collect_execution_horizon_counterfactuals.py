@@ -90,6 +90,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--source-policy",
+        choices=("match_continuation", "fixed_reference", "current_student"),
+        default="match_continuation",
+        help=(
+            "Policy used to reach collection roots. match_continuation preserves the legacy behavior; "
+            "current_student enables on-policy state collection while the counterfactual branches may "
+            "still use a fixed continuation policy."
+        ),
+    )
+    parser.add_argument(
         "--fixed-continuation-horizon",
         type=int,
         default=5,
@@ -367,11 +377,22 @@ def _fixed_continuation_horizon(args: argparse.Namespace) -> int:
 
 def _nonstudent_source_horizon(args: argparse.Namespace) -> int:
     """Choose the rollout horizon used to reach later collection roots."""
+    if getattr(args, "source_policy", "match_continuation") == "fixed_reference":
+        return int(args.reference_horizon)
     if args.continuation_policy == "fixed_h9":
         return 9
     if args.continuation_policy == "fixed_h":
         return int(args.reference_horizon)
     raise ValueError("A non-student source horizon was requested for current_student continuation.")
+
+
+def _source_uses_student(args: argparse.Namespace) -> bool:
+    source_policy = getattr(args, "source_policy", "match_continuation")
+    if source_policy == "current_student":
+        return True
+    if source_policy in {"match_continuation", "fixed_reference"}:
+        return source_policy == "match_continuation" and args.continuation_policy == "current_student"
+    raise ValueError(f"Unsupported source_policy: {source_policy!r}.")
 
 
 def _frame(observation: dict[str, Any]) -> np.ndarray | None:
@@ -688,11 +709,12 @@ def main(args: argparse.Namespace) -> None:
     )
     if not episode_ids or any(episode_id < 0 for episode_id in episode_ids):
         raise ValueError("episode_ids must contain non-negative values.")
-    if args.continuation_policy == "current_student" and args.v2_budget_capacity <= 0:
+    student_is_used = args.continuation_policy == "current_student" or _source_uses_student(args)
+    if student_is_used and args.v2_budget_capacity <= 0:
         raise ValueError("v2_budget_capacity must be positive.")
     if args.student_mode == "hierarchical_transformer":
-        if args.continuation_policy != "current_student":
-            raise ValueError("hierarchical_transformer is meaningful only with current_student continuation.")
+        if not student_is_used:
+            raise ValueError("hierarchical_transformer requires current_student source or continuation.")
         if args.hierarchical_calibration_json is None:
             raise ValueError("hierarchical_transformer requires --hierarchical-calibration-json.")
         args._hierarchical_calibration = hierarchical.HierarchicalCalibration.load(args.hierarchical_calibration_json)
@@ -737,6 +759,7 @@ def main(args: argparse.Namespace) -> None:
     metadata = {
         "task_suite": args.task_suite_name,
         "teacher_samples": args.teacher_samples,
+        "source_policy": args.source_policy,
         "continuation_policy": args.continuation_policy,
         "fixed_continuation_horizon": (
             _fixed_continuation_horizon(args) if args.continuation_policy != "current_student" else None
@@ -827,7 +850,7 @@ def main(args: argparse.Namespace) -> None:
                             observation, task_description, args.resize_size
                         )
                         progress = float(np.clip(step / max(episode_step_limit, 1), 0.0, 1.0))
-                        use_student = args.continuation_policy == "current_student"
+                        use_student = _source_uses_student(args)
                         result = _policy_request(
                             client,
                             policy_input,

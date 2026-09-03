@@ -91,6 +91,32 @@ def test_fixed_h_source_rollout_uses_reference_and_legacy_h9_is_preserved() -> N
     )
 
 
+def test_student_source_can_be_decoupled_from_fixed_branch_continuation() -> None:
+    args = SimpleNamespace(
+        source_policy="current_student",
+        continuation_policy="fixed_h",
+        fixed_continuation_horizon=5,
+        reference_horizon=10,
+    )
+    assert collector._source_uses_student(args)  # noqa: SLF001
+    assert collector._fixed_continuation_horizon(args) == 5  # noqa: SLF001
+
+
+def test_source_policy_defaults_preserve_legacy_behavior() -> None:
+    assert collector._source_uses_student(SimpleNamespace(continuation_policy="current_student"))  # noqa: SLF001
+    assert not collector._source_uses_student(SimpleNamespace(continuation_policy="fixed_h"))  # noqa: SLF001
+    assert (
+        collector._nonstudent_source_horizon(  # noqa: SLF001
+            SimpleNamespace(
+                source_policy="fixed_reference",
+                continuation_policy="fixed_h9",
+                reference_horizon=10,
+            )
+        )
+        == 10
+    )
+
+
 def test_root_record_aggregates_counts_elapsed_and_paired_regressions() -> None:
     shape = dataset.DatasetShape(
         prefix_feature_dim=8,
