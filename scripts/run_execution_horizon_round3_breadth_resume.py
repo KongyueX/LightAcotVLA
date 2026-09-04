@@ -17,7 +17,6 @@ import pathlib
 import sys
 from typing import Any
 
-
 MINIMUM_ROOTS_PER_TASK_ROLE = 10
 SNAPSHOT_DIRECTORY_NAME = "breadth_first_min10"
 

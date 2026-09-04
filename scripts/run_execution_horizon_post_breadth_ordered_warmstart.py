@@ -12,7 +12,6 @@ import subprocess
 import sys
 from typing import Any
 
-
 CANDIDATE_HORIZONS = (5, 10, 15, 20, 25)
 TRAINING_SEED = 7
 
