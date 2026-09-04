@@ -14,6 +14,17 @@ import numpy as np
 SCHEMA_VERSION = 2
 LEGACY_SCHEMA_VERSION = 1
 
+_TRIAL_AXIS_FIELDS = frozenset(
+    {
+        "trial_success",
+        "trial_timeout",
+        "trial_remaining_steps",
+        "trial_remaining_calls",
+        "trial_elapsed",
+        "trial_valid",
+    }
+)
+
 
 @dataclasses.dataclass(frozen=True)
 class DatasetShape:
@@ -321,10 +332,18 @@ def load_counterfactual_arrays(
     *,
     include_physics: bool = False,
 ) -> dict[str, np.ndarray]:
-    """Load fixed-size arrays, normalizing legacy v1 shards when requested alone."""
+    """Load arrays, normalizing legacy v1 and padding v2 trial axes to the widest shard."""
 
     shards = discover_shards(inputs)
     versions: set[int] = set()
+    maximum_trials = 1
+    for shard in shards:
+        with h5py.File(shard, "r") as handle:
+            version = int(handle.attrs["schema_version"])
+            if version == SCHEMA_VERSION:
+                maximum_trials = max(maximum_trials, int(handle["trial_valid"].shape[-1]))
+            elif version != LEGACY_SCHEMA_VERSION:
+                raise ValueError(f"Unsupported schema in {shard}: {version}")
     pieces: dict[str, list[np.ndarray]] = {}
     physics_rows: list[np.ndarray] = []
     expected_keys: set[str] | None = None
@@ -341,10 +360,21 @@ def load_counterfactual_arrays(
                 raise ValueError(f"Unsupported schema in {shard}: {version}")
             if expected_keys is None:
                 expected_keys = set(shard_arrays)
-                expected_shapes = {name: value.shape[1:] for name, value in shard_arrays.items()}
+                expected_shapes = {
+                    name: (*value.shape[1:-1], maximum_trials) if name in _TRIAL_AXIS_FIELDS else value.shape[1:]
+                    for name, value in shard_arrays.items()
+                }
             elif set(shard_arrays) != expected_keys:
                 raise ValueError("Counterfactual shards do not expose the same fixed fields.")
             for name, value in shard_arrays.items():
+                if name in _TRIAL_AXIS_FIELDS and value.shape[-1] < maximum_trials:
+                    pad_value = np.nan if name == "trial_elapsed" else 0
+                    value = np.pad(
+                        value,
+                        ((0, 0), (0, 0), (0, maximum_trials - value.shape[-1])),
+                        mode="constant",
+                        constant_values=pad_value,
+                    )
                 if value.shape[1:] != expected_shapes[name]:
                     raise ValueError(
                         f"Counterfactual shard shape mismatch for {name}: "

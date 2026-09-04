@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import h5py
@@ -98,6 +99,25 @@ def test_v2_count_aware_roundtrip(tmp_path):
     np.testing.assert_array_equal(arrays["physics_state"][0], np.arange(9, dtype=np.float64))
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert dataset.DatasetShape(**manifest["shape"]) == shape
+
+
+def test_v2_loader_pads_mixed_trial_widths(tmp_path):
+    short_shape = _shape()
+    long_shape = dataclasses.replace(short_shape, max_trials=5)
+    short_dir = tmp_path / "short"
+    long_dir = tmp_path / "long"
+    with dataset.ShardedCounterfactualWriter(short_dir, shape=short_shape, records_per_shard=1) as writer:
+        writer.append(_record(short_shape))
+    with dataset.ShardedCounterfactualWriter(long_dir, shape=long_shape, records_per_shard=1) as writer:
+        writer.append(_record(long_shape))
+
+    arrays = dataset.load_counterfactual_arrays((short_dir, long_dir))
+
+    assert arrays["trial_valid"].shape == (2, short_shape.num_candidates, long_shape.max_trials)
+    assert np.all(arrays["trial_valid"][0, :, : short_shape.max_trials])
+    assert not np.any(arrays["trial_valid"][0, :, short_shape.max_trials :])
+    assert np.all(np.isnan(arrays["trial_elapsed"][0, :, short_shape.max_trials :]))
+    assert np.all(arrays["trial_count"][0] == short_shape.max_trials)
 
 
 def test_v1_loader_synthesizes_single_trial_counts(tmp_path):
