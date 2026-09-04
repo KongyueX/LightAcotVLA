@@ -88,6 +88,18 @@ def _file_digest(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def _executable_path(value: str) -> pathlib.Path:
+    """Return an absolute executable path without resolving a virtualenv symlink."""
+
+    path = pathlib.Path(value).expanduser()
+    if not path.is_absolute():
+        path = pathlib.Path.cwd() / path
+    path = path.absolute()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    return path
+
+
 def _write_json(path: pathlib.Path, payload: Mapping[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -869,9 +881,7 @@ def main(args: argparse.Namespace) -> None:
 
         bank = pathlib.Path(args.initial_state_bank).resolve()
         aggregate_path = pathlib.Path(args.aggregate_calibration_json).resolve()
-        python = pathlib.Path(args.python).resolve()
-        if not python.is_file():
-            raise FileNotFoundError(python)
+        python = _executable_path(args.python)
         realized_groups: dict[str, list[int]] = {role: [] for role in ROLE_TARGETS}
         data_dirs: list[str] = []
         realized_by_task: dict[str, Any] = {}

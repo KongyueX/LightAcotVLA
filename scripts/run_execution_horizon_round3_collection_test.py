@@ -58,6 +58,16 @@ def test_requested_task_seed_stride_is_uint32_safe_and_disjoint() -> None:
         round3.validate_root_seed_namespace(task_stride=10_000_000)
 
 
+def test_python_executable_keeps_virtualenv_symlink(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "python-real"
+    target.write_text("binary")
+    virtualenv_python = tmp_path / "venv-python"
+    virtualenv_python.symlink_to(target)
+
+    assert round3._executable_path(str(virtualenv_python)) == virtualenv_python.absolute()  # noqa: SLF001
+    assert round3._executable_path(str(virtualenv_python)) != target.resolve()  # noqa: SLF001
+
+
 def test_fallback_batch_never_crosses_role_or_reuses_episode() -> None:
     selection = round3.build_selection()
     task = 3
