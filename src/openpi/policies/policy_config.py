@@ -61,11 +61,12 @@ def _execution_horizon_artifact(
 
 
 def _execution_horizon_paired_head_overrides(config: dict[str, Any]) -> dict[str, bool]:
-    """Translate paired-head artifact flags while keeping legacy artifacts opt-out."""
+    """Translate optional head flags while keeping legacy artifacts opt-out."""
 
     return {
         "execution_horizon_paired_advantage_heads": bool(config.get("paired_advantage_heads", False)),
         "execution_horizon_paired_distribution_heads": bool(config.get("paired_distribution_heads", False)),
+        "execution_horizon_ordered_continuation_head": bool(config.get("ordered_continuation_head", False)),
     }
 
 

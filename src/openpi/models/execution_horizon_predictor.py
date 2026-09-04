@@ -40,6 +40,7 @@ class ExecutionHorizonPredictorConfig:
     visual_num_queries: int = 0
     paired_advantage_heads: bool = False
     paired_distribution_heads: bool = False
+    ordered_continuation_head: bool = False
     remaining_calls_scale: float = 64.0
     remaining_steps_scale: float = 512.0
     elapsed_advantage_scale: float = 1.0
@@ -97,6 +98,8 @@ class ExecutionHorizonPredictorConfig:
             raise ValueError("paired_advantage_heads are supported only by the transformer backbone.")
         if self.paired_distribution_heads and self.temporal_backbone != "transformer":
             raise ValueError("paired_distribution_heads are supported only by the transformer backbone.")
+        if self.ordered_continuation_head and self.temporal_backbone != "transformer":
+            raise ValueError("ordered_continuation_head is supported only by the transformer backbone.")
         if self.paired_advantage_heads and self.paired_distribution_heads:
             raise ValueError("paired_advantage_heads and paired_distribution_heads are mutually exclusive.")
         if not math.isfinite(self.elapsed_advantage_scale) or self.elapsed_advantage_scale <= 0:
@@ -137,6 +140,7 @@ class ExecutionHorizonLossWeights:
     danger_rescue: float = 0.0
     paired_elapsed: float = 0.0
     faster_long: float = 0.0
+    ordered_listwise: float = 0.0
 
 
 DEFAULT_LOSS_WEIGHTS = ExecutionHorizonLossWeights()
@@ -188,6 +192,84 @@ def _binomial_nll(logits: jax.Array, success_count: jax.Array, trial_count: jax.
     success_count = jnp.asarray(success_count, dtype=logits.dtype)
     trial_count = jnp.asarray(trial_count, dtype=logits.dtype)
     return trial_count * jax.nn.softplus(logits) - success_count * logits
+
+
+def ordered_continuation_distribution(
+    continuation_logits: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
+    """Convert ordered continue decisions into a categorical horizon distribution.
+
+    For ``M`` ordered horizon candidates, logit ``i`` decides whether execution
+    continues from candidate ``i`` to candidate ``i + 1``.  The resulting
+    categorical distribution therefore respects the shared-prefix structure of
+    action chunks instead of treating candidate horizons as unrelated classes.
+    """
+
+    continuation_logits = jnp.asarray(continuation_logits)
+    if continuation_logits.shape[-1] < 1:
+        raise ValueError("ordered continuation requires at least two horizon candidates.")
+    log_continue = -jax.nn.softplus(-continuation_logits)
+    log_stop = -jax.nn.softplus(continuation_logits)
+    log_prefix = jnp.concatenate(
+        [
+            jnp.zeros_like(continuation_logits[..., :1]),
+            jnp.cumsum(log_continue, axis=-1),
+        ],
+        axis=-1,
+    )
+    log_probability = jnp.concatenate(
+        [log_prefix[..., :-1] + log_stop, log_prefix[..., -1:]],
+        axis=-1,
+    )
+    log_probability -= jsp.special.logsumexp(log_probability, axis=-1, keepdims=True)
+    return log_probability, jnp.exp(log_probability)
+
+
+def success_first_listwise_target(
+    success_count: jax.Array,
+    trial_count: jax.Array,
+    elapsed_mean: jax.Array,
+    valid: jax.Array,
+    *,
+    elapsed_temperature: float,
+) -> tuple[jax.Array, jax.Array]:
+    """Build a lexicographic target: best success rate, then lower elapsed time.
+
+    Candidates below the root's best observed success rate receive no target
+    mass.  Among candidates tied at the best success rate, elapsed time defines
+    a soft listwise target after root-local range normalization.
+    """
+
+    if not math.isfinite(elapsed_temperature) or elapsed_temperature <= 0:
+        raise ValueError("elapsed_temperature must be finite and positive.")
+    success_count = jnp.asarray(success_count, dtype=jnp.float32)
+    trial_count = jnp.asarray(trial_count, dtype=jnp.float32)
+    elapsed_mean = jnp.asarray(elapsed_mean, dtype=jnp.float32)
+    valid = jnp.asarray(valid, dtype=jnp.bool_)
+    if success_count.shape != trial_count.shape or success_count.shape != elapsed_mean.shape:
+        raise ValueError("success_count, trial_count, and elapsed_mean must have identical shapes.")
+    valid = jnp.broadcast_to(valid, success_count.shape)
+    valid &= trial_count > 0
+    valid &= jnp.isfinite(success_count) & jnp.isfinite(trial_count) & jnp.isfinite(elapsed_mean)
+    success_rate = success_count / jnp.maximum(trial_count, 1.0)
+    best_success = jnp.max(jnp.where(valid, success_rate, -jnp.inf), axis=-1, keepdims=True)
+    best_mask = valid & jnp.isclose(success_rate, best_success, rtol=0.0, atol=1e-6)
+    root_valid = jnp.any(best_mask, axis=-1)
+
+    best_elapsed_min = jnp.min(jnp.where(best_mask, elapsed_mean, jnp.inf), axis=-1, keepdims=True)
+    best_elapsed_max = jnp.max(jnp.where(best_mask, elapsed_mean, -jnp.inf), axis=-1, keepdims=True)
+    best_elapsed_min = jnp.where(root_valid[..., None], best_elapsed_min, 0.0)
+    best_elapsed_max = jnp.where(root_valid[..., None], best_elapsed_max, best_elapsed_min)
+    elapsed_range = best_elapsed_max - best_elapsed_min
+    normalized_elapsed = jnp.where(
+        elapsed_range > 1e-6,
+        (elapsed_mean - best_elapsed_min) / jnp.maximum(elapsed_range, 1e-6),
+        0.0,
+    )
+    target_logits = jnp.where(best_mask, -normalized_elapsed / elapsed_temperature, -1e30)
+    target = jax.nn.softmax(target_logits, axis=-1)
+    target = jnp.where(root_valid[..., None], target, 0.0)
+    return target, root_valid
 
 
 def _gaussian_nll(
@@ -596,13 +678,14 @@ class ExecutionHorizonPredictor(nnx.Module):
         summary = nnx.swish(self.summary_proj(jnp.concatenate([temporal_summary, context], axis=-1)))
         remaining_calls = nnx.softplus(self.remaining_calls_head(summary)) * cfg.remaining_calls_scale
         remaining_steps = nnx.softplus(self.remaining_steps_head(summary)) * cfg.remaining_steps_scale
+        raw_h_ordinal_logits = self.raw_h_ordinal_head(summary)
         result = {
             "final_risk": nnx.softplus(self.final_risk_head(tokens)[..., 0]),
             "action_cot_risk": nnx.softplus(self.action_cot_risk_head(tokens)[..., 0]),
             "fused_risk": nnx.softplus(self.fused_risk_head(tokens)[..., 0]),
             "event_logits": self.event_head(tokens)[..., 0],
             "raw_h_logits": self.raw_h_logits_head(summary),
-            "raw_h_ordinal_logits": self.raw_h_ordinal_head(summary),
+            "raw_h_ordinal_logits": raw_h_ordinal_logits,
             "success_logits": self.success_head(summary),
             "timeout_logits": self.timeout_head(summary),
             "remaining_calls": remaining_calls,
@@ -610,6 +693,21 @@ class ExecutionHorizonPredictor(nnx.Module):
             "temporal_feature": summary,
             "overlap_consistency": consistency[..., 0],
         }
+        if cfg.ordered_continuation_head:
+            ordered_log_probability, ordered_probability = ordered_continuation_distribution(
+                raw_h_ordinal_logits
+            )
+            ordered_index = jnp.argmax(ordered_probability, axis=-1)
+            ordered_selected_h = jnp.asarray(cfg.candidate_horizons, dtype=jnp.int32)[ordered_index]
+            result.update(
+                {
+                    "ordered_continuation_logits": raw_h_ordinal_logits,
+                    "ordered_continuation_probability": jax.nn.sigmoid(raw_h_ordinal_logits),
+                    "ordered_horizon_log_probability": ordered_log_probability,
+                    "ordered_horizon_probability": ordered_probability,
+                    "ordered_selected_h": ordered_selected_h,
+                }
+            )
         if cfg.temporal_backbone == "transformer":
             hazard_logits = self.hazard_head(tokens)[..., 0]
             hazard = jax.nn.sigmoid(hazard_logits)
@@ -752,6 +850,7 @@ def execution_horizon_loss(
     remaining_calls_scale: float = 64.0,
     remaining_steps_scale: float = 512.0,
     elapsed_advantage_scale: float = 1.0,
+    ordered_listwise_elapsed_temperature: float = 0.25,
     candidate_horizons: tuple[int, ...] | None = None,
     reference_horizon: int = 10,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
@@ -840,6 +939,44 @@ def execution_horizon_loss(
     )
     ordinal_targets = raw_h[:, None] > candidate_array[:-1][None, :]
     raw_h_ordinal_loss = jnp.mean(_bce_with_logits(predictions["raw_h_ordinal_logits"], ordinal_targets))
+
+    ordered_listwise_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    ordered_listwise_target_entropy = jnp.asarray(0.0, dtype=jnp.float32)
+    ordered_listwise_target_horizon = jnp.asarray(0.0, dtype=jnp.float32)
+    ordered_listwise_valid_fraction = jnp.asarray(0.0, dtype=jnp.float32)
+    if weights.ordered_listwise > 0:
+        required = ("success_count", "trial_count", "elapsed_mean")
+        missing = [name for name in required if name not in labels]
+        if missing:
+            raise ValueError(f"ordered listwise loss requires count and elapsed labels: {missing}.")
+        if "ordered_horizon_log_probability" not in predictions:
+            raise ValueError("ordered listwise loss requires ordered_continuation_head predictor outputs.")
+        ordered_log_probability = jnp.asarray(predictions["ordered_horizon_log_probability"])
+        if ordered_log_probability.shape[-1] != len(candidate_horizons):
+            raise ValueError(
+                "ordered horizon probability width must match candidate_horizons; "
+                f"got {ordered_log_probability.shape[-1]} and {candidate_horizons}."
+            )
+        ordered_target, ordered_root_valid = success_first_listwise_target(
+            labels["success_count"],
+            labels["trial_count"],
+            labels["elapsed_mean"],
+            branch_mask,
+            elapsed_temperature=ordered_listwise_elapsed_temperature,
+        )
+        ordered_listwise_loss = _masked_mean(
+            -jnp.sum(ordered_target * ordered_log_probability, axis=-1),
+            ordered_root_valid,
+        )
+        ordered_listwise_target_entropy = _masked_mean(
+            -jnp.sum(ordered_target * jnp.log(jnp.maximum(ordered_target, 1e-12)), axis=-1),
+            ordered_root_valid,
+        )
+        ordered_listwise_target_horizon = _masked_mean(
+            jnp.sum(ordered_target * candidate_array[None, :], axis=-1),
+            ordered_root_valid,
+        )
+        ordered_listwise_valid_fraction = jnp.mean(ordered_root_valid)
 
     survival_loss = jnp.asarray(0.0, dtype=jnp.float32)
     if weights.survival > 0:
@@ -1150,6 +1287,10 @@ def execution_horizon_loss(
         "event_bce": event_loss,
         "raw_h_classification": raw_h_classification_loss,
         "raw_h_ordinal": raw_h_ordinal_loss,
+        "ordered_listwise_nll": ordered_listwise_loss,
+        "ordered_listwise_target_entropy": ordered_listwise_target_entropy,
+        "ordered_listwise_target_horizon": ordered_listwise_target_horizon,
+        "ordered_listwise_valid_fraction": ordered_listwise_valid_fraction,
         "survival_nll": survival_loss,
         "success_advantage_nll": success_advantage_loss,
         "elapsed_advantage_nll": elapsed_advantage_loss,
@@ -1183,6 +1324,7 @@ def execution_horizon_loss(
         + weights.event * event_loss
         + weights.raw_h_classification * raw_h_classification_loss
         + weights.raw_h_ordinal * raw_h_ordinal_loss
+        + weights.ordered_listwise * ordered_listwise_loss
         + weights.survival * survival_loss
         + weights.success_advantage * success_advantage_loss
         + weights.elapsed_advantage * elapsed_advantage_loss

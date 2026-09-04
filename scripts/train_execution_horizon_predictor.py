@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import pathlib
 import time
 from typing import Any
@@ -64,6 +65,7 @@ class Args:
     visual_num_queries: int = 0
     paired_advantage_heads: bool = False
     paired_distribution_heads: bool = False
+    ordered_continuation_head: bool = False
     resume_legacy_paired_heads: bool = False
     physical_action_dim: int = 7
     minimum_trials_per_candidate: int = 3
@@ -95,6 +97,8 @@ class Args:
     loss_danger_rescue: float = 0.0
     loss_paired_elapsed: float = 0.0
     loss_faster_long: float = 0.0
+    loss_ordered_listwise: float = 0.0
+    ordered_listwise_elapsed_temperature: float = 0.25
 
     success_failure_multiplier: float = 4.0
     timeout_positive_multiplier: float = 4.0
@@ -165,6 +169,7 @@ def _loss_weights(args: Args) -> ExecutionHorizonLossWeights:
         danger_rescue=args.loss_danger_rescue if hierarchical else 0.0,
         paired_elapsed=args.loss_paired_elapsed if hierarchical else 0.0,
         faster_long=args.loss_faster_long if hierarchical else 0.0,
+        ordered_listwise=args.loss_ordered_listwise if hierarchical else 0.0,
     )
 
 
@@ -187,6 +192,15 @@ def _validate_paired_args(args: Args) -> None:
         raise ValueError("paired_advantage_heads require temporal_backbone=transformer.")
     if args.paired_distribution_heads and args.temporal_backbone != "transformer":
         raise ValueError("paired_distribution_heads require temporal_backbone=transformer.")
+    if args.ordered_continuation_head and args.temporal_backbone != "transformer":
+        raise ValueError("ordered_continuation_head requires temporal_backbone=transformer.")
+    if args.loss_ordered_listwise > 0 and not args.ordered_continuation_head:
+        raise ValueError("--loss-ordered-listwise requires --ordered-continuation-head.")
+    if (
+        not math.isfinite(args.ordered_listwise_elapsed_temperature)
+        or args.ordered_listwise_elapsed_temperature <= 0
+    ):
+        raise ValueError("ordered_listwise_elapsed_temperature must be positive.")
     if paired_losses_enabled and not (args.paired_advantage_heads or args.paired_distribution_heads):
         raise ValueError("Paired loss weights require an explicit paired head mode.")
     if args.paired_distribution_heads and (args.loss_danger_rescue <= 0 or args.loss_paired_elapsed <= 0):
@@ -602,6 +616,7 @@ def main(args: Args) -> None:
         visual_num_queries=args.visual_num_queries,
         paired_advantage_heads=args.paired_advantage_heads,
         paired_distribution_heads=args.paired_distribution_heads,
+        ordered_continuation_head=args.ordered_continuation_head,
         elapsed_advantage_scale=elapsed_advantage_scale,
         calls_advantage_scale=calls_advantage_scale,
     )
@@ -670,6 +685,7 @@ def main(args: Args) -> None:
                 remaining_calls_scale=predictor_config.remaining_calls_scale,
                 remaining_steps_scale=predictor_config.remaining_steps_scale,
                 elapsed_advantage_scale=predictor_config.elapsed_advantage_scale,
+                ordered_listwise_elapsed_temperature=args.ordered_listwise_elapsed_temperature,
                 candidate_horizons=predictor_config.candidate_horizons,
                 reference_horizon=predictor_config.reference_horizon,
             )
@@ -692,6 +708,7 @@ def main(args: Args) -> None:
             remaining_calls_scale=predictor_config.remaining_calls_scale,
             remaining_steps_scale=predictor_config.remaining_steps_scale,
             elapsed_advantage_scale=predictor_config.elapsed_advantage_scale,
+            ordered_listwise_elapsed_temperature=args.ordered_listwise_elapsed_temperature,
             candidate_horizons=predictor_config.candidate_horizons,
             reference_horizon=predictor_config.reference_horizon,
         )
@@ -947,41 +964,51 @@ def main(args: Args) -> None:
                 metrics_file.flush()
                 print(json.dumps(record, sort_keys=True), flush=True)
                 validation_loss = last_validation_metrics["validation/loss"]
-                validation_objective = (
-                    last_validation_metrics["validation/pairwise_selection_score"]
-                    if predictor_config.paired_advantage_heads or predictor_config.paired_distribution_heads
-                    else validation_loss
+                ordered_warm_start = (
+                    predictor_config.ordered_continuation_head and weights.ordered_listwise > 0
                 )
+                if ordered_warm_start:
+                    validation_objective = last_validation_metrics["validation/ordered_listwise_nll"]
+                elif predictor_config.paired_advantage_heads or predictor_config.paired_distribution_heads:
+                    validation_objective = last_validation_metrics["validation/pairwise_selection_score"]
+                else:
+                    validation_objective = validation_loss
                 if baseline_success_brier is None:
                     baseline_success_brier = last_validation_metrics["validation/success_brier"]
                 selection_feasible = False
                 long_coverage = -1.0
                 if args.temporal_backbone == "transformer":
                     long_coverage = last_validation_metrics["validation/long_coverage"]
-                    selection_feasible = (
-                        long_coverage > 0
-                        and last_validation_metrics["validation/false_long_upper_95"]
-                        <= args.selection_false_long_upper_bound
-                        and last_validation_metrics["validation/selected_success_advantage_lcb95"]
-                        >= -args.selection_success_noninferiority
-                        and last_validation_metrics["validation/selected_elapsed_advantage_ucb95"] < 0
-                        and last_validation_metrics["validation/success_brier"] <= baseline_success_brier
-                    )
-                    improved = (
-                        selection_feasible
-                        and (
-                            not best_selection_feasible
-                            or long_coverage > best_long_coverage + 1e-6
-                            or (
-                                abs(long_coverage - best_long_coverage) <= 1e-6
-                                and validation_objective < best_validation_objective - args.early_stopping_min_delta
-                            )
+                    if ordered_warm_start:
+                        improved = validation_objective < (
+                            best_validation_objective - args.early_stopping_min_delta
                         )
-                    ) or (
-                        not selection_feasible
-                        and not best_selection_feasible
-                        and validation_objective < best_validation_objective - args.early_stopping_min_delta
-                    )
+                    else:
+                        selection_feasible = (
+                            long_coverage > 0
+                            and last_validation_metrics["validation/false_long_upper_95"]
+                            <= args.selection_false_long_upper_bound
+                            and last_validation_metrics["validation/selected_success_advantage_lcb95"]
+                            >= -args.selection_success_noninferiority
+                            and last_validation_metrics["validation/selected_elapsed_advantage_ucb95"] < 0
+                            and last_validation_metrics["validation/success_brier"] <= baseline_success_brier
+                        )
+                        improved = (
+                            selection_feasible
+                            and (
+                                not best_selection_feasible
+                                or long_coverage > best_long_coverage + 1e-6
+                                or (
+                                    abs(long_coverage - best_long_coverage) <= 1e-6
+                                    and validation_objective
+                                    < best_validation_objective - args.early_stopping_min_delta
+                                )
+                            )
+                        ) or (
+                            not selection_feasible
+                            and not best_selection_feasible
+                            and validation_objective < best_validation_objective - args.early_stopping_min_delta
+                        )
                 else:
                     improved = validation_loss < best_validation_loss - args.early_stopping_min_delta
                 if improved:
@@ -1039,6 +1066,13 @@ def main(args: Args) -> None:
         "best_validation_step": best_validation_step,
         "best_validation_loss": best_validation_loss,
         "best_validation_objective": best_validation_objective,
+        "best_validation_objective_name": (
+            "ordered_listwise_nll"
+            if predictor_config.ordered_continuation_head and weights.ordered_listwise > 0
+            else "pairwise_selection_score"
+            if predictor_config.paired_advantage_heads or predictor_config.paired_distribution_heads
+            else "loss"
+        ),
         "best_long_coverage": best_long_coverage if args.temporal_backbone == "transformer" else None,
         "best_selection_feasible": best_selection_feasible if args.temporal_backbone == "transformer" else None,
         "initial_validation_success_brier": baseline_success_brier,

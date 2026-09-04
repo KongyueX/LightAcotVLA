@@ -15,7 +15,12 @@ sys.path.insert(0, str(_SCRIPT.parent))
 trainer = importlib.import_module("train_execution_horizon_predictor")
 
 
-def _predictor_config(*, legacy_paired: bool = False, paired_distribution: bool = False):
+def _predictor_config(
+    *,
+    legacy_paired: bool = False,
+    paired_distribution: bool = False,
+    ordered_continuation: bool = False,
+):
     return trainer.ExecutionHorizonPredictorConfig(
         prefix_feature_dim=16,
         state_dim=4,
@@ -32,6 +37,7 @@ def _predictor_config(*, legacy_paired: bool = False, paired_distribution: bool 
         visual_num_queries=4,
         paired_advantage_heads=legacy_paired,
         paired_distribution_heads=paired_distribution,
+        ordered_continuation_head=ordered_continuation,
     )
 
 
@@ -138,9 +144,12 @@ def test_paired_distribution_cli_and_loss_weights_are_explicit() -> None:
             "--temporal-backbone",
             "transformer",
             "--paired-distribution-heads",
+            "--ordered-continuation-head",
             "--loss-danger-rescue",
             "1",
             "--loss-paired-elapsed",
+            "1",
+            "--loss-ordered-listwise",
             "1",
             "--resume-params",
             "legacy/params",
@@ -154,11 +163,42 @@ def test_paired_distribution_cli_and_loss_weights_are_explicit() -> None:
     weights = trainer._loss_weights(args)  # noqa: SLF001
     assert args.paired_distribution_heads is True
     assert args.resume_legacy_paired_heads is True
+    assert args.ordered_continuation_head is True
     assert args.input_split_manifest == "four-way.json"
     assert weights.success_advantage == 0.0
     assert weights.elapsed_advantage == 0.0
     assert weights.danger_rescue == 1.0
     assert weights.paired_elapsed == 1.0
+    assert weights.ordered_listwise == 1.0
+
+
+def test_ordered_listwise_requires_explicit_continuation_head(tmp_path) -> None:
+    args = trainer.Args(
+        dataset=(str(tmp_path / "missing"),),
+        output_dir=str(tmp_path / "out"),
+        temporal_backbone="transformer",
+        loss_ordered_listwise=1.0,
+    )
+
+    with pytest.raises(ValueError, match="requires --ordered-continuation-head"):
+        trainer.main(args)
+    assert not (tmp_path / "out").exists()
+
+
+def test_ordered_continuation_strict_resume_keeps_existing_parameter_tree(monkeypatch) -> None:
+    source = trainer.ExecutionHorizonPredictor(_predictor_config(), rngs=nnx.Rngs(7))
+    loaded = {"execution_horizon_predictor": nnx.state(source, nnx.Param).to_pure_dict()}
+    monkeypatch.setattr(trainer.model_lib, "restore_params", lambda *_args, **_kwargs: loaded)
+    monkeypatch.setattr(trainer.model_lib, "convert_str_keys_to_int", lambda value: value)
+    target = trainer.ExecutionHorizonPredictor(
+        _predictor_config(ordered_continuation=True),
+        rngs=nnx.Rngs(11),
+    )
+
+    restored, report = trainer._restore_predictor(target, "strict/params")  # noqa: SLF001
+
+    assert report == {"mode": "strict", "enabled": False}
+    assert restored.config.ordered_continuation_head is True
 
 
 def test_paired_distribution_fails_fast_without_both_likelihood_losses(tmp_path) -> None:

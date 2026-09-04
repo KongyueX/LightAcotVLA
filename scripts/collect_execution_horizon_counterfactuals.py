@@ -20,6 +20,7 @@ from openpi_client import websocket_client_policy as websocket_policy
 from openpi.execution_horizon import dataset as horizon_dataset
 from openpi.execution_horizon import hierarchical
 from openpi.execution_horizon import initial_states as horizon_initial_states
+from openpi.execution_horizon import ordered
 from openpi.execution_horizon import v2
 
 ROOT_SEED_EPISODE_STRIDE = 10_000
@@ -29,6 +30,8 @@ ROOT_SEED_BRANCH_SCHEDULE_OFFSET = 17
 LEGACY_ROOT_SEED_SCHEME = "affine_task_episode_step_uint32_v1"
 LANED_ROOT_SEED_SCHEME = "affine_task_episode_repeat_schedule_continuation_lanes_uint32_v2"
 MAX_POLICY_SEED = int(np.iinfo(np.uint32).max)
+HIERARCHICAL_MODE = "hierarchical_transformer"
+ORDERED_MODE = "ordered_transformer"
 
 
 @dataclasses.dataclass
@@ -143,7 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--student-mode",
-        choices=("v2_distilled", "v2_value_refined", "hierarchical_transformer"),
+        choices=("v2_distilled", "v2_value_refined", HIERARCHICAL_MODE, ORDERED_MODE),
         default="v2_value_refined",
     )
     parser.add_argument("--hierarchical-calibration-json", default=None)
@@ -570,7 +573,14 @@ def _student_horizon(
     args: argparse.Namespace,
     budget_state: v2.EpisodeBudgetState,
 ) -> tuple[int, int]:
-    if args.student_mode == "hierarchical_transformer":
+    if args.student_mode == ORDERED_MODE:
+        selected = ordered.selected_horizon(
+            result,
+            model_action_horizon=args.model_action_horizon,
+        )
+        return selected, selected
+
+    if args.student_mode == HIERARCHICAL_MODE:
         predictor_outputs = {
             name.removeprefix("execution_horizon_"): value
             for name, value in result.items()
@@ -704,7 +714,10 @@ def _run_branch(
     previous_actions: np.ndarray | None = np.asarray(primary_actions, dtype=np.float32)
     previous_h = forced_horizon
     budget_state = copy.deepcopy(root_budget_state)
-    if args.continuation_policy == "current_student" and args.student_mode != "hierarchical_transformer":
+    if args.continuation_policy == "current_student" and args.student_mode not in {
+        HIERARCHICAL_MODE,
+        ORDERED_MODE,
+    }:
         _advance_forced_budget(forced_horizon, args, budget_state)
 
     action_plan = np.asarray(primary_actions)[:forced_horizon]
@@ -1000,9 +1013,9 @@ def main(args: argparse.Namespace) -> None:
     student_is_used = args.continuation_policy == "current_student" or _source_uses_student(args)
     if student_is_used and args.v2_budget_capacity <= 0:
         raise ValueError("v2_budget_capacity must be positive.")
-    if args.student_mode == "hierarchical_transformer":
-        if not student_is_used:
-            raise ValueError("hierarchical_transformer requires current_student source or continuation.")
+    if args.student_mode in {HIERARCHICAL_MODE, ORDERED_MODE} and not student_is_used:
+        raise ValueError(f"{args.student_mode} requires current_student source or continuation.")
+    if args.student_mode == HIERARCHICAL_MODE:
         if args.hierarchical_calibration_json is not None and args.hierarchical_aggregate_calibration_json is not None:
             raise ValueError(
                 "Provide only one of --hierarchical-calibration-json and "

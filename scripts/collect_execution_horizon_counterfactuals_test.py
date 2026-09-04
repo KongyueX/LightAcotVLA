@@ -239,6 +239,37 @@ def test_student_source_can_be_decoupled_from_fixed_branch_continuation() -> Non
     assert collector._fixed_continuation_horizon(args) == 5  # noqa: SLF001
 
 
+def test_ordered_transformer_student_uses_selected_horizon_directly() -> None:
+    args = SimpleNamespace(student_mode=collector.ORDERED_MODE, model_action_horizon=25)
+    result = {
+        "execution_horizon_ordered_selected_h": np.asarray(15, dtype=np.int32),
+        "execution_horizon_candidate_horizons": np.asarray([5, 10, 15, 20, 25], dtype=np.int32),
+    }
+
+    raw_horizon, selected_horizon = collector._student_horizon(  # noqa: SLF001
+        result,
+        args=args,
+        budget_state=SimpleNamespace(),
+    )
+
+    assert (raw_horizon, selected_horizon) == (15, 15)
+
+
+def test_ordered_transformer_student_rejects_horizon_beyond_model_chunk() -> None:
+    args = SimpleNamespace(student_mode=collector.ORDERED_MODE, model_action_horizon=20)
+    result = {
+        "execution_horizon_ordered_selected_h": np.asarray(25, dtype=np.int32),
+        "execution_horizon_candidate_horizons": np.asarray([5, 10, 15, 20, 25], dtype=np.int32),
+    }
+
+    with pytest.raises(ValueError, match="model_action_horizon=20"):
+        collector._student_horizon(  # noqa: SLF001
+            result,
+            args=args,
+            budget_state=SimpleNamespace(),
+        )
+
+
 def test_source_policy_defaults_preserve_legacy_behavior() -> None:
     assert collector._source_uses_student(SimpleNamespace(continuation_policy="current_student"))  # noqa: SLF001
     assert not collector._source_uses_student(SimpleNamespace(continuation_policy="fixed_h"))  # noqa: SLF001

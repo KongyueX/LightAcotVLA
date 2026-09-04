@@ -17,6 +17,7 @@ import numpy as np
 from openpi_client import websocket_client_policy as websocket_policy
 
 from openpi.execution_horizon import hierarchical
+from openpi.execution_horizon import ordered
 from openpi.execution_horizon import rl_selector
 from openpi.execution_horizon import v2
 
@@ -29,8 +30,9 @@ LEGACY_MODES = (
 )
 SELECTOR_MODES = ("q_guided_selector", "sft_selector", "ppo_selector")
 HIERARCHICAL_MODE = "hierarchical_transformer"
+ORDERED_MODE = "ordered_transformer"
 FIXED_H_MODE = "fixed_h"
-MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *SELECTOR_MODES)
+MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, ORDERED_MODE, *SELECTOR_MODES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -521,7 +523,7 @@ def _request(
         )
     if mode == "exact_batched_mc_v2":
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
-    if mode in {"v2_distilled", "v2_value_refined", HIERARCHICAL_MODE, *SELECTOR_MODES}:
+    if mode in {"v2_distilled", "v2_value_refined", HIERARCHICAL_MODE, ORDERED_MODE, *SELECTOR_MODES}:
         request.update(
             {
                 "run_execution_horizon_predictor": np.asarray(1, dtype=np.bool_),
@@ -778,6 +780,16 @@ def _select_horizon(
         return args.original_horizon, {"raw_horizon": args.original_horizon, "budget_limited": 0.0}
     if mode in {"fixed_h9", FIXED_H_MODE}:
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
+    if mode == ORDERED_MODE:
+        selected = ordered.selected_horizon(
+            result,
+            model_action_horizon=args.model_action_horizon,
+        )
+        return selected, {
+            "raw_horizon": selected,
+            "budget_limited": 0.0,
+            "selector_policy": ORDERED_MODE,
+        }
     if mode == HIERARCHICAL_MODE:
         calibration = getattr(args, "_hierarchical_calibration", None)
         aggregate_calibration = getattr(args, "_hierarchical_aggregate_calibration", None)
@@ -1106,6 +1118,11 @@ def _run_episode(
             )
             if mode == HIERARCHICAL_MODE:
                 required_horizon = max(args._hierarchical_calibration.candidate_horizons)
+            elif mode == ORDERED_MODE:
+                required_horizon = ordered.selected_horizon(
+                    result,
+                    model_action_horizon=args.model_action_horizon,
+                )
             if required_horizon is not None and len(action_chunk) < required_horizon:
                 raise ValueError(
                     f"{mode} requires more actions than the served checkpoint returned: "

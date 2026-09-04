@@ -108,6 +108,11 @@ def test_predictor_config_rejects_paired_distribution_on_legacy_backbone():
         predictor_lib.ExecutionHorizonPredictorConfig(paired_distribution_heads=True)
 
 
+def test_predictor_config_rejects_ordered_continuation_on_legacy_backbone():
+    with pytest.raises(ValueError, match="ordered_continuation_head"):
+        predictor_lib.ExecutionHorizonPredictorConfig(ordered_continuation_head=True)
+
+
 def test_predictor_config_rejects_both_paired_head_modes():
     with pytest.raises(ValueError, match="mutually exclusive"):
         dataclasses.replace(
@@ -126,9 +131,11 @@ def test_acot_config_propagates_paired_distribution_mode_to_validation():
         execution_horizon_candidate_horizons=(5, 10, 15, 20, 25),
         execution_horizon_reference_horizon=10,
         execution_horizon_paired_distribution_heads=True,
+        execution_horizon_ordered_continuation_head=True,
     )
 
     assert config.execution_horizon_paired_distribution_heads is True
+    assert config.execution_horizon_ordered_continuation_head is True
     with pytest.raises(ValueError, match="mutually exclusive"):
         dataclasses.replace(config, execution_horizon_paired_advantage_heads=True)
 
@@ -147,6 +154,103 @@ def test_transformer_outputs_hierarchical_shapes_and_monotonic_survival():
     assert outputs["candidate_horizons"].shape == (2, 5)
     np.testing.assert_array_equal(np.asarray(outputs["reference_horizon"]), 10)
     assert np.all(np.diff(np.asarray(outputs["survival"]), axis=-1) <= 1e-6)
+
+
+def test_ordered_continuation_distribution_respects_prefix_factorization():
+    log_probability, probability = predictor_lib.ordered_continuation_distribution(
+        jnp.zeros((1, 4), dtype=jnp.float32)
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(probability),
+        np.asarray([[0.5, 0.25, 0.125, 0.0625, 0.0625]]),
+        rtol=0.0,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(np.exp(np.asarray(log_probability)), np.asarray(probability), atol=1e-6)
+    np.testing.assert_allclose(np.sum(np.asarray(probability), axis=-1), 1.0, atol=1e-6)
+
+
+def test_ordered_continuation_head_is_opt_in_and_reuses_ordinal_projection():
+    config = _transformer_config()
+    default_module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
+    ordered_module = predictor_lib.ExecutionHorizonPredictor(
+        dataclasses.replace(config, ordered_continuation_head=True),
+        rngs=nnx.Rngs(7),
+    )
+    default_outputs = default_module(**_inputs())
+    ordered_outputs = ordered_module(**_inputs())
+
+    assert "ordered_horizon_probability" not in default_outputs
+    np.testing.assert_array_equal(
+        np.asarray(ordered_outputs["ordered_continuation_logits"]),
+        np.asarray(ordered_outputs["raw_h_ordinal_logits"]),
+    )
+    np.testing.assert_allclose(
+        np.sum(np.asarray(ordered_outputs["ordered_horizon_probability"]), axis=-1),
+        1.0,
+        atol=1e-6,
+    )
+    expected_h = np.asarray(config.candidate_horizons)[
+        np.argmax(np.asarray(ordered_outputs["ordered_horizon_probability"]), axis=-1)
+    ]
+    np.testing.assert_array_equal(np.asarray(ordered_outputs["ordered_selected_h"]), expected_h)
+    default_state = nnx.state(default_module, nnx.Param).flat_state()
+    ordered_state = nnx.state(ordered_module, nnx.Param).flat_state()
+    assert default_state.keys() == ordered_state.keys()
+
+
+def test_success_first_listwise_target_uses_elapsed_only_within_best_success_tier():
+    labels = _paired_labels()
+    target, valid = predictor_lib.success_first_listwise_target(
+        labels["success_count"],
+        labels["trial_count"],
+        labels["elapsed_mean"],
+        labels["branch_valid"],
+        elapsed_temperature=0.25,
+    )
+    target = np.asarray(target)
+
+    np.testing.assert_array_equal(np.asarray(valid), [True, True])
+    np.testing.assert_array_equal(target[0, 2:], np.zeros(3, dtype=target.dtype))
+    assert target[0, 1] > target[0, 0]
+    assert target[1, 4] == np.max(target[1])
+    np.testing.assert_allclose(np.sum(target, axis=-1), 1.0, atol=1e-6)
+
+
+def test_ordered_listwise_warm_start_loss_is_finite():
+    config = dataclasses.replace(
+        _transformer_config(),
+        paired_distribution_heads=True,
+        ordered_continuation_head=True,
+    )
+    module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
+    predictions = module(**_inputs())
+    weights = predictor_lib.ExecutionHorizonLossWeights(
+        success=0.0,
+        timeout=0.0,
+        remaining_calls=0.0,
+        remaining_steps=0.0,
+        final_risk=0.0,
+        action_cot_risk=0.0,
+        fused_risk=0.0,
+        event=0.0,
+        raw_h_classification=0.0,
+        raw_h_ordinal=0.0,
+        ordered_listwise=1.0,
+    )
+
+    loss, metrics = predictor_lib.execution_horizon_loss(
+        predictions,
+        _paired_labels(),
+        weights=weights,
+        candidate_horizons=config.candidate_horizons,
+        reference_horizon=config.reference_horizon,
+    )
+
+    assert np.isfinite(np.asarray(loss))
+    assert float(metrics["ordered_listwise_nll"]) > 0.0
+    np.testing.assert_allclose(np.asarray(metrics["ordered_listwise_valid_fraction"]), 1.0)
 
 
 def test_transformer_paired_heads_define_success_treatment_effect():
