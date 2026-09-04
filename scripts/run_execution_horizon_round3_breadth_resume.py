@@ -197,7 +197,11 @@ def _snapshot_payloads(
             by_task[str(task)][role] = {"roots": len(roots), "episodes": episodes, "data_dirs": completed_dirs}
 
     new_groups = set().union(*by_role.values())
-    old_groups = set().union(*(set(base_groups[name]) for name in ("train", early_name, "calibration")))
+    old_groups = {
+        int(value)
+        for name in ("train", early_name, "calibration")
+        for value in base_groups[name]
+    }
     if old_groups.intersection(new_groups):
         raise ValueError("Breadth-first groups overlap the base development split.")
 
@@ -209,10 +213,14 @@ def _snapshot_payloads(
             "Round-3 breadth-first warm-start snapshot. Old train and calibration groups are training-only; "
             "old validation is early-stop-only; new calibration and dev_audit remain disjoint."
         ),
-        "train_group_ids": sorted(set(base_groups["train"]).union(base_groups["calibration"], by_role["train"])),
-        "early_stop_group_ids": sorted(base_groups[early_name]),
-        "calibration_group_ids": sorted(by_role["calibration"]),
-        "dev_audit_group_ids": sorted(by_role["dev_audit"]),
+        "train_group_ids": sorted(
+            {int(value) for value in base_groups["train"]}
+            | {int(value) for value in base_groups["calibration"]}
+            | {int(value) for value in by_role["train"]}
+        ),
+        "early_stop_group_ids": sorted(int(value) for value in base_groups[early_name]),
+        "calibration_group_ids": sorted(int(value) for value in by_role["calibration"]),
+        "dev_audit_group_ids": sorted(int(value) for value in by_role["dev_audit"]),
         "development_initial_state_bank": protocol["initial_state_bank"],
         "development_initial_state_bank_sha256": protocol["initial_state_bank_sha256"],
         "development_initial_state_bank_lineage_json": str(lineage_path),
