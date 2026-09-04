@@ -205,18 +205,19 @@ def build_train_command(
     ]
 
 
-def _stop_exact_tmux_session(name: str) -> None:
+def _stop_exact_tmux_session(name: str) -> bool:
     if not name or "\n" in name:
         raise ValueError("policy-server tmux name must be a non-empty single line.")
     sessions = subprocess.run(
         ["tmux", "list-sessions", "-F", "#{session_name}"],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     ).stdout.splitlines()
     if name not in sessions:
-        raise RuntimeError(f"Policy-server tmux session is absent: {name}")
+        return False
     subprocess.run(["tmux", "kill-session", "-t", f"={name}"], check=True)
+    return True
 
 
 def main(args: argparse.Namespace) -> None:
@@ -254,7 +255,7 @@ def main(args: argparse.Namespace) -> None:
                 "policy_server_tmux": args.policy_server_tmux,
             },
         )
-        _stop_exact_tmux_session(args.policy_server_tmux)
+        policy_server_stopped = _stop_exact_tmux_session(args.policy_server_tmux)
         command = build_train_command(
             python=python,
             train_script=train_script,
@@ -299,7 +300,8 @@ def main(args: argparse.Namespace) -> None:
             "breadth_summary": str(breadth_dir / "summary.json"),
             "breadth_roots": int(breadth_summary["num_roots"]),
             "dataset_inputs": [str(path) for path in datasets],
-            "policy_server_tmux_stopped": args.policy_server_tmux,
+            "policy_server_tmux_stopped": args.policy_server_tmux if policy_server_stopped else None,
+            "policy_server_already_absent": not policy_server_stopped,
             "formal_gate_or_elapsed_audit_run": False,
         }
         _write_json(output_dir / "post_breadth_summary.json", post_summary)
