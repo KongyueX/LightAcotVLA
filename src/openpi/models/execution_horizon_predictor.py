@@ -17,6 +17,7 @@ from typing import Literal
 import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
+import jax.scipy as jsp
 
 
 @dataclasses.dataclass(frozen=True)
@@ -38,6 +39,7 @@ class ExecutionHorizonPredictorConfig:
     final_stride: int = 1
     visual_num_queries: int = 0
     paired_advantage_heads: bool = False
+    paired_distribution_heads: bool = False
     remaining_calls_scale: float = 64.0
     remaining_steps_scale: float = 512.0
     elapsed_advantage_scale: float = 1.0
@@ -93,6 +95,10 @@ class ExecutionHorizonPredictorConfig:
             raise ValueError("visual_num_queries must be zero (disabled) or lie in [4, 8].")
         if self.paired_advantage_heads and self.temporal_backbone != "transformer":
             raise ValueError("paired_advantage_heads are supported only by the transformer backbone.")
+        if self.paired_distribution_heads and self.temporal_backbone != "transformer":
+            raise ValueError("paired_distribution_heads are supported only by the transformer backbone.")
+        if self.paired_advantage_heads and self.paired_distribution_heads:
+            raise ValueError("paired_advantage_heads and paired_distribution_heads are mutually exclusive.")
         if not math.isfinite(self.elapsed_advantage_scale) or self.elapsed_advantage_scale <= 0:
             raise ValueError("elapsed_advantage_scale must be finite and positive.")
         if not math.isfinite(self.calls_advantage_scale) or self.calls_advantage_scale <= 0:
@@ -194,6 +200,40 @@ def _gaussian_nll(
     if observation_variance is not None:
         variance += jnp.maximum(jnp.asarray(observation_variance, dtype=error.dtype), 0.0)
     return 0.5 * jnp.square(error) / jnp.maximum(variance, 1e-12) + 0.5 * jnp.log(jnp.maximum(variance, 1e-12))
+
+
+def _student_t_nll(
+    error: jax.Array,
+    scale: jax.Array,
+    *,
+    degrees_of_freedom: float = 4.0,
+) -> jax.Array:
+    """Negative log likelihood for a location-scale Student-t distribution."""
+
+    scale = jnp.maximum(jnp.asarray(scale, dtype=error.dtype), 1e-6)
+    degrees_of_freedom = jnp.asarray(degrees_of_freedom, dtype=error.dtype)
+    normalized = error / scale
+    normalizer = (
+        jnp.log(scale)
+        + 0.5 * jnp.log(degrees_of_freedom * jnp.asarray(jnp.pi, dtype=error.dtype))
+        + jsp.special.gammaln(0.5 * degrees_of_freedom)
+        - jsp.special.gammaln(0.5 * (degrees_of_freedom + 1.0))
+    )
+    return normalizer + 0.5 * (degrees_of_freedom + 1.0) * jnp.log1p(jnp.square(normalized) / degrees_of_freedom)
+
+
+def _root_equal_mean(values: jax.Array, mask: jax.Array) -> jax.Array:
+    """Average all valid observations within a root, then average roots equally."""
+
+    values = jnp.asarray(values)
+    valid = jnp.broadcast_to(jnp.asarray(mask, dtype=jnp.bool_), values.shape)
+    mask = valid.astype(values.dtype)
+    safe_values = jnp.where(valid, values, 0.0)
+    reduction_axes = tuple(range(1, values.ndim))
+    count = jnp.sum(mask, axis=reduction_axes)
+    per_root = jnp.sum(safe_values, axis=reduction_axes) / jnp.maximum(count, 1.0)
+    root_valid = count > 0
+    return jnp.sum(jnp.where(root_valid, per_root, 0.0)) / jnp.maximum(jnp.sum(root_valid), 1.0)
 
 
 class _TransformerBlock(nnx.Module):
@@ -339,13 +379,27 @@ class ExecutionHorizonPredictor(nnx.Module):
         if config.temporal_backbone == "transformer":
             long_width = len(config.long_horizons)
             self.hazard_head = nnx.Linear(h, 1, rngs=rngs, param_dtype=param_dtype)
-            if config.paired_advantage_heads:
+            if config.paired_distribution_heads:
+                self.paired_outcome_logits_head = nnx.Linear(
+                    h,
+                    3 * long_width,
+                    rngs=rngs,
+                    param_dtype=param_dtype,
+                )
+                self.faster_long_logits_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
+            elif config.paired_advantage_heads:
                 self.danger_logits_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
                 self.rescue_logits_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
                 self.faster_long_logits_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             else:
                 self.success_advantage_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
-            self.success_advantage_log_scale_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
+            if not config.paired_distribution_heads:
+                self.success_advantage_log_scale_head = nnx.Linear(
+                    h,
+                    long_width,
+                    rngs=rngs,
+                    param_dtype=param_dtype,
+                )
             self.elapsed_advantage_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.elapsed_advantage_log_scale_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.calls_advantage_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
@@ -560,7 +614,38 @@ class ExecutionHorizonPredictor(nnx.Module):
             hazard_logits = self.hazard_head(tokens)[..., 0]
             hazard = jax.nn.sigmoid(hazard_logits)
             paired_outputs: dict[str, jax.Array] = {}
-            if cfg.paired_advantage_heads:
+            if cfg.paired_distribution_heads:
+                paired_outcome_logits = self.paired_outcome_logits_head(summary).reshape(
+                    summary.shape[0],
+                    len(cfg.long_horizons),
+                    3,
+                )
+                # Outcome order is danger / tie / rescue.  A single softmax
+                # makes these paired outcomes mutually exclusive, unlike the
+                # legacy two-independent-sigmoid parameterization.
+                paired_outcome_probability = jax.nn.softmax(paired_outcome_logits, axis=-1)
+                danger_probability = paired_outcome_probability[..., 0]
+                tie_probability = paired_outcome_probability[..., 1]
+                rescue_probability = paired_outcome_probability[..., 2]
+                success_advantage = rescue_probability - danger_probability
+                success_advantage_variance = rescue_probability + danger_probability - jnp.square(success_advantage)
+                success_advantage_std = jnp.sqrt(jnp.maximum(success_advantage_variance, 1e-8))
+                faster_long_logits = self.faster_long_logits_head(summary)
+                paired_outputs = {
+                    "paired_outcome_logits": paired_outcome_logits,
+                    "paired_outcome_probability": paired_outcome_probability,
+                    # Preserve the legacy selector-facing keys while changing
+                    # their probabilities to a coherent categorical model.
+                    "danger_logits": paired_outcome_logits[..., 0],
+                    "danger_probability": danger_probability,
+                    "tie_logits": paired_outcome_logits[..., 1],
+                    "tie_probability": tie_probability,
+                    "rescue_logits": paired_outcome_logits[..., 2],
+                    "rescue_probability": rescue_probability,
+                    "faster_long_logits": faster_long_logits,
+                    "faster_long_probability": jax.nn.sigmoid(faster_long_logits),
+                }
+            elif cfg.paired_advantage_heads:
                 danger_logits = self.danger_logits_head(summary)
                 rescue_logits = self.rescue_logits_head(summary)
                 danger_probability = jax.nn.sigmoid(danger_logits)
@@ -582,17 +667,35 @@ class ExecutionHorizonPredictor(nnx.Module):
                 }
             else:
                 success_advantage = jnp.tanh(self.success_advantage_head(summary))
-            success_advantage_log_scale = jnp.clip(
-                self.success_advantage_log_scale_head(summary),
-                -7.0,
-                2.0,
-            )
-            elapsed_advantage_log_scale = jnp.clip(
-                self.elapsed_advantage_log_scale_head(summary)
-                + jnp.log(jnp.asarray(cfg.elapsed_advantage_scale, dtype=summary.dtype)),
-                -7.0,
-                7.0,
-            )
+            if cfg.paired_distribution_heads:
+                success_advantage_log_scale = jnp.log(success_advantage_std)
+                paired_elapsed_raw_scale = self.elapsed_advantage_log_scale_head(summary)
+                paired_elapsed_scale = jax.nn.softplus(paired_elapsed_raw_scale) * cfg.elapsed_advantage_scale + 1e-3
+                # With nu=4, the Student-t standard deviation is
+                # scale*sqrt(nu/(nu-2)). Keep it separate from the likelihood
+                # scale so selector confidence bounds use the correct units.
+                elapsed_advantage_std = paired_elapsed_scale * jnp.sqrt(jnp.asarray(2.0, dtype=summary.dtype))
+                elapsed_advantage_log_scale = jnp.log(elapsed_advantage_std)
+                paired_outputs.update(
+                    {
+                        "paired_elapsed_raw_scale": paired_elapsed_raw_scale,
+                        "paired_elapsed_scale": paired_elapsed_scale,
+                    }
+                )
+            else:
+                success_advantage_log_scale = jnp.clip(
+                    self.success_advantage_log_scale_head(summary),
+                    -7.0,
+                    2.0,
+                )
+                success_advantage_std = jnp.exp(success_advantage_log_scale)
+                elapsed_advantage_log_scale = jnp.clip(
+                    self.elapsed_advantage_log_scale_head(summary)
+                    + jnp.log(jnp.asarray(cfg.elapsed_advantage_scale, dtype=summary.dtype)),
+                    -7.0,
+                    7.0,
+                )
+                elapsed_advantage_std = jnp.exp(elapsed_advantage_log_scale)
             calls_advantage_log_scale = jnp.clip(
                 self.calls_advantage_log_scale_head(summary)
                 + jnp.log(jnp.asarray(cfg.calls_advantage_scale, dtype=summary.dtype)),
@@ -609,7 +712,7 @@ class ExecutionHorizonPredictor(nnx.Module):
                     "reference_success_probability": reference_success_probability,
                     "success_advantage": success_advantage,
                     "success_advantage_log_scale": success_advantage_log_scale,
-                    "success_advantage_std": jnp.exp(success_advantage_log_scale),
+                    "success_advantage_std": success_advantage_std,
                     "long_success_probability": jnp.clip(
                         reference_success_probability[:, None] + success_advantage,
                         1e-5,
@@ -617,7 +720,7 @@ class ExecutionHorizonPredictor(nnx.Module):
                     ),
                     "elapsed_advantage": self.elapsed_advantage_head(summary) * cfg.elapsed_advantage_scale,
                     "elapsed_advantage_log_scale": elapsed_advantage_log_scale,
-                    "elapsed_advantage_std": jnp.exp(elapsed_advantage_log_scale),
+                    "elapsed_advantage_std": elapsed_advantage_std,
                     "calls_advantage": self.calls_advantage_head(summary) * cfg.calls_advantage_scale,
                     "calls_advantage_log_scale": calls_advantage_log_scale,
                     "calls_advantage_std": jnp.exp(calls_advantage_log_scale),
@@ -774,8 +877,20 @@ def execution_horizon_loss(
     danger_rescue_loss = jnp.asarray(0.0, dtype=jnp.float32)
     danger_binomial_loss = jnp.asarray(0.0, dtype=jnp.float32)
     rescue_binomial_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_outcome_multinomial_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_outcome_danger_nll = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_outcome_tie_nll = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_outcome_rescue_nll = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_outcome_danger_rate = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_outcome_tie_rate = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_outcome_rescue_rate = jnp.asarray(0.0, dtype=jnp.float32)
     paired_elapsed_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_elapsed_student_t_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_elapsed_scale_mean = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_elapsed_covariance = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_elapsed_delta_variance = jnp.asarray(0.0, dtype=jnp.float32)
     faster_long_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    paired_distribution_mode = "paired_outcome_logits" in predictions
     long_indices = tuple(index for index, value in enumerate(candidate_horizons) if value > reference_horizon)
     if (
         weights.success_advantage > 0
@@ -820,7 +935,7 @@ def execution_horizon_loss(
             rescue_pair = pair_valid & ~reference_success_raw & long_success_raw
             paired_elapsed_delta = long_elapsed_raw - reference_elapsed_raw
 
-        if weights.success_advantage > 0:
+        if weights.success_advantage > 0 and not paired_distribution_mode:
             if "success_advantage" not in predictions or "success_count" not in labels:
                 raise ValueError("success advantage loss requires transformer predictions and count labels.")
             success_count = jnp.asarray(labels["success_count"], dtype=jnp.float32)
@@ -847,7 +962,7 @@ def execution_horizon_loss(
                 advantage_valid,
             )
 
-        if weights.elapsed_advantage > 0:
+        if weights.elapsed_advantage > 0 and not paired_distribution_mode:
             if "elapsed_advantage" not in predictions or "elapsed_mean" not in labels:
                 raise ValueError("elapsed advantage loss requires transformer predictions and elapsed_mean labels.")
             elapsed_mean = jnp.asarray(labels["elapsed_mean"], dtype=jnp.float32)
@@ -916,29 +1031,102 @@ def execution_horizon_loss(
             )
 
         if weights.danger_rescue > 0:
-            if "danger_logits" not in predictions or "rescue_logits" not in predictions:
-                raise ValueError("danger/rescue loss requires paired_advantage_heads predictor outputs.")
             paired_count_raw = jnp.sum(pair_valid, axis=-1)
             dangerous_count_raw = jnp.sum(dangerous_pair, axis=-1)
             rescue_count_raw = jnp.sum(rescue_pair, axis=-1)
-            danger_binomial_loss = _masked_mean(
-                _binomial_nll(predictions["danger_logits"], dangerous_count_raw, paired_count_raw)
-                / jnp.maximum(paired_count_raw, 1.0),
-                paired_count_raw > 0,
-            )
-            rescue_binomial_loss = _masked_mean(
-                _binomial_nll(predictions["rescue_logits"], rescue_count_raw, paired_count_raw)
-                / jnp.maximum(paired_count_raw, 1.0),
-                paired_count_raw > 0,
-            )
-            danger_rescue_loss = 0.5 * (danger_binomial_loss + rescue_binomial_loss)
+            if paired_distribution_mode:
+                if "paired_outcome_logits" not in predictions:
+                    raise ValueError("paired outcome loss requires paired_distribution_heads predictor outputs.")
+                tie_count_raw = paired_count_raw - dangerous_count_raw - rescue_count_raw
+                outcome_count = jnp.stack(
+                    [dangerous_count_raw, tie_count_raw, rescue_count_raw],
+                    axis=-1,
+                )
+                outcome_log_probability = jax.nn.log_softmax(predictions["paired_outcome_logits"], axis=-1)
+                outcome_contribution = (
+                    -outcome_count * outcome_log_probability / jnp.maximum(paired_count_raw[..., None], 1.0)
+                )
+                outcome_valid = paired_count_raw > 0
+                paired_outcome_danger_nll = _root_equal_mean(outcome_contribution[..., 0], outcome_valid)
+                paired_outcome_tie_nll = _root_equal_mean(outcome_contribution[..., 1], outcome_valid)
+                paired_outcome_rescue_nll = _root_equal_mean(outcome_contribution[..., 2], outcome_valid)
+                paired_outcome_multinomial_loss = (
+                    paired_outcome_danger_nll + paired_outcome_tie_nll + paired_outcome_rescue_nll
+                )
+                paired_outcome_danger_rate = _root_equal_mean(
+                    dangerous_count_raw / jnp.maximum(paired_count_raw, 1.0),
+                    outcome_valid,
+                )
+                paired_outcome_tie_rate = _root_equal_mean(
+                    tie_count_raw / jnp.maximum(paired_count_raw, 1.0),
+                    outcome_valid,
+                )
+                paired_outcome_rescue_rate = _root_equal_mean(
+                    rescue_count_raw / jnp.maximum(paired_count_raw, 1.0),
+                    outcome_valid,
+                )
+            else:
+                if "danger_logits" not in predictions or "rescue_logits" not in predictions:
+                    raise ValueError("danger/rescue loss requires paired_advantage_heads predictor outputs.")
+                danger_binomial_loss = _masked_mean(
+                    _binomial_nll(predictions["danger_logits"], dangerous_count_raw, paired_count_raw)
+                    / jnp.maximum(paired_count_raw, 1.0),
+                    paired_count_raw > 0,
+                )
+                rescue_binomial_loss = _masked_mean(
+                    _binomial_nll(predictions["rescue_logits"], rescue_count_raw, paired_count_raw)
+                    / jnp.maximum(paired_count_raw, 1.0),
+                    paired_count_raw > 0,
+                )
+                danger_rescue_loss = 0.5 * (danger_binomial_loss + rescue_binomial_loss)
 
         if weights.paired_elapsed > 0:
-            scale = jnp.asarray(max(float(elapsed_advantage_scale), 1e-3), dtype=jnp.float32)
-            paired_elapsed_error = (
-                predictions["elapsed_advantage"][..., None] - jnp.nan_to_num(paired_elapsed_delta)
-            ) / scale
-            paired_elapsed_loss = _masked_mean(_huber(paired_elapsed_error), pair_valid)
+            paired_elapsed_error = predictions["elapsed_advantage"][..., None] - jnp.nan_to_num(paired_elapsed_delta)
+            if paired_distribution_mode:
+                if "paired_elapsed_scale" not in predictions:
+                    raise ValueError("paired elapsed likelihood requires paired_distribution_heads outputs.")
+                # Subtracting same-seed raw trials before evaluating the
+                # likelihood retains paired covariance:
+                # Var(T_long - T_ref) = Var(T_long) + Var(T_ref) - 2 Cov.
+                paired_elapsed_student_t_loss = _root_equal_mean(
+                    _student_t_nll(
+                        paired_elapsed_error,
+                        predictions["paired_elapsed_scale"][..., None],
+                        degrees_of_freedom=4.0,
+                    ),
+                    pair_valid,
+                )
+                paired_count_raw = jnp.sum(pair_valid, axis=-1)
+                paired_elapsed_scale_mean = _root_equal_mean(
+                    predictions["paired_elapsed_scale"],
+                    paired_count_raw > 0,
+                )
+
+                valid_float = pair_valid.astype(jnp.float32)
+                safe_count = jnp.maximum(paired_count_raw, 1.0)
+                reference_elapsed_broadcast = jnp.broadcast_to(reference_elapsed_raw, long_elapsed_raw.shape)
+                reference_mean = (
+                    jnp.sum(jnp.nan_to_num(reference_elapsed_broadcast) * valid_float, axis=-1) / safe_count
+                )
+                long_mean = jnp.sum(jnp.nan_to_num(long_elapsed_raw) * valid_float, axis=-1) / safe_count
+                reference_centered = jnp.nan_to_num(reference_elapsed_broadcast) - reference_mean[..., None]
+                long_centered = jnp.nan_to_num(long_elapsed_raw) - long_mean[..., None]
+                covariance = jnp.sum(reference_centered * long_centered * valid_float, axis=-1) / jnp.maximum(
+                    paired_count_raw - 1.0,
+                    1.0,
+                )
+                delta_mean = jnp.sum(jnp.nan_to_num(paired_elapsed_delta) * valid_float, axis=-1) / safe_count
+                delta_centered = jnp.nan_to_num(paired_elapsed_delta) - delta_mean[..., None]
+                delta_variance = jnp.sum(jnp.square(delta_centered) * valid_float, axis=-1) / jnp.maximum(
+                    paired_count_raw - 1.0,
+                    1.0,
+                )
+                covariance_valid = paired_count_raw > 1
+                paired_elapsed_covariance = _root_equal_mean(covariance, covariance_valid)
+                paired_elapsed_delta_variance = _root_equal_mean(delta_variance, covariance_valid)
+            else:
+                scale = jnp.asarray(max(float(elapsed_advantage_scale), 1e-3), dtype=jnp.float32)
+                paired_elapsed_loss = _masked_mean(_huber(paired_elapsed_error / scale), pair_valid)
 
         if weights.faster_long > 0:
             if "faster_long_logits" not in predictions:
@@ -970,7 +1158,18 @@ def execution_horizon_loss(
         "danger_rescue_binomial": danger_rescue_loss,
         "danger_binomial": danger_binomial_loss,
         "rescue_binomial": rescue_binomial_loss,
+        "paired_outcome_multinomial_nll": paired_outcome_multinomial_loss,
+        "paired_outcome_danger_nll": paired_outcome_danger_nll,
+        "paired_outcome_tie_nll": paired_outcome_tie_nll,
+        "paired_outcome_rescue_nll": paired_outcome_rescue_nll,
+        "paired_outcome_danger_rate": paired_outcome_danger_rate,
+        "paired_outcome_tie_rate": paired_outcome_tie_rate,
+        "paired_outcome_rescue_rate": paired_outcome_rescue_rate,
         "paired_elapsed_huber": paired_elapsed_loss,
+        "paired_elapsed_student_t_nll": paired_elapsed_student_t_loss,
+        "paired_elapsed_scale_mean": paired_elapsed_scale_mean,
+        "paired_elapsed_covariance": paired_elapsed_covariance,
+        "paired_elapsed_delta_variance": paired_elapsed_delta_variance,
         "faster_long_binomial": faster_long_loss,
     }
     total = (
@@ -989,8 +1188,8 @@ def execution_horizon_loss(
         + weights.elapsed_advantage * elapsed_advantage_loss
         + weights.calls_advantage * calls_advantage_loss
         + weights.false_long * false_long_loss
-        + weights.danger_rescue * danger_rescue_loss
-        + weights.paired_elapsed * paired_elapsed_loss
+        + weights.danger_rescue * (paired_outcome_multinomial_loss if paired_distribution_mode else danger_rescue_loss)
+        + weights.paired_elapsed * (paired_elapsed_student_t_loss if paired_distribution_mode else paired_elapsed_loss)
         + weights.faster_long * faster_long_loss
     )
     metrics["loss"] = total

@@ -130,6 +130,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="v2_value_refined",
     )
     parser.add_argument("--hierarchical-calibration-json", default=None)
+    parser.add_argument(
+        "--hierarchical-aggregate-calibration-json",
+        default=None,
+        help="Optional frozen aggregate-risk selector for current-student source trajectories.",
+    )
     parser.add_argument("--long-success-noninferiority", type=float, default=0.01)
     parser.add_argument("--short-max-event-probability", type=float, default=0.20)
     parser.add_argument("--long-max-event-probability", type=float, default=0.20)
@@ -301,16 +306,20 @@ def _student_horizon(
             for name, value in result.items()
             if name.startswith("execution_horizon_")
         }
-        decision = hierarchical.select_horizon(
-            predictor_outputs,
-            calibration=args._hierarchical_calibration,
-            config=hierarchical.HierarchicalSelectorConfig(
-                success_noninferiority_margin=args.long_success_noninferiority,
-                maximum_short_event_probability=args.short_max_event_probability,
-                maximum_long_event_probability=args.long_max_event_probability,
-                require_calibration_for_long_h=True,
-            ),
-        )
+        aggregate_calibration = getattr(args, "_hierarchical_aggregate_calibration", None)
+        if aggregate_calibration is not None:
+            decision = aggregate_calibration.apply(predictor_outputs)
+        else:
+            decision = hierarchical.select_horizon(
+                predictor_outputs,
+                calibration=args._hierarchical_calibration,
+                config=hierarchical.HierarchicalSelectorConfig(
+                    success_noninferiority_margin=args.long_success_noninferiority,
+                    maximum_short_event_probability=args.short_max_event_probability,
+                    maximum_long_event_probability=args.long_max_event_probability,
+                    require_calibration_for_long_h=True,
+                ),
+            )
         return decision.selected_horizon, decision.selected_horizon
 
     final_risk = np.asarray(result["execution_horizon_final_risk"], dtype=np.float64)
@@ -715,15 +724,33 @@ def main(args: argparse.Namespace) -> None:
     if args.student_mode == "hierarchical_transformer":
         if not student_is_used:
             raise ValueError("hierarchical_transformer requires current_student source or continuation.")
-        if args.hierarchical_calibration_json is None:
-            raise ValueError("hierarchical_transformer requires --hierarchical-calibration-json.")
-        args._hierarchical_calibration = hierarchical.HierarchicalCalibration.load(args.hierarchical_calibration_json)
+        if args.hierarchical_calibration_json is not None and args.hierarchical_aggregate_calibration_json is not None:
+            raise ValueError(
+                "Provide only one of --hierarchical-calibration-json and "
+                "--hierarchical-aggregate-calibration-json."
+            )
+        if args.hierarchical_aggregate_calibration_json is not None:
+            args._hierarchical_aggregate_calibration = hierarchical.AggregateSelectorCalibration.load(
+                args.hierarchical_aggregate_calibration_json
+            )
+            args._hierarchical_calibration = args._hierarchical_aggregate_calibration.pointwise_calibration
+        elif args.hierarchical_calibration_json is not None:
+            args._hierarchical_aggregate_calibration = None
+            args._hierarchical_calibration = hierarchical.HierarchicalCalibration.load(
+                args.hierarchical_calibration_json
+            )
+        else:
+            raise ValueError(
+                "hierarchical_transformer requires --hierarchical-calibration-json or "
+                "--hierarchical-aggregate-calibration-json."
+            )
         if args._hierarchical_calibration.candidate_horizons != candidate_horizons:
             raise ValueError("Hierarchical calibration candidates must match collection candidate_horizons.")
         if max(args._hierarchical_calibration.candidate_horizons) > args.model_action_horizon:
             raise ValueError("Hierarchical calibration candidates exceed model_action_horizon.")
     else:
         args._hierarchical_calibration = None
+        args._hierarchical_aggregate_calibration = None
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     debug_dir = output_dir / "debug_failures"

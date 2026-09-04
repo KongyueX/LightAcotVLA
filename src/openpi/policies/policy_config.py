@@ -60,6 +60,15 @@ def _execution_horizon_artifact(
     return params_path, config
 
 
+def _execution_horizon_paired_head_overrides(config: dict[str, Any]) -> dict[str, bool]:
+    """Translate paired-head artifact flags while keeping legacy artifacts opt-out."""
+
+    return {
+        "execution_horizon_paired_advantage_heads": bool(config.get("paired_advantage_heads", False)),
+        "execution_horizon_paired_distribution_heads": bool(config.get("paired_distribution_heads", False)),
+    }
+
+
 def _path_string(path: tuple[Any, ...]) -> str:
     return "/".join(map(str, path))
 
@@ -212,9 +221,7 @@ def create_trained_policy(
                     "execution_horizon_visual_num_queries": int(
                         predictor_artifact_config["visual_num_queries"]
                     ),
-                    "execution_horizon_paired_advantage_heads": bool(
-                        predictor_artifact_config.get("paired_advantage_heads", False)
-                    ),
+                    **_execution_horizon_paired_head_overrides(predictor_artifact_config),
                     "execution_horizon_elapsed_advantage_scale": float(
                         predictor_artifact_config.get("elapsed_advantage_scale", 1.0)
                     ),

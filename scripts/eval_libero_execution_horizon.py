@@ -333,6 +333,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-max-timeout-probability", type=float, default=0.20)
     parser.add_argument("--q-risk-slack-steps", type=int, default=0)
     parser.add_argument("--hierarchical-calibration-json", default=None)
+    parser.add_argument(
+        "--hierarchical-aggregate-calibration-json",
+        default=None,
+        help=(
+            "Optional calibration-frozen aggregate-risk selector. When set, it embeds the pointwise "
+            "hazard/OOD calibration and replaces the legacy per-root long-H interval rule."
+        ),
+    )
     parser.add_argument("--long-success-noninferiority", type=float, default=0.01)
     parser.add_argument("--short-max-event-probability", type=float, default=0.20)
     parser.add_argument("--long-max-event-probability", type=float, default=0.20)
@@ -772,25 +780,31 @@ def _select_horizon(
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
     if mode == HIERARCHICAL_MODE:
         calibration = getattr(args, "_hierarchical_calibration", None)
+        aggregate_calibration = getattr(args, "_hierarchical_aggregate_calibration", None)
         predictor_outputs = {
             name.removeprefix("execution_horizon_"): value
             for name, value in result.items()
             if name.startswith("execution_horizon_")
         }
-        decision = hierarchical.select_horizon(
-            predictor_outputs,
-            calibration=calibration,
-            config=hierarchical.HierarchicalSelectorConfig(
-                success_noninferiority_margin=args.long_success_noninferiority,
-                maximum_short_event_probability=args.short_max_event_probability,
-                maximum_long_event_probability=args.long_max_event_probability,
-                require_calibration_for_long_h=True,
-            ),
-        )
+        if aggregate_calibration is not None:
+            decision = aggregate_calibration.apply(predictor_outputs)
+            selector_policy = "hierarchical_transformer_aggregate_risk"
+        else:
+            decision = hierarchical.select_horizon(
+                predictor_outputs,
+                calibration=calibration,
+                config=hierarchical.HierarchicalSelectorConfig(
+                    success_noninferiority_margin=args.long_success_noninferiority,
+                    maximum_short_event_probability=args.short_max_event_probability,
+                    maximum_long_event_probability=args.long_max_event_probability,
+                    require_calibration_for_long_h=True,
+                ),
+            )
+            selector_policy = HIERARCHICAL_MODE
         return decision.selected_horizon, {
             "raw_horizon": decision.selected_horizon,
             "budget_limited": 0.0,
-            "selector_policy": HIERARCHICAL_MODE,
+            "selector_policy": selector_policy,
             **dataclasses.asdict(decision),
         }
     if mode in SELECTOR_MODES:
@@ -1870,7 +1884,13 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
     return {
         key: value
         for key, value in vars(args).items()
-        if key not in {"output_dir", "resume"} and not key.startswith("_")
+        if key not in {"output_dir", "resume"}
+        and not key.startswith("_")
+        # This opt-in flag was added after resumable journals already existed.
+        # Omitting its disabled value preserves the exact legacy signature,
+        # while an aggregate artifact path remains part of every new run's
+        # immutable resume contract.
+        and not (key == "hierarchical_aggregate_calibration_json" and value is None)
     }
 
 
@@ -1950,20 +1970,34 @@ def main(args: argparse.Namespace) -> None:
     if not 0 < args.long_max_event_probability < 1:
         raise ValueError("long_max_event_probability must lie in (0, 1).")
     if HIERARCHICAL_MODE in args.modes:
-        if args.hierarchical_calibration_json is None:
+        if args.hierarchical_calibration_json is not None and args.hierarchical_aggregate_calibration_json is not None:
             raise ValueError(
-                "hierarchical_transformer requires --hierarchical-calibration-json; "
+                "Provide only one of --hierarchical-calibration-json and "
+                "--hierarchical-aggregate-calibration-json."
+            )
+        if args.hierarchical_aggregate_calibration_json is not None:
+            args._hierarchical_aggregate_calibration = hierarchical.AggregateSelectorCalibration.load(
+                args.hierarchical_aggregate_calibration_json
+            )
+            args._hierarchical_calibration = args._hierarchical_aggregate_calibration.pointwise_calibration
+        elif args.hierarchical_calibration_json is not None:
+            args._hierarchical_aggregate_calibration = None
+            args._hierarchical_calibration = hierarchical.HierarchicalCalibration.load(
+                args.hierarchical_calibration_json
+            )
+        else:
+            raise ValueError(
+                "hierarchical_transformer requires --hierarchical-calibration-json or "
+                "--hierarchical-aggregate-calibration-json; "
                 "uncalibrated long-H deployment is forbidden."
             )
-        args._hierarchical_calibration = hierarchical.HierarchicalCalibration.load(
-            args.hierarchical_calibration_json
-        )
         if max(args._hierarchical_calibration.candidate_horizons) > args.model_action_horizon:
             raise ValueError(
                 "hierarchical calibration candidates cannot exceed model_action_horizon."
             )
     else:
         args._hierarchical_calibration = None
+        args._hierarchical_aggregate_calibration = None
     if args.temporal_prefix_reuse_period < 0:
         raise ValueError("temporal_prefix_reuse_period must be non-negative.")
     if args.mrr_a264 and args.p3t_prefix_transport:

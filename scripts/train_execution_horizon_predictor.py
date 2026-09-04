@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 import flax.nnx as nnx
+import flax.traverse_util as traverse_util
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -60,6 +61,8 @@ class Args:
     final_stride: int = 1
     visual_num_queries: int = 0
     paired_advantage_heads: bool = False
+    paired_distribution_heads: bool = False
+    resume_legacy_paired_heads: bool = False
     physical_action_dim: int = 7
     minimum_trials_per_candidate: int = 3
     selection_false_long_upper_bound: float = 0.05
@@ -153,8 +156,8 @@ def _loss_weights(args: Args) -> ExecutionHorizonLossWeights:
         raw_h_classification=args.loss_raw_h_classification,
         raw_h_ordinal=args.loss_raw_h_ordinal,
         survival=args.loss_survival if hierarchical else 0.0,
-        success_advantage=args.loss_success_advantage if hierarchical else 0.0,
-        elapsed_advantage=args.loss_elapsed_advantage if hierarchical else 0.0,
+        success_advantage=(args.loss_success_advantage if hierarchical and not args.paired_distribution_heads else 0.0),
+        elapsed_advantage=(args.loss_elapsed_advantage if hierarchical and not args.paired_distribution_heads else 0.0),
         calls_advantage=args.loss_calls_advantage if hierarchical else 0.0,
         false_long=args.loss_false_long if hierarchical else 0.0,
         danger_rescue=args.loss_danger_rescue if hierarchical else 0.0,
@@ -170,6 +173,26 @@ def _label_weights(args: Args) -> ExecutionHorizonLabelWeights:
         event_positive=args.event_positive_multiplier,
         risk_event=args.risk_event_multiplier,
     )
+
+
+def _validate_paired_args(args: Args) -> None:
+    paired_losses_enabled = any(
+        value > 0 for value in (args.loss_danger_rescue, args.loss_paired_elapsed, args.loss_faster_long)
+    )
+    if args.paired_advantage_heads and args.paired_distribution_heads:
+        raise ValueError("--paired-advantage-heads and --paired-distribution-heads are mutually exclusive.")
+    if args.paired_advantage_heads and args.temporal_backbone != "transformer":
+        raise ValueError("paired_advantage_heads require temporal_backbone=transformer.")
+    if args.paired_distribution_heads and args.temporal_backbone != "transformer":
+        raise ValueError("paired_distribution_heads require temporal_backbone=transformer.")
+    if paired_losses_enabled and not (args.paired_advantage_heads or args.paired_distribution_heads):
+        raise ValueError("Paired loss weights require an explicit paired head mode.")
+    if args.paired_distribution_heads and (args.loss_danger_rescue <= 0 or args.loss_paired_elapsed <= 0):
+        raise ValueError("paired_distribution_heads require positive --loss-danger-rescue and --loss-paired-elapsed.")
+    if args.resume_legacy_paired_heads and not args.paired_distribution_heads:
+        raise ValueError("--resume-legacy-paired-heads is allowed only with --paired-distribution-heads.")
+    if args.resume_legacy_paired_heads and args.resume_params is None:
+        raise ValueError("--resume-legacy-paired-heads requires --resume-params.")
 
 
 def _split_indices(arrays: dict[str, np.ndarray], args: Args) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -270,7 +293,106 @@ def _save_sidecar(params: nnx.State, target: pathlib.Path) -> None:
         checkpointer.save(target, item, force=True)
 
 
-def _restore_predictor(module: ExecutionHorizonPredictor, params_path: str) -> ExecutionHorizonPredictor:
+def _path_text(path: tuple[Any, ...]) -> str:
+    return "/".join(map(str, path))
+
+
+def _migrate_legacy_paired_state(
+    module: ExecutionHorizonPredictor,
+    state: nnx.State,
+    loaded: dict[str, Any],
+) -> tuple[nnx.State, dict[str, Any]]:
+    """Strictly migrate the two legacy Bernoulli heads to one categorical head."""
+
+    if not module.config.paired_distribution_heads:
+        raise ValueError("Legacy paired-head migration is allowed only with --paired-distribution-heads.")
+    expected_flat = traverse_util.flatten_dict(state.to_pure_dict())
+    loaded_flat = traverse_util.flatten_dict(loaded)
+    outcome_paths = {
+        ("paired_outcome_logits_head", "kernel"),
+        ("paired_outcome_logits_head", "bias"),
+    }
+    legacy_paths = {
+        (head, parameter)
+        for head in ("danger_logits_head", "rescue_logits_head", "success_advantage_log_scale_head")
+        for parameter in ("kernel", "bias")
+    }
+    required_legacy_paths = {
+        (head, parameter) for head in ("danger_logits_head", "rescue_logits_head") for parameter in ("kernel", "bias")
+    }
+    reinitialized_paths = {
+        ("elapsed_advantage_log_scale_head", "kernel"),
+        ("elapsed_advantage_log_scale_head", "bias"),
+    }
+    missing = set(expected_flat).difference(loaded_flat)
+    unexpected = set(loaded_flat).difference(expected_flat)
+    if missing != outcome_paths:
+        invalid = sorted(_path_text(path) for path in missing.symmetric_difference(outcome_paths))
+        raise ValueError(f"Legacy paired checkpoint has non-migratable missing parameters: {invalid[:8]}")
+    if not required_legacy_paths.issubset(loaded_flat):
+        absent = sorted(_path_text(path) for path in required_legacy_paths.difference(loaded_flat))
+        raise ValueError(f"Legacy paired checkpoint is missing source heads: {absent}")
+    if not unexpected.issubset(legacy_paths):
+        invalid = sorted(_path_text(path) for path in unexpected.difference(legacy_paths))
+        raise ValueError(f"Legacy paired checkpoint has unexpected parameters: {invalid[:8]}")
+
+    shared_paths = set(expected_flat).intersection(loaded_flat).difference(reinitialized_paths)
+    mismatched = sorted(
+        _path_text(path) for path in shared_paths if np.shape(loaded_flat[path]) != np.shape(expected_flat[path])
+    )
+    if mismatched:
+        raise ValueError(f"Legacy paired checkpoint has shared parameter shape mismatches: {mismatched[:8]}")
+
+    danger_kernel = jnp.asarray(loaded_flat[("danger_logits_head", "kernel")])
+    danger_bias = jnp.asarray(loaded_flat[("danger_logits_head", "bias")])
+    rescue_kernel = jnp.asarray(loaded_flat[("rescue_logits_head", "kernel")])
+    rescue_bias = jnp.asarray(loaded_flat[("rescue_logits_head", "bias")])
+    if danger_kernel.shape != rescue_kernel.shape or danger_bias.shape != rescue_bias.shape:
+        raise ValueError("Legacy danger/rescue heads must have identical shapes for categorical migration.")
+    migrated_kernel = jnp.stack(
+        [danger_kernel, jnp.zeros_like(danger_kernel), rescue_kernel],
+        axis=-1,
+    ).reshape(expected_flat[("paired_outcome_logits_head", "kernel")].shape)
+    migrated_bias = jnp.stack(
+        [danger_bias, jnp.zeros_like(danger_bias), rescue_bias],
+        axis=-1,
+    ).reshape(expected_flat[("paired_outcome_logits_head", "bias")].shape)
+
+    migrated_values = {
+        ("paired_outcome_logits_head", "kernel"): migrated_kernel,
+        ("paired_outcome_logits_head", "bias"): migrated_bias,
+    }
+    merged_flat = {}
+    for path, expected in expected_flat.items():
+        if path in migrated_values:
+            value = migrated_values[path]
+        elif path in reinitialized_paths:
+            # This head used to emit log sigma. Distribution mode instead
+            # applies softplus to a raw value, so the same-shaped legacy
+            # tensor is intentionally not restored.
+            value = expected
+        else:
+            value = loaded_flat[path]
+        merged_flat[path] = jnp.asarray(value, dtype=expected.dtype)
+    state.replace_by_pure_dict(traverse_util.unflatten_dict(merged_flat))
+    report = {
+        "mode": "legacy_paired_to_distribution",
+        "enabled": True,
+        "shared_parameter_leaves": len(shared_paths),
+        "migrated_parameter_leaves": sorted(_path_text(path) for path in outcome_paths),
+        "dropped_legacy_parameter_leaves": sorted(_path_text(path) for path in unexpected),
+        "reinitialized_parameter_leaves": sorted(_path_text(path) for path in reinitialized_paths),
+        "tie_logits_initialized_to_zero": True,
+    }
+    return state, report
+
+
+def _restore_predictor(
+    module: ExecutionHorizonPredictor,
+    params_path: str,
+    *,
+    resume_legacy_paired_heads: bool = False,
+) -> tuple[ExecutionHorizonPredictor, dict[str, Any]]:
     loaded = model_lib.restore_params(params_path, dtype=jnp.float32)
     # Orbax serializes integer keys used by NNX list containers (for example
     # temporal_layers/0) as strings.  Convert them back before replacing the
@@ -280,8 +402,12 @@ def _restore_predictor(module: ExecutionHorizonPredictor, params_path: str) -> E
     if "execution_horizon_predictor" in loaded:
         loaded = loaded["execution_horizon_predictor"]
     graphdef, state = nnx.split(module)
-    state.replace_by_pure_dict(loaded)
-    return nnx.merge(graphdef, state)
+    if resume_legacy_paired_heads:
+        state, report = _migrate_legacy_paired_state(module, state, loaded)
+    else:
+        state.replace_by_pure_dict(loaded)
+        report = {"mode": "strict", "enabled": False}
+    return nnx.merge(graphdef, state), report
 
 
 def _advantage_scale(
@@ -317,6 +443,7 @@ def main(args: Args) -> None:
         raise ValueError("selection_max_long_event_probability must lie in (0, 1).")
     if args.split_seed is not None and args.split_seed < 0:
         raise ValueError("split_seed must be non-negative when set.")
+    _validate_paired_args(args)
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     arrays = horizon_dataset.load_counterfactual_arrays(args.dataset)
@@ -326,13 +453,6 @@ def main(args: Args) -> None:
     candidate_horizons = tuple(int(value) for value in candidate_rows[0])
     if args.temporal_backbone not in {"local_mlp", "transformer"}:
         raise ValueError("temporal_backbone must be local_mlp or transformer.")
-    paired_losses_enabled = any(
-        value > 0 for value in (args.loss_danger_rescue, args.loss_paired_elapsed, args.loss_faster_long)
-    )
-    if args.paired_advantage_heads and args.temporal_backbone != "transformer":
-        raise ValueError("paired_advantage_heads require temporal_backbone=transformer.")
-    if paired_losses_enabled and not args.paired_advantage_heads:
-        raise ValueError("Paired loss weights require --paired-advantage-heads.")
     if args.temporal_backbone == "transformer":
         if not np.all(np.asarray(arrays["schema_version"]) == horizon_dataset.SCHEMA_VERSION):
             raise ValueError("Transformer training requires count-aware schema v2 shards, not repeat-0 v1 labels.")
@@ -378,12 +498,13 @@ def main(args: Args) -> None:
         reference_index = candidate_horizons.index(args.reference_horizon)
         long_indices = [index for index, horizon in enumerate(candidate_horizons) if horizon > args.reference_horizon]
         paired_from_raw = (
-            raw_trial_valid[:, long_indices]
-            & raw_trial_valid[:, reference_index : reference_index + 1, :]
+            raw_trial_valid[:, long_indices] & raw_trial_valid[:, reference_index : reference_index + 1, :]
         )
-        dangerous_from_raw = paired_from_raw & raw_trial_success[
-            :, reference_index : reference_index + 1, :
-        ] & ~raw_trial_success[:, long_indices]
+        dangerous_from_raw = (
+            paired_from_raw
+            & raw_trial_success[:, reference_index : reference_index + 1, :]
+            & ~raw_trial_success[:, long_indices]
+        )
         expected_paired = np.zeros_like(paired)
         expected_dangerous = np.zeros_like(dangerous)
         expected_paired[:, long_indices] = np.sum(paired_from_raw, axis=-1)
@@ -467,6 +588,7 @@ def main(args: Args) -> None:
         final_stride=args.final_stride,
         visual_num_queries=args.visual_num_queries,
         paired_advantage_heads=args.paired_advantage_heads,
+        paired_distribution_heads=args.paired_distribution_heads,
         elapsed_advantage_scale=elapsed_advantage_scale,
         calls_advantage_scale=calls_advantage_scale,
     )
@@ -485,8 +607,13 @@ def main(args: Args) -> None:
     }
     (output_dir / "split_manifest.json").write_text(json.dumps(split_manifest, indent=2, sort_keys=True) + "\n")
     module = ExecutionHorizonPredictor(predictor_config, rngs=nnx.Rngs(args.seed))
+    resume_report: dict[str, Any] | None = None
     if args.resume_params is not None:
-        module = _restore_predictor(module, args.resume_params)
+        module, resume_report = _restore_predictor(
+            module,
+            args.resume_params,
+            resume_legacy_paired_heads=args.resume_legacy_paired_heads,
+        )
     graphdef, params = nnx.split(module)
     schedule = optax.cosine_decay_schedule(args.learning_rate, args.train_steps, alpha=0.1)
     optimizer = optax.chain(
@@ -680,7 +807,7 @@ def main(args: Args) -> None:
                 elapsed_mean + one_sided_z * elapsed_standard_error,
                 1e9,
             )
-            if predictor_config.paired_advantage_heads:
+            if predictor_config.paired_advantage_heads or predictor_config.paired_distribution_heads:
                 raw_valid = batch["trial_valid"].astype(jnp.bool_)
                 raw_success = batch["trial_success"].astype(jnp.bool_)
                 raw_elapsed = batch["trial_elapsed"].astype(jnp.float32)
@@ -715,13 +842,26 @@ def main(args: Args) -> None:
                     jnp.abs(predictions["elapsed_advantage"][..., None] - jnp.nan_to_num(elapsed_delta)),
                     pair_valid,
                 )
-                metrics["pairwise_selection_score"] = (
-                    metrics["danger_rescue_binomial"]
-                    + metrics["paired_elapsed_huber"]
-                    + metrics["faster_long_binomial"]
-                    + 0.25 * metrics["success_advantage_nll"]
-                    + 0.25 * metrics["elapsed_advantage_nll"]
-                )
+                if predictor_config.paired_distribution_heads:
+                    tie_rate = 1.0 - danger_rate - rescue_rate
+                    outcome_target = jnp.stack([danger_rate, tie_rate, rescue_rate], axis=-1)
+                    metrics["paired_outcome_brier"] = masked_mean(
+                        jnp.sum(jnp.square(predictions["paired_outcome_probability"] - outcome_target), axis=-1),
+                        pair_mask,
+                    )
+                    metrics["pairwise_selection_score"] = (
+                        metrics["paired_outcome_multinomial_nll"]
+                        + metrics["paired_elapsed_student_t_nll"]
+                        + metrics["faster_long_binomial"]
+                    )
+                else:
+                    metrics["pairwise_selection_score"] = (
+                        metrics["danger_rescue_binomial"]
+                        + metrics["paired_elapsed_huber"]
+                        + metrics["faster_long_binomial"]
+                        + 0.25 * metrics["success_advantage_nll"]
+                        + 0.25 * metrics["elapsed_advantage_nll"]
+                    )
         return metrics
 
     rng = np.random.default_rng(args.seed)
@@ -781,7 +921,7 @@ def main(args: Args) -> None:
                 validation_loss = last_validation_metrics["validation/loss"]
                 validation_objective = (
                     last_validation_metrics["validation/pairwise_selection_score"]
-                    if predictor_config.paired_advantage_heads
+                    if predictor_config.paired_advantage_heads or predictor_config.paired_distribution_heads
                     else validation_loss
                 )
                 if baseline_success_brier is None:
@@ -806,8 +946,7 @@ def main(args: Args) -> None:
                             or long_coverage > best_long_coverage + 1e-6
                             or (
                                 abs(long_coverage - best_long_coverage) <= 1e-6
-                                and validation_objective
-                                < best_validation_objective - args.early_stopping_min_delta
+                                and validation_objective < best_validation_objective - args.early_stopping_min_delta
                             )
                         )
                     ) or (
@@ -872,6 +1011,7 @@ def main(args: Args) -> None:
         "loss_weights": dataclasses.asdict(weights),
         "label_weights": dataclasses.asdict(label_weights),
         "predictor_config": dataclasses.asdict(predictor_config),
+        "resume": resume_report,
         "calibration_split_used_for_training": False,
         "last_train_metrics": last_train_metrics,
         "last_validation_metrics": last_validation_metrics,
