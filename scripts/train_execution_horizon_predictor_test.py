@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import pathlib
 import sys
 
@@ -88,6 +89,44 @@ def test_transformer_split_can_stratify_every_partition_by_task(tmp_path) -> Non
     assert partition_groups[1].isdisjoint(partition_groups[2])
 
 
+def test_transformer_split_accepts_explicit_four_way_manifest(tmp_path) -> None:
+    arrays = _arrays()
+    manifest = {
+        "split_schema_version": 2,
+        "split_roles": {
+            "train": "train",
+            "early_stop": "early_stop",
+            "calibration": "calibration",
+            "dev_audit": "development_audit",
+        },
+        "train_group_ids": [0, 1_000_000_000, 2_000_000_000],
+        "early_stop_group_ids": [1, 1_000_000_001, 2_000_000_001],
+        "calibration_group_ids": [2, 1_000_000_002, 2_000_000_002],
+        "dev_audit_group_ids": [3, 1_000_000_003, 2_000_000_003],
+    }
+    manifest_path = tmp_path / "four_way_split.json"
+    manifest_path.write_text(json.dumps(manifest))
+    args = trainer.Args(
+        dataset=(str(tmp_path),),
+        output_dir=str(tmp_path / "out"),
+        temporal_backbone="transformer",
+        input_split_manifest=str(manifest_path),
+    )
+
+    train, early_stop, calibration = trainer._split_indices(arrays, args)  # noqa: SLF001
+    groups = arrays["task_id"].astype(np.uint64) * np.uint64(1_000_000_000)
+    groups += arrays["episode_id"].astype(np.uint64)
+
+    assert set(groups[train].tolist()) == set(manifest["train_group_ids"])
+    assert set(groups[early_stop].tolist()) == set(manifest["early_stop_group_ids"])
+    assert set(groups[calibration].tolist()) == set(manifest["calibration_group_ids"])
+    assert set(groups[train]).isdisjoint(groups[early_stop])
+    assert set(groups[train]).isdisjoint(groups[calibration])
+    assert set(groups[early_stop]).isdisjoint(groups[calibration])
+    used_for_fit_or_selection = set(groups[np.concatenate((train, early_stop, calibration))].tolist())
+    assert used_for_fit_or_selection.isdisjoint(manifest["dev_audit_group_ids"])
+
+
 def test_paired_distribution_cli_and_loss_weights_are_explicit() -> None:
     args = trainer.tyro.cli(
         trainer.Args,
@@ -106,6 +145,8 @@ def test_paired_distribution_cli_and_loss_weights_are_explicit() -> None:
             "--resume-params",
             "legacy/params",
             "--resume-legacy-paired-heads",
+            "--input-split-manifest",
+            "four-way.json",
         ],
     )
 
@@ -113,6 +154,7 @@ def test_paired_distribution_cli_and_loss_weights_are_explicit() -> None:
     weights = trainer._loss_weights(args)  # noqa: SLF001
     assert args.paired_distribution_heads is True
     assert args.resume_legacy_paired_heads is True
+    assert args.input_split_manifest == "four-way.json"
     assert weights.success_advantage == 0.0
     assert weights.elapsed_advantage == 0.0
     assert weights.danger_rescue == 1.0

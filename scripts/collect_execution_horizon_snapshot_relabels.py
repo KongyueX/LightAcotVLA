@@ -91,6 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument("--prefix-token-count", type=int, default=0)
     parser.add_argument("--fixed-continuation-horizon", type=int, default=5)
+    parser.add_argument(
+        "--root-seed-task-stride",
+        type=int,
+        default=collector.LEGACY_ROOT_SEED_TASK_STRIDE,
+        help="Must match the source collector's root-seed task stride.",
+    )
     parser.add_argument("--branch-repeat-seed-stride", type=int, default=20_000_000)
     parser.add_argument("--physical-action-dim", type=int, default=7)
     parser.add_argument("--source-iteration", type=int, default=1)
@@ -272,7 +278,11 @@ def _base_branches(
         outcomes = [
             {
                 "repeat_index": repeat_index,
-                "policy_seed": root_seed + repeat_index * repeat_seed_stride,
+                "policy_seed": collector._branch_seed(  # noqa: SLF001
+                    root_seed,
+                    repeat_index,
+                    repeat_seed_stride,
+                ),
                 "success": bool(record["trial_success"][candidate_index, repeat_index]),
                 "timeout": bool(record["trial_timeout"][candidate_index, repeat_index]),
                 "remaining_steps": int(record["trial_remaining_steps"][candidate_index, repeat_index]),
@@ -369,9 +379,28 @@ def _selection(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str,
     return payload, records
 
 
+def _validate_source_seed_scheme(source_paths: set[pathlib.Path], args: argparse.Namespace) -> None:
+    expected = collector._seed_scheme_metadata(args)  # noqa: SLF001
+    identity_fields = tuple(name for name in expected if name != "root_seed_max_value")
+    for source_path in sorted(source_paths):
+        manifest_path = source_path / "manifest.json" if source_path.is_dir() else source_path.parent / "manifest.json"
+        if not manifest_path.is_file():
+            continue
+        metadata = json.loads(manifest_path.read_text()).get("metadata", {})
+        present = {name: metadata[name] for name in identity_fields if name in metadata}
+        if not present:
+            if args.root_seed_task_stride != collector.LEGACY_ROOT_SEED_TASK_STRIDE:
+                raise ValueError(f"Source {source_path} does not record the requested opt-in root seed scheme.")
+            continue
+        mismatches = {name: (present[name], expected[name]) for name in present if present[name] != expected[name]}
+        if mismatches:
+            raise ValueError(f"Source root seed scheme differs from snapshot relabel arguments: {mismatches}.")
+
+
 def main(args: argparse.Namespace) -> None:
     if (
         args.records_per_shard <= 0
+        or args.root_seed_task_stride <= 0
         or args.branch_repeat_seed_stride <= 0
         or args.physical_action_dim <= 0
         or args.v2_budget_capacity <= 0
@@ -409,6 +438,7 @@ def main(args: argparse.Namespace) -> None:
             raise ValueError("Selected source datasets have incompatible shapes.")
         source_rows.append(source)
         base_records.append(_read_record(source))
+    _validate_source_seed_scheme(set(source_cache), args)
     assert expected_shape is not None
     if expected_shape.candidate_horizons != candidates:
         raise ValueError("Selection candidates differ from the source dataset shape.")
@@ -445,6 +475,7 @@ def main(args: argparse.Namespace) -> None:
         "reference_horizon": reference_horizon,
         "target_trials": target_trials,
         "branch_repeat_seed_stride": args.branch_repeat_seed_stride,
+        **collector._seed_scheme_metadata(args),  # noqa: SLF001
         "fixed_continuation_horizon": args.fixed_continuation_horizon,
         "source_iteration": args.source_iteration,
     }
@@ -489,14 +520,23 @@ def main(args: argparse.Namespace) -> None:
                         balance=float(base["budget_balance"]) * args.v2_budget_capacity
                     )
                     for repeat_index in range(existing_trials, target_trials):
+                        _, schedule_offset, _, _ = collector._seed_scheme(  # noqa: SLF001
+                            args.root_seed_task_stride,
+                            args.branch_repeat_seed_stride,
+                        )
+                        branch_seed = collector._branch_seed(  # noqa: SLF001
+                            int(base["root_seed"]),
+                            repeat_index,
+                            args.branch_repeat_seed_stride,
+                        )
                         schedule_rng = np.random.default_rng(
-                            int(base["root_seed"])
-                            + repeat_index * args.branch_repeat_seed_stride
-                            + 17
+                            collector._branch_schedule_seed(  # noqa: SLF001
+                                branch_seed,
+                                schedule_offset=schedule_offset,
+                            )
                         )
                         for candidate_index in schedule_rng.permutation(len(candidates)):
                             forced_horizon = candidates[int(candidate_index)]
-                            branch_seed = int(base["root_seed"]) + repeat_index * args.branch_repeat_seed_stride
                             (
                                 success,
                                 timeout,

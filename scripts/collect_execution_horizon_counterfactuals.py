@@ -22,6 +22,14 @@ from openpi.execution_horizon import hierarchical
 from openpi.execution_horizon import initial_states as horizon_initial_states
 from openpi.execution_horizon import v2
 
+ROOT_SEED_EPISODE_STRIDE = 10_000
+LEGACY_ROOT_SEED_TASK_STRIDE = 1_000_000
+LEGACY_ROOT_SEED_BRANCH_CONTINUATION_OFFSET = 100_000
+ROOT_SEED_BRANCH_SCHEDULE_OFFSET = 17
+LEGACY_ROOT_SEED_SCHEME = "affine_task_episode_step_uint32_v1"
+LANED_ROOT_SEED_SCHEME = "affine_task_episode_repeat_schedule_continuation_lanes_uint32_v2"
+MAX_POLICY_SEED = int(np.iinfo(np.uint32).max)
+
 
 @dataclasses.dataclass
 class SimulatorSnapshot:
@@ -55,6 +63,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--root-seed-task-stride",
+        type=int,
+        default=LEGACY_ROOT_SEED_TASK_STRIDE,
+        help=(
+            "Task namespace stride in the deterministic root/policy seed scheme. The legacy 1,000,000 "
+            "default is unchanged; use a larger opt-in value when collecting wide episode-ID ranges."
+        ),
+    )
     parser.add_argument("--teacher-samples", type=int, choices=(10, 20, 32), default=20)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument("--root-stride-calls", type=int, default=1)
@@ -242,6 +259,256 @@ def _restore_snapshot(env: Any, snapshot: SimulatorSnapshot) -> dict[str, Any]:
     raise RuntimeError("Could not regenerate a LIBERO observation after restoring physics state.")
 
 
+def _uint32_seed(value: int, *, description: str) -> int:
+    value = int(value)
+    if not 0 <= value <= MAX_POLICY_SEED:
+        raise ValueError(f"{description}={value} lies outside the uint32 policy-seed range [0, {MAX_POLICY_SEED}].")
+    return value
+
+
+def _root_seed(
+    base_seed: int,
+    task_id: int,
+    episode_id: int,
+    decision_step: int,
+    *,
+    task_stride: int,
+) -> int:
+    values = (base_seed, task_id, episode_id, decision_step)
+    if any(int(value) < 0 for value in values):
+        raise ValueError("Root seed inputs must be non-negative.")
+    if int(task_stride) <= 0:
+        raise ValueError("root_seed_task_stride must be positive.")
+    return _uint32_seed(
+        int(base_seed)
+        + int(task_id) * int(task_stride)
+        + int(episode_id) * ROOT_SEED_EPISODE_STRIDE
+        + int(decision_step),
+        description="root_seed",
+    )
+
+
+def _branch_seed(root_seed: int, repeat_index: int, repeat_stride: int) -> int:
+    if int(repeat_index) < 0 or int(repeat_stride) <= 0:
+        raise ValueError("repeat_index must be non-negative and branch_repeat_seed_stride must be positive.")
+    return _uint32_seed(
+        int(root_seed) + int(repeat_index) * int(repeat_stride),
+        description="branch_seed",
+    )
+
+
+def _branch_schedule_seed(
+    branch_seed: int,
+    *,
+    schedule_offset: int = ROOT_SEED_BRANCH_SCHEDULE_OFFSET,
+) -> int:
+    if int(schedule_offset) <= 0:
+        raise ValueError("schedule_offset must be positive.")
+    return _uint32_seed(
+        int(branch_seed) + int(schedule_offset),
+        description="branch_schedule_seed",
+    )
+
+
+def _branch_continuation_seed(
+    branch_seed: int,
+    continuation_index: int,
+    *,
+    continuation_offset: int = LEGACY_ROOT_SEED_BRANCH_CONTINUATION_OFFSET,
+) -> int:
+    if int(continuation_index) < 0:
+        raise ValueError("continuation_index must be non-negative.")
+    if int(continuation_offset) <= 0:
+        raise ValueError("continuation_offset must be positive.")
+    return _uint32_seed(
+        int(branch_seed) + int(continuation_offset) + int(continuation_index),
+        description="branch_continuation_seed",
+    )
+
+
+def _seed_scheme(task_stride: int, branch_repeat_seed_stride: int) -> tuple[str, int, int, bool]:
+    if int(task_stride) == LEGACY_ROOT_SEED_TASK_STRIDE:
+        return (
+            LEGACY_ROOT_SEED_SCHEME,
+            ROOT_SEED_BRANCH_SCHEDULE_OFFSET,
+            LEGACY_ROOT_SEED_BRANCH_CONTINUATION_OFFSET,
+            False,
+        )
+    if int(branch_repeat_seed_stride) < 4:
+        raise ValueError("The opt-in laned seed scheme requires branch_repeat_seed_stride >= 4.")
+    # Each repeat owns one branch_repeat_seed_stride-wide region. Root/branch,
+    # schedule, and continuation seeds occupy distinct quarter/half lanes.
+    return (
+        LANED_ROOT_SEED_SCHEME,
+        int(branch_repeat_seed_stride) // 4,
+        int(branch_repeat_seed_stride) // 2,
+        True,
+    )
+
+
+def _seed_scheme_metadata(args: argparse.Namespace) -> dict[str, int | str]:
+    scheme, schedule_offset, continuation_offset, strict_namespace = _seed_scheme(
+        args.root_seed_task_stride,
+        args.branch_repeat_seed_stride,
+    )
+    return {
+        "root_seed_scheme": scheme,
+        "root_seed_task_stride": int(args.root_seed_task_stride),
+        "root_seed_episode_stride": ROOT_SEED_EPISODE_STRIDE,
+        "root_seed_branch_repeat_stride": int(args.branch_repeat_seed_stride),
+        "root_seed_branch_schedule_offset": schedule_offset,
+        "root_seed_branch_continuation_offset": continuation_offset,
+        "root_seed_strict_namespace_validation": strict_namespace,
+        "root_seed_max_value": MAX_POLICY_SEED,
+    }
+
+
+def _merge_seed_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(intervals):
+        if not merged or start > merged[-1][1] + 1:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _validate_seed_namespace(
+    *,
+    base_seed: int,
+    task_ids: list[int],
+    episode_ids: list[int],
+    maximum_episode_step: int,
+    maximum_continuation_calls: int,
+    task_stride: int,
+    branch_repeats: int,
+    branch_repeat_seed_stride: int,
+    teacher_samples: int,
+) -> None:
+    """Prove opt-in seed intervals are disjoint across actual task/episode identities."""
+
+    if not task_ids or any(int(task_id) < 0 for task_id in task_ids):
+        raise ValueError("task_ids must contain non-negative values.")
+    if not episode_ids or any(int(episode_id) < 0 for episode_id in episode_ids):
+        raise ValueError("episode_ids must contain non-negative values.")
+    if maximum_episode_step < 0 or maximum_episode_step >= ROOT_SEED_EPISODE_STRIDE:
+        raise ValueError(
+            f"maximum_episode_step must lie in [0, {ROOT_SEED_EPISODE_STRIDE}); "
+            "otherwise episode seed namespaces can overlap."
+        )
+    if maximum_continuation_calls < 0:
+        raise ValueError("maximum_continuation_calls must be non-negative.")
+    if task_stride <= 0 or branch_repeats <= 0 or branch_repeat_seed_stride <= 0 or teacher_samples <= 0:
+        raise ValueError("Seed strides, branch_repeats and teacher_samples must be positive.")
+
+    _, schedule_offset, continuation_offset, strict_namespace = _seed_scheme(
+        task_stride,
+        branch_repeat_seed_stride,
+    )
+    intervals_by_identity: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for task_id in task_ids:
+        for episode_id in episode_ids:
+            labelled_intervals: list[tuple[int, int, str]] = []
+            root_base = _root_seed(base_seed, task_id, episode_id, 0, task_stride=task_stride)
+            root_end = _root_seed(
+                base_seed,
+                task_id,
+                episode_id,
+                maximum_episode_step,
+                task_stride=task_stride,
+            )
+            # The root request also constructs batched teacher keys from a
+            # uint32 arange, whose exclusive stop must remain representable.
+            teacher_end = _uint32_seed(
+                root_end + teacher_samples,
+                description="root_teacher_seed_stop",
+            )
+            labelled_intervals.append((root_base, teacher_end, "repeat0_root_branch_teacher"))
+            for repeat_index in range(branch_repeats):
+                branch_base = _branch_seed(root_base, repeat_index, branch_repeat_seed_stride)
+                branch_end = _branch_seed(root_end, repeat_index, branch_repeat_seed_stride)
+                if repeat_index:
+                    labelled_intervals.append((branch_base, branch_end, f"repeat{repeat_index}_branch"))
+                labelled_intervals.append(
+                    (
+                        _branch_schedule_seed(branch_base, schedule_offset=schedule_offset),
+                        _branch_schedule_seed(branch_end, schedule_offset=schedule_offset),
+                        f"repeat{repeat_index}_schedule",
+                    )
+                )
+                labelled_intervals.append(
+                    (
+                        _branch_continuation_seed(
+                            branch_base,
+                            0,
+                            continuation_offset=continuation_offset,
+                        ),
+                        _branch_continuation_seed(
+                            branch_end,
+                            maximum_continuation_calls,
+                            continuation_offset=continuation_offset,
+                        ),
+                        f"repeat{repeat_index}_continuation",
+                    )
+                )
+            if strict_namespace:
+                sorted_intervals = sorted(labelled_intervals)
+                previous_start, previous_end, previous_name = sorted_intervals[0]
+                for start, end, name in sorted_intervals[1:]:
+                    if start <= previous_end:
+                        raise ValueError(
+                            "Opt-in seed lanes overlap within task/episode identity "
+                            f"{(int(task_id), int(episode_id))}: {previous_name}=[{previous_start},{previous_end}] "
+                            f"and {name}=[{start},{end}]. Increase --branch-repeat-seed-stride or narrow the "
+                            "episode/call range."
+                        )
+                    previous_start, previous_end, previous_name = start, end, name
+                task_namespace_start = _uint32_seed(
+                    int(base_seed) + int(task_id) * int(task_stride),
+                    description="task_seed_namespace_start",
+                )
+                task_namespace_end = _uint32_seed(
+                    int(base_seed) + (int(task_id) + 1) * int(task_stride) - 1,
+                    description="task_seed_namespace_end",
+                )
+                for start, end, name in labelled_intervals:
+                    if start < task_namespace_start or end > task_namespace_end:
+                        raise ValueError(
+                            f"Opt-in {name} interval [{start},{end}] for task{task_id}/episode{episode_id} "
+                            f"escapes task namespace [{task_namespace_start},{task_namespace_end}]; increase "
+                            "--root-seed-task-stride or narrow the episode/repeat range."
+                        )
+            intervals_by_identity[(int(task_id), int(episode_id))] = _merge_seed_intervals(
+                [(start, end) for start, end, _ in labelled_intervals]
+            )
+
+    if not strict_namespace:
+        # Preserve legacy collection behavior byte-for-byte by keeping its
+        # historical +100k continuation namespace. The widened opt-in scheme
+        # below is the collision-proof choice for new high-episode data.
+        return
+
+    flattened = sorted(
+        (start, end, identity)
+        for identity, intervals in intervals_by_identity.items()
+        for start, end in intervals
+    )
+    furthest_end = -1
+    furthest_identity: tuple[int, int] | None = None
+    for start, end, identity in flattened:
+        if start <= furthest_end:
+            # Per-identity intervals were merged above, so an active interval
+            # at this point necessarily belongs to a different identity.
+            raise ValueError(
+                "Seed namespaces overlap across task/episode identities "
+                f"{furthest_identity} and {identity} at uint32 seed {start}; increase "
+                "--root-seed-task-stride/--branch-repeat-seed-stride or narrow the episode/repeat range."
+            )
+        if end > furthest_end:
+            furthest_end = end
+            furthest_identity = identity
+
+
 def _policy_request(
     client: websocket_policy.WebsocketClientPolicy,
     observation: dict[str, Any],
@@ -257,6 +524,9 @@ def _policy_request(
     episode_progress: float = 0.0,
 ) -> dict[str, Any]:
     request = dict(observation)
+    seed = _uint32_seed(seed, description="policy_seed")
+    if teacher:
+        _uint32_seed(seed + int(args.teacher_samples), description="teacher_policy_seed_stop")
     request["policy_seed"] = np.asarray(seed, dtype=np.int64)
     request["action_cot_denoising_steps"] = np.asarray(args.action_cot_denoising_steps, dtype=np.int32)
     # Branch continuation can contain hundreds of calls.  Only the root
@@ -439,6 +709,10 @@ def _run_branch(
 
     action_plan = np.asarray(primary_actions)[:forced_horizon]
     continuation_index = 0
+    _, _, continuation_offset, _ = _seed_scheme(
+        getattr(args, "root_seed_task_stride", LEGACY_ROOT_SEED_TASK_STRIDE),
+        args.branch_repeat_seed_stride,
+    )
     while root_step + steps < episode_step_limit:
         for action in action_plan:
             if root_step + steps >= episode_step_limit:
@@ -463,7 +737,11 @@ def _run_branch(
         if done or root_step + steps >= episode_step_limit:
             break
 
-        continuation_seed = root_seed + 100_000 + continuation_index
+        continuation_seed = _branch_continuation_seed(
+            root_seed,
+            continuation_index,
+            continuation_offset=continuation_offset,
+        )
         policy_input = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
         progress = np.clip((root_step + steps) / max(episode_step_limit, 1), 0.0, 1.0)
         use_student = args.continuation_policy == "current_student"
@@ -679,13 +957,14 @@ def main(args: argparse.Namespace) -> None:
     if (
         args.root_stride_calls <= 0
         or args.root_call_offset_cycle <= 0
+        or args.root_seed_task_stride <= 0
         or args.action_cot_denoising_steps <= 0
         or args.branch_repeats <= 0
         or args.branch_repeat_seed_stride <= 0
     ):
         raise ValueError(
-            "root_stride_calls, root_call_offset_cycle, action_cot_denoising_steps, branch_repeats and "
-            "branch_repeat_seed_stride must be positive."
+            "root_stride_calls, root_call_offset_cycle, root_seed_task_stride, action_cot_denoising_steps, "
+            "branch_repeats and branch_repeat_seed_stride must be positive."
         )
     candidate_horizons = tuple(sorted(set(args.candidate_horizons)))
     if not candidate_horizons or candidate_horizons[0] <= 0 or candidate_horizons[-1] > args.model_action_horizon:
@@ -751,6 +1030,23 @@ def main(args: argparse.Namespace) -> None:
     else:
         args._hierarchical_calibration = None
         args._hierarchical_aggregate_calibration = None
+    task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
+    max_steps = libero_eval._max_steps(args.task_suite_name)
+    task_end = (
+        task_suite.n_tasks if args.max_tasks is None else min(task_suite.n_tasks, args.task_start + args.max_tasks)
+    )
+    task_ids = list(range(args.task_start, task_end))
+    _validate_seed_namespace(
+        base_seed=args.seed,
+        task_ids=task_ids,
+        episode_ids=episode_ids,
+        maximum_episode_step=max_steps + args.num_steps_wait,
+        maximum_continuation_calls=max_steps + args.num_steps_wait,
+        task_stride=args.root_seed_task_stride,
+        branch_repeats=args.branch_repeats,
+        branch_repeat_seed_stride=args.branch_repeat_seed_stride,
+        teacher_samples=args.teacher_samples,
+    )
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     debug_dir = output_dir / "debug_failures"
@@ -760,11 +1056,6 @@ def main(args: argparse.Namespace) -> None:
         api_key=args.policy_api_key,
         ping_interval=None,
         ping_timeout=None,
-    )
-    task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
-    max_steps = libero_eval._max_steps(args.task_suite_name)
-    task_end = (
-        task_suite.n_tasks if args.max_tasks is None else min(task_suite.n_tasks, args.task_start + args.max_tasks)
     )
     initial_state_bank = (
         horizon_initial_states.InitialStateBank(args.initial_state_bank)
@@ -795,6 +1086,7 @@ def main(args: argparse.Namespace) -> None:
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "source_iteration": args.source_iteration,
         "root_call_offset_cycle": args.root_call_offset_cycle,
+        **_seed_scheme_metadata(args),
         "episode_ids": episode_ids,
         "branch_repeats": args.branch_repeats,
         "repeat_branch_horizons": repeated_horizons,
@@ -872,7 +1164,13 @@ def main(args: argparse.Namespace) -> None:
                         )
                         if args.max_roots_per_episode and roots_this_episode >= args.max_roots_per_episode:
                             break
-                        root_seed = args.seed + task_id * 1_000_000 + episode_id * 10_000 + step
+                        root_seed = _root_seed(
+                            args.seed,
+                            task_id,
+                            episode_id,
+                            step,
+                            task_stride=args.root_seed_task_stride,
+                        )
                         policy_input = libero_eval._observation_to_policy_input(
                             observation, task_description, args.resize_size
                         )
@@ -899,6 +1197,10 @@ def main(args: argparse.Namespace) -> None:
                                 config=risk_config,
                             )
                             branch_rows: list[list[dict[str, Any]]] = [[] for _ in candidate_horizons]
+                            _, branch_schedule_offset, _, _ = _seed_scheme(
+                                args.root_seed_task_stride,
+                                args.branch_repeat_seed_stride,
+                            )
                             # Interleave paired repeats and deterministically
                             # randomize H order within each repeat. This avoids
                             # making H20 elapsed labels systematically last on
@@ -909,12 +1211,19 @@ def main(args: argparse.Namespace) -> None:
                                     for index, horizon in enumerate(candidate_horizons)
                                     if repeat_index == 0 or horizon in repeated_horizons
                                 ]
+                                branch_seed = _branch_seed(
+                                    root_seed,
+                                    repeat_index,
+                                    args.branch_repeat_seed_stride,
+                                )
                                 schedule_rng = np.random.default_rng(
-                                    root_seed + repeat_index * args.branch_repeat_seed_stride + 17
+                                    _branch_schedule_seed(
+                                        branch_seed,
+                                        schedule_offset=branch_schedule_offset,
+                                    )
                                 )
                                 for candidate_index in schedule_rng.permutation(scheduled_candidates):
                                     forced_horizon = candidate_horizons[candidate_index]
-                                    branch_seed = root_seed + repeat_index * args.branch_repeat_seed_stride
                                     capture_video = repeat_index == 0 and debug_videos < args.debug_failure_videos
                                     (
                                         success,

@@ -1,9 +1,10 @@
-"""Audit one frozen aggregate-risk rule on an explicit development validation split.
+"""Audit one frozen aggregate-risk rule on an explicit development audit split.
 
-The validation labels are used exactly once for reporting.  Thresholds and the
+The audit labels are used exactly once for reporting. Thresholds and the
 candidate-selection rule are loaded from the calibration artifact and are
-never refitted or selected by this command.  Final/test/holdout inputs are
-refused before any dataset is opened.
+never refitted or selected by this command. Four-way manifests use the
+``dev_audit`` role; legacy manifests may still use ``validation``. Final/test/
+holdout inputs are refused before any dataset is opened.
 """
 
 from __future__ import annotations
@@ -69,9 +70,16 @@ def _calibration_risk_coverage(artifact: hierarchical.AggregateSelectorCalibrati
     }
 
 
+def _audit_split_role(split_name: str) -> str:
+    if split_name == "validation":
+        return "validation"
+    if split_name == "dev_audit":
+        return "development_audit"
+    raise ValueError("Aggregate-risk audit split must be legacy 'validation' or four-way 'dev_audit'.")
+
+
 def main(args: Args) -> None:
-    if args.audit_split_name != "validation":
-        raise ValueError("Aggregate-risk audit requires the explicit split name 'validation'.")
+    audit_split_role = _audit_split_role(args.audit_split_name)
     output_path = pathlib.Path(args.output_json).resolve()
     if output_path.exists():
         raise FileExistsError(f"Refusing to overwrite one-shot aggregate audit output: {output_path}.")
@@ -79,7 +87,7 @@ def main(args: Args) -> None:
         args.development_dataset,
         split_manifest=args.split_manifest,
         split_name=args.audit_split_name,
-        required_role="validation",
+        required_role=audit_split_role,
     )
     artifact_path = pathlib.Path(args.aggregate_calibration_json).resolve()
     artifact = hierarchical.AggregateSelectorCalibration.load(artifact_path)
@@ -88,12 +96,12 @@ def main(args: Args) -> None:
     if not np.isclose(artifact.search_config.confidence_level, 0.95):
         raise ValueError("This development audit requires a calibration artifact preregistered at 95% confidence.")
     calibration_groups = tuple(sorted({int(value) for value in manifest["calibration_group_ids"]}))
-    validation_groups = tuple(int(value) for value in np.unique(cluster_ids))
+    audit_groups = tuple(int(value) for value in np.unique(cluster_ids))
     if calibration_groups != artifact.provenance.calibration_group_ids:
         raise ValueError("Manifest calibration groups differ from the frozen aggregate provenance.")
-    overlap = sorted(set(calibration_groups).intersection(validation_groups))
+    overlap = sorted(set(calibration_groups).intersection(audit_groups))
     if overlap:
-        raise ValueError(f"Validation groups overlap calibration groups: {overlap[:10]}.")
+        raise ValueError(f"Development audit groups overlap calibration groups: {overlap[:10]}.")
     inference_seed, predictor_summary_path = common.resolve_inference_initialization_seed(
         args.predictor_dir,
         args.inference_initialization_seed,
@@ -175,10 +183,11 @@ def main(args: Args) -> None:
         "development_dataset_inputs": list(inputs),
         "split_manifest": str(pathlib.Path(args.split_manifest).resolve()),
         "split_name": args.audit_split_name,
-        "split_role": "validation",
-        "num_clusters": len(validation_groups),
-        "selected_group_ids": list(validation_groups),
+        "split_role": audit_split_role,
+        "num_clusters": len(audit_groups),
+        "selected_group_ids": list(audit_groups),
         "calibration_group_ids": list(calibration_groups),
+        "calibration_audit_group_overlap": [],
         "calibration_validation_group_overlap": [],
         "rule_frozen_before_audit": True,
         "audit_split_used_for_threshold_fit": False,

@@ -14,6 +14,7 @@ import tyro
 
 from openpi.execution_horizon import dataset as horizon_dataset
 from openpi.execution_horizon import hierarchical
+from openpi.execution_horizon import splits as horizon_splits
 from openpi.models import model as model_lib
 from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictor
 from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictorConfig
@@ -62,24 +63,20 @@ def _restore(config: ExecutionHorizonPredictorConfig, params_path: pathlib.Path,
 
 
 def _split_indices(arrays: dict[str, np.ndarray], manifest_path: pathlib.Path, split_name: str) -> np.ndarray:
-    manifest = json.loads(manifest_path.read_text())
-    selected_groups = np.asarray(manifest[f"{split_name}_group_ids"], dtype=np.uint64)
-    if not selected_groups.size:
-        raise ValueError(f"split_manifest contains no {split_name} groups.")
-    groups = np.asarray(arrays["task_id"], dtype=np.uint64) * np.uint64(1_000_000_000)
-    groups += np.asarray(arrays["episode_id"], dtype=np.uint64)
+    manifest, split_groups = horizon_splits.load_manifest(manifest_path, arrays=arrays)
+    groups = horizon_splits.episode_group_ids(arrays)
     if split_name == "train" and manifest.get("bootstrap_episode_groups"):
         multiplicities = {int(group): int(count) for group, count in manifest["bootstrap_train_group_counts"].items()}
+        train_groups = {int(group) for group in split_groups["train"]}
+        if any(group not in train_groups or count <= 0 for group, count in multiplicities.items()):
+            raise ValueError("Bootstrap train multiplicities must be positive and restricted to train groups.")
         repeated = [
             np.flatnonzero(groups == np.uint64(group)) for group, count in multiplicities.items() for _ in range(count)
         ]
         if not repeated:
             raise ValueError("Bootstrap split manifest contains no sampled train groups.")
         return np.concatenate(repeated)
-    indices = np.flatnonzero(np.isin(groups, selected_groups))
-    if not indices.size:
-        raise ValueError(f"No dataset roots match the {split_name} groups in split_manifest.")
-    return indices
+    return horizon_splits.indices_for_split(groups, split_groups, split_name)
 
 
 def _predict(

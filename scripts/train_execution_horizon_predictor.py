@@ -22,6 +22,7 @@ import orbax.checkpoint as ocp
 import tyro
 
 from openpi.execution_horizon import dataset as horizon_dataset
+from openpi.execution_horizon import splits as horizon_splits
 from openpi.models import model as model_lib
 from openpi.models.execution_horizon_predictor import ExecutionHorizonLabelWeights
 from openpi.models.execution_horizon_predictor import ExecutionHorizonLossWeights
@@ -37,6 +38,7 @@ class Args:
     resume_params: str | None = None
     seed: int = 7
     split_seed: int | None = None
+    input_split_manifest: str | None = None
     stratify_splits_by_task: bool = False
     bootstrap_episode_groups: bool = False
     train_steps: int = 20_000
@@ -196,6 +198,18 @@ def _validate_paired_args(args: Args) -> None:
 
 
 def _split_indices(arrays: dict[str, np.ndarray], args: Args) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if args.input_split_manifest is not None:
+        _, split_groups = horizon_splits.load_manifest(
+            args.input_split_manifest,
+            arrays=arrays,
+            require_four_way=True,
+        )
+        groups = horizon_splits.episode_group_ids(arrays)
+        return (
+            horizon_splits.indices_for_split(groups, split_groups, "train"),
+            horizon_splits.indices_for_split(groups, split_groups, "early_stop"),
+            horizon_splits.indices_for_split(groups, split_groups, "calibration"),
+        )
     if not 0 < args.validation_fraction < 0.5:
         raise ValueError("validation_fraction must be in (0, 0.5).")
     if args.calibration_fraction < 0 or args.calibration_fraction >= 0.5:
@@ -456,9 +470,9 @@ def main(args: Args) -> None:
     if args.temporal_backbone == "transformer":
         if not np.all(np.asarray(arrays["schema_version"]) == horizon_dataset.SCHEMA_VERSION):
             raise ValueError("Transformer training requires count-aware schema v2 shards, not repeat-0 v1 labels.")
-        if args.calibration_fraction <= 0:
+        if args.input_split_manifest is None and args.calibration_fraction <= 0:
             raise ValueError("Transformer training requires a non-zero independent calibration_fraction.")
-        if args.split_seed is None:
+        if args.input_split_manifest is None and args.split_seed is None:
             raise ValueError(
                 "Transformer training requires an explicit split_seed so training-seed replications share splits."
             )
@@ -532,8 +546,7 @@ def main(args: Args) -> None:
         gripper_multiplier=args.gripper_multiplier,
         failure_multiplier=args.failure_multiplier,
     )
-    group_ids = np.asarray(arrays["task_id"], dtype=np.uint64) * np.uint64(1_000_000_000)
-    group_ids += np.asarray(arrays["episode_id"], dtype=np.uint64)
+    group_ids = horizon_splits.episode_group_ids(arrays)
     bootstrap_group_counts: dict[int, int] = {}
     train_multiplicity = np.ones((train_indices.size,), dtype=np.float64)
     if args.bootstrap_episode_groups:
@@ -595,16 +608,31 @@ def main(args: Args) -> None:
     (output_dir / "predictor_config.json").write_text(
         json.dumps(dataclasses.asdict(predictor_config), indent=2, sort_keys=True) + "\n"
     )
-    split_manifest = {
-        "split_seed": args.seed if args.split_seed is None else args.split_seed,
-        "training_seed": args.seed,
-        "stratify_splits_by_task": args.stratify_splits_by_task,
-        "bootstrap_episode_groups": args.bootstrap_episode_groups,
-        "bootstrap_train_group_counts": bootstrap_group_counts,
-        "train_group_ids": sorted({int(value) for value in group_ids[train_indices]}),
-        "validation_group_ids": sorted({int(value) for value in group_ids[validation_indices]}),
-        "calibration_group_ids": sorted({int(value) for value in group_ids[calibration_indices]}),
-    }
+    if args.input_split_manifest is not None:
+        input_manifest_path = pathlib.Path(args.input_split_manifest).resolve()
+        input_manifest, _ = horizon_splits.load_manifest(
+            input_manifest_path,
+            arrays=arrays,
+            require_four_way=True,
+        )
+        split_manifest = {
+            **input_manifest,
+            "input_split_manifest": str(input_manifest_path),
+            "training_seed": args.seed,
+            "bootstrap_episode_groups": args.bootstrap_episode_groups,
+            "bootstrap_train_group_counts": bootstrap_group_counts,
+        }
+    else:
+        split_manifest = {
+            "split_seed": args.seed if args.split_seed is None else args.split_seed,
+            "training_seed": args.seed,
+            "stratify_splits_by_task": args.stratify_splits_by_task,
+            "bootstrap_episode_groups": args.bootstrap_episode_groups,
+            "bootstrap_train_group_counts": bootstrap_group_counts,
+            "train_group_ids": sorted({int(value) for value in group_ids[train_indices]}),
+            "validation_group_ids": sorted({int(value) for value in group_ids[validation_indices]}),
+            "calibration_group_ids": sorted({int(value) for value in group_ids[calibration_indices]}),
+        }
     (output_dir / "split_manifest.json").write_text(json.dumps(split_manifest, indent=2, sort_keys=True) + "\n")
     module = ExecutionHorizonPredictor(predictor_config, rngs=nnx.Rngs(args.seed))
     resume_report: dict[str, Any] | None = None
@@ -994,7 +1022,14 @@ def main(args: Args) -> None:
         "requested_train_steps": args.train_steps,
         "batch_size": args.batch_size,
         "training_seed": args.seed,
-        "split_seed": args.seed if args.split_seed is None else args.split_seed,
+        "split_seed": (
+            split_manifest.get("split_seed")
+            if args.input_split_manifest is not None
+            else args.seed if args.split_seed is None else args.split_seed
+        ),
+        "input_split_manifest": (
+            str(pathlib.Path(args.input_split_manifest).resolve()) if args.input_split_manifest is not None else None
+        ),
         "stratify_splits_by_task": args.stratify_splits_by_task,
         "bootstrap_episode_groups": args.bootstrap_episode_groups,
         "train_sampling_support_records": train_support_size,
@@ -1013,6 +1048,7 @@ def main(args: Args) -> None:
         "predictor_config": dataclasses.asdict(predictor_config),
         "resume": resume_report,
         "calibration_split_used_for_training": False,
+        "dev_audit_split_used_for_training_or_checkpoint_selection": False,
         "last_train_metrics": last_train_metrics,
         "last_validation_metrics": last_validation_metrics,
     }

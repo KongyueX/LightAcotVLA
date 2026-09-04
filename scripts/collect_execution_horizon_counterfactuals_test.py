@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from openpi.execution_horizon import dataset
 
@@ -31,6 +32,142 @@ class _RecordingClient:
     def infer(self, request: dict[str, object]) -> dict[str, object]:
         self.requests.append(request)
         return {}
+
+
+def test_root_seed_task_stride_is_opt_in_and_legacy_default_is_preserved() -> None:
+    args = collector.build_parser().parse_args(["--output-dir", "/tmp/counterfactuals"])
+    assert args.root_seed_task_stride == 1_000_000
+    legacy_metadata = collector._seed_scheme_metadata(args)  # noqa: SLF001
+    assert legacy_metadata["root_seed_scheme"] == "affine_task_episode_step_uint32_v1"
+    assert legacy_metadata["root_seed_branch_continuation_offset"] == 100_000
+    assert legacy_metadata["root_seed_strict_namespace_validation"] is False
+
+    legacy_left = collector._root_seed(  # noqa: SLF001
+        7,
+        0,
+        200,
+        10,
+        task_stride=1_000_000,
+    )
+    legacy_right = collector._root_seed(  # noqa: SLF001
+        7,
+        1,
+        100,
+        10,
+        task_stride=1_000_000,
+    )
+    assert legacy_left == legacy_right
+
+    widened_left = collector._root_seed(  # noqa: SLF001
+        7,
+        0,
+        200,
+        10,
+        task_stride=250_000_000,
+    )
+    widened_right = collector._root_seed(  # noqa: SLF001
+        7,
+        1,
+        100,
+        10,
+        task_stride=250_000_000,
+    )
+    assert widened_left != widened_right
+
+
+def test_wide_root_seed_namespace_covers_high_episodes_branches_and_policy_seeds() -> None:
+    collector._validate_seed_namespace(  # noqa: SLF001
+        base_seed=7,
+        task_ids=list(range(10)),
+        episode_ids=list(range(100, 500)),
+        maximum_episode_step=1_570,
+        maximum_continuation_calls=1_570,
+        task_stride=250_000_000,
+        branch_repeats=10,
+        branch_repeat_seed_stride=20_000_000,
+        teacher_samples=20,
+    )
+
+    root_seed = collector._root_seed(  # noqa: SLF001
+        7,
+        9,
+        499,
+        1_570,
+        task_stride=250_000_000,
+    )
+    branch_seed = collector._branch_seed(root_seed, 9, 20_000_000)  # noqa: SLF001
+    _, schedule_offset, continuation_offset, strict = collector._seed_scheme(  # noqa: SLF001
+        250_000_000,
+        20_000_000,
+    )
+    assert strict
+    root_base = collector._root_seed(7, 9, 499, 0, task_stride=250_000_000)  # noqa: SLF001
+    assert root_seed + 20 < root_base + schedule_offset
+    assert root_seed + schedule_offset < root_base + continuation_offset
+    assert root_seed + continuation_offset + 1_570 < root_base + 20_000_000
+    continuation_seed = collector._branch_continuation_seed(  # noqa: SLF001
+        branch_seed,
+        1_570,
+        continuation_offset=continuation_offset,
+    )
+    assert continuation_seed <= np.iinfo(np.uint32).max
+
+
+def test_seed_namespace_rejects_cross_episode_collision_and_uint32_overflow() -> None:
+    with pytest.raises(ValueError, match="overlap across task/episode identities"):
+        collector._validate_seed_namespace(  # noqa: SLF001
+            base_seed=7,
+            task_ids=[0],
+            episode_ids=[100, 1_100],
+            maximum_episode_step=1_570,
+            maximum_continuation_calls=1_570,
+            task_stride=250_000_000,
+            branch_repeats=3,
+            branch_repeat_seed_stride=20_000_000,
+            teacher_samples=20,
+        )
+
+    with pytest.raises(ValueError, match="escapes task namespace"):
+        collector._validate_seed_namespace(  # noqa: SLF001
+            base_seed=7,
+            task_ids=[0],
+            episode_ids=[100],
+            maximum_episode_step=1_570,
+            maximum_continuation_calls=1_570,
+            task_stride=30_000_000,
+            branch_repeats=3,
+            branch_repeat_seed_stride=20_000_000,
+            teacher_samples=20,
+        )
+
+    with pytest.raises(ValueError, match="uint32 policy-seed range"):
+        collector._validate_seed_namespace(  # noqa: SLF001
+            base_seed=7,
+            task_ids=[9],
+            episode_ids=[100],
+            maximum_episode_step=1_570,
+            maximum_continuation_calls=1_570,
+            task_stride=500_000_000,
+            branch_repeats=1,
+            branch_repeat_seed_stride=20_000_000,
+            teacher_samples=20,
+        )
+
+
+def test_seed_scheme_metadata_records_formula_parameters() -> None:
+    metadata = collector._seed_scheme_metadata(  # noqa: SLF001
+        SimpleNamespace(root_seed_task_stride=250_000_000, branch_repeat_seed_stride=20_000_000)
+    )
+    assert metadata == {
+        "root_seed_scheme": "affine_task_episode_repeat_schedule_continuation_lanes_uint32_v2",
+        "root_seed_task_stride": 250_000_000,
+        "root_seed_episode_stride": 10_000,
+        "root_seed_branch_repeat_stride": 20_000_000,
+        "root_seed_branch_schedule_offset": 5_000_000,
+        "root_seed_branch_continuation_offset": 10_000_000,
+        "root_seed_strict_namespace_validation": True,
+        "root_seed_max_value": int(np.iinfo(np.uint32).max),
+    }
 
 
 def test_prefix_tokens_are_exported_only_for_collected_teacher_root() -> None:

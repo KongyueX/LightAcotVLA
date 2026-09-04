@@ -76,6 +76,35 @@ def test_manifest_enforces_role_and_disjoint_groups(tmp_path) -> None:
         )
 
 
+def test_manifest_accepts_explicit_four_way_development_audit_role(tmp_path) -> None:
+    manifest_path = _write_manifest(
+        tmp_path / "four_way.json",
+        split_schema_version=2,
+        train_group_ids=[1],
+        early_stop_group_ids=[2],
+        calibration_group_ids=[3],
+        dev_audit_group_ids=[4],
+        split_roles={
+            "train": "train",
+            "early_stop": "early_stop",
+            "calibration": "calibration",
+            "dev_audit": "development_audit",
+        },
+    )
+    # Remove the legacy validation list installed by the fixture helper.
+    payload = json.loads(manifest_path.read_text())
+    payload.pop("validation_group_ids")
+    manifest_path.write_text(json.dumps(payload))
+
+    _, groups = common.load_split_manifest(
+        manifest_path,
+        split_name="dev_audit",
+        required_role="development_audit",
+    )
+
+    np.testing.assert_array_equal(groups, np.asarray([4], dtype=np.uint64))
+
+
 def test_development_path_guard_runs_before_dataset_open(tmp_path) -> None:
     final_path = tmp_path / "fresh_final_e90_99" / "shard-00000.h5"
     with pytest.raises(ValueError, match="refuses final/test/holdout"):

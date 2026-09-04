@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import dataclasses
 import json
 import os
@@ -284,6 +285,59 @@ def _verify_pilot_summary(summary: dict[str, Any], expected_episodes: int) -> No
         raise ValueError("Dynamic pilot summary does not contain the expected hierarchical episodes.")
 
 
+def _load_isolation_bank(metadata: Any, *, role: str) -> initial_states.InitialStateBank:
+    if not isinstance(metadata, Mapping):
+        raise ValueError(f"Multi-bank isolation lacks {role!r} bank metadata.")
+    path = metadata.get("initial_state_bank")
+    sha256 = metadata.get("initial_state_bank_sha256")
+    identity_mode = metadata.get("initial_state_identity_mode")
+    if not isinstance(path, str) or not path or not isinstance(sha256, str):
+        raise ValueError(f"Multi-bank isolation has incomplete {role!r} bank metadata.")
+    if identity_mode != initial_states.FINGERPRINT_METHOD:
+        raise ValueError(f"Multi-bank isolation uses an unsupported {role!r} identity mode.")
+    bank = initial_states.InitialStateBank(path)
+    if bank.sha256 != sha256:
+        raise ValueError(f"{role.capitalize()} initial-state bank changed after the offline audit.")
+    return bank
+
+
+def _verify_initial_state_isolation(isolation: Any) -> None:
+    """Revalidate either the legacy single bank or schema-v2 bank lineage."""
+
+    if not isinstance(isolation, Mapping):
+        raise ValueError("Dynamic pilot requires verified initial-state isolation.")
+    if isolation.get("status") != "complete" or isolation.get("pairwise_initial_state_overlap") != 0:
+        raise ValueError("Dynamic pilot requires verified initial-state isolation.")
+    schema_version = int(isolation.get("schema_version", 1))
+    if schema_version == 1:
+        # Preserve the historical top-level single-bank contract exactly.
+        bank = initial_states.InitialStateBank(isolation["initial_state_bank"])
+        if bank.sha256 != isolation.get("initial_state_bank_sha256"):
+            raise ValueError("Initial-state bank changed after the offline audit.")
+        return
+    if schema_version != 2:
+        raise ValueError(f"Unsupported initial-state isolation schema version: {schema_version}.")
+
+    partition_banks = isolation.get("partition_banks")
+    if not isinstance(partition_banks, Mapping) or set(partition_banks) != {"development", "final"}:
+        raise ValueError("Multi-bank isolation must bind exactly development and final banks.")
+    lineage = isolation.get("bank_lineage")
+    if not isinstance(lineage, Mapping) or lineage.get("status") != "complete":
+        raise ValueError("Multi-bank isolation lacks a complete parent/child lineage proof.")
+    if aggregate_common.jsonable(lineage.get("parent")) != aggregate_common.jsonable(partition_banks["final"]):
+        raise ValueError("Multi-bank lineage parent differs from the final bank binding.")
+    if aggregate_common.jsonable(lineage.get("child")) != aggregate_common.jsonable(
+        partition_banks["development"]
+    ):
+        raise ValueError("Multi-bank lineage child differs from the development bank binding.")
+
+    final_bank = _load_isolation_bank(partition_banks["final"], role="final")
+    development_bank = _load_isolation_bank(partition_banks["development"], role="development")
+    recomputed = initial_states.audit_bank_prefix(final_bank, development_bank)
+    if aggregate_common.jsonable(lineage) != aggregate_common.jsonable(recomputed):
+        raise ValueError("Multi-bank lineage proof differs from the live parent/child banks.")
+
+
 def main(args: argparse.Namespace) -> None:
     if args.poll_seconds <= 0 or args.server_timeout_seconds <= 0:
         raise ValueError("Poll and server timeout values must be positive.")
@@ -334,12 +388,7 @@ def main(args: argparse.Namespace) -> None:
         if not isinstance(audit, dict) or not bool(audit.get("offline_engineering_gate", False)):
             raise ValueError(f"dual_official_gate conflicts with {name} audit.")
     if args.require_initial_state_isolation:
-        isolation = post_summary.get("initial_state_isolation") or {}
-        if isolation.get("status") != "complete" or isolation.get("pairwise_initial_state_overlap") != 0:
-            raise ValueError("Dynamic pilot requires verified initial-state isolation.")
-        bank = initial_states.InitialStateBank(isolation["initial_state_bank"])
-        if bank.sha256 != isolation.get("initial_state_bank_sha256"):
-            raise ValueError("Initial-state bank changed after the offline audit.")
+        _verify_initial_state_isolation(post_summary.get("initial_state_isolation"))
     if not checkpoint_dir.is_dir():
         raise FileNotFoundError(checkpoint_dir)
     (

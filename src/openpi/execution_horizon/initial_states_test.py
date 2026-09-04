@@ -10,22 +10,25 @@ import pytest
 from openpi.execution_horizon import initial_states
 
 
-def _make_bank(path, *, duplicate_pose=False):
+def _make_bank(path, *, duplicate_pose=False, extra_states=()):
     path.mkdir()
-    states = np.asarray([[0, 1, 2, 0, 0], [0, 2, 3, 0, 0], [0, 3, 4, 0, 0]], dtype=np.float64)
+    states = np.asarray(
+        [[0, 1, 2, 0, 0], [0, 2, 3, 0, 0], [0, 3, 4, 0, 0], *extra_states], dtype=np.float64
+    )
     if duplicate_pose:
         states[2] = states[0]
         states[2, 0] = 20  # Different timestamp cannot disguise a reused pose.
         states[2, -1] = 5
     target = path / "task00.npz"
-    np.savez_compressed(target, states=states, episode_ids=np.arange(3), generation_seeds=np.asarray([-1, -1, 100]))
+    seeds = np.asarray([-1, -1, *range(100, 100 + len(states) - 2)])
+    np.savez_compressed(target, states=states, episode_ids=np.arange(len(states)), generation_seeds=seeds)
     manifest = {
         "status": "complete",
         "schema_version": 1,
         "fingerprint_method": initial_states.FINGERPRINT_METHOD,
         "task_suite": "libero_10",
         "max_tasks": 1,
-        "generated_per_task": 1,
+        "generated_per_task": len(states) - 2,
         "tasks": [
             {
                 "task_id": 0,
@@ -99,3 +102,45 @@ def test_legacy_episode_number_cannot_disguise_modulo_reuse(tmp_path):
     _write_groups(tmp_path / "alias", 2, {})
     with pytest.raises(ValueError, match="alias a preset"):
         initial_states.dataset_groups([str(tmp_path / "alias")], bank, allow_legacy_presets=True)
+
+
+def test_bank_prefix_and_cross_bank_partition_audit(tmp_path):
+    parent_states = _make_bank(tmp_path / "parent")
+    _make_bank(tmp_path / "child", extra_states=([0, 4, 5, 0, 0], [0, 5, 6, 0, 0]))
+    parent = initial_states.InitialStateBank(tmp_path / "parent")
+    child = initial_states.InitialStateBank(tmp_path / "child")
+    lineage = initial_states.audit_bank_prefix(parent, child)
+    assert lineage["prefix_episode_counts_by_task"] == {"0": len(parent_states)}
+    assert lineage["new_episode_counts_by_task"] == {"0": 2}
+    isolation = initial_states.audit_partitions_across_banks(
+        {"development": (child, {(0, 3), (0, 4)}), "final": (parent, {(0, 2)})}
+    )
+    assert isolation["schema_version"] == 2
+    assert isolation["partition_group_counts"] == {"development": 2, "final": 1}
+
+
+def test_bank_prefix_and_cross_bank_partition_audit_reject_changes(tmp_path):
+    _make_bank(tmp_path / "parent")
+    _make_bank(tmp_path / "changed", extra_states=([0, 4, 5, 0, 0],))
+    changed_path = tmp_path / "changed" / "task00.npz"
+    with np.load(changed_path, allow_pickle=False) as archive:
+        states = np.asarray(archive["states"])
+        episode_ids = np.asarray(archive["episode_ids"])
+        seeds = np.asarray(archive["generation_seeds"])
+    states[2, 1] += 0.5
+    np.savez_compressed(changed_path, states=states, episode_ids=episode_ids, generation_seeds=seeds)
+    manifest_path = tmp_path / "changed" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["tasks"][0]["sha256"] = hashlib.sha256(changed_path.read_bytes()).hexdigest()
+    manifest["tasks"][0]["fingerprints"] = [initial_states.fingerprint(state, 2) for state in states]
+    manifest_path.write_text(json.dumps(manifest))
+    parent = initial_states.InitialStateBank(tmp_path / "parent")
+    changed = initial_states.InitialStateBank(tmp_path / "changed")
+    with pytest.raises(ValueError, match="changed parent states"):
+        initial_states.audit_bank_prefix(parent, changed)
+    with pytest.raises(ValueError, match="does not extend"):
+        initial_states.audit_bank_prefix(parent, parent)
+    with pytest.raises(ValueError, match="overlap"):
+        initial_states.audit_partitions_across_banks(
+            {"development": (changed, {(0, 0)}), "final": (parent, {(0, 0)})}
+        )

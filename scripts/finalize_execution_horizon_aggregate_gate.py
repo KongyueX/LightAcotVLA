@@ -23,6 +23,7 @@ import numpy as np
 from openpi.execution_horizon import dataset as horizon_dataset
 from openpi.execution_horizon import hierarchical
 from openpi.execution_horizon import initial_states
+from openpi.execution_horizon import splits as horizon_splits
 
 SCHEMA_VERSION = 1
 _FINAL_COMPONENT = re.compile(r"(?:^|[._-])(final|holdout|test)(?:[._-]|$)", re.IGNORECASE)
@@ -60,6 +61,12 @@ def _json_snapshot(path: pathlib.Path) -> tuple[dict[str, Any], str]:
 
 
 def _require_development_gate(audit: Mapping[str, Any]) -> None:
+    split_name = audit.get("split_name")
+    split_role = audit.get("split_role")
+    split_contract_valid = (split_name, split_role) in {
+        ("validation", "validation"),
+        ("dev_audit", "development_audit"),
+    }
     checks = {
         "status=complete": audit.get("status") == "complete",
         "offline_engineering_gate=true": audit.get("offline_engineering_gate") is True,
@@ -67,7 +74,7 @@ def _require_development_gate(audit: Mapping[str, Any]) -> None:
         "aggregate_calibration_gate_passed=true": audit.get("aggregate_calibration_gate_passed") is True,
         "rule_frozen_before_audit=true": audit.get("rule_frozen_before_audit") is True,
         "audit_not_used_for_threshold_fit": audit.get("audit_split_used_for_threshold_fit") is False,
-        "split_role=validation": audit.get("split_role") == "validation",
+        "recognized_independent_audit_split": split_contract_valid,
     }
     failed = [name for name, passed in checks.items() if not passed]
     if failed:
@@ -83,6 +90,77 @@ def _artifact_snapshot(path: pathlib.Path) -> tuple[hierarchical.AggregateSelect
     if not artifact.aggregate_gate_passed or artifact.selected_rule is None:
         raise ValueError("Final audit requires one uniquely frozen aggregate rule that passed calibration.")
     return artifact, after
+
+
+def _manifest_audit_groups(audit: Mapping[str, Any], split_manifest: pathlib.Path) -> tuple[int, ...]:
+    split_name = str(audit["split_name"])
+    split_role = str(audit["split_role"])
+    _, values = common.load_split_manifest(
+        split_manifest,
+        split_name=split_name,
+        required_role=split_role,
+    )
+    return tuple(int(value) for value in values)
+
+
+def _state_groups(group_ids: Sequence[int]) -> set[tuple[int, int]]:
+    return {
+        (
+            int(group // horizon_splits.GROUP_ID_TASK_MULTIPLIER),
+            int(group % horizon_splits.GROUP_ID_TASK_MULTIPLIER),
+        )
+        for group in group_ids
+    }
+
+
+def _development_bank_from_manifest(
+    manifest: Mapping[str, Any],
+    development_groups: set[tuple[int, int]],
+) -> initial_states.InitialStateBank | None:
+    """Load the child/superset bank bound by a four-way development split.
+
+    Legacy three-way manifests intentionally keep the historical single-bank
+    behavior. A schema-v2 four-way manifest, however, must bind the bank that
+    can resolve its new episode IDs before the one-shot final claim is made.
+    """
+
+    bank_value = manifest.get("development_initial_state_bank")
+    bank_sha256 = manifest.get("development_initial_state_bank_sha256")
+    if horizon_splits.is_four_way_manifest(manifest) and (not bank_value or not bank_sha256):
+        raise ValueError("Four-way finalization requires a frozen development initial-state bank binding.")
+    if bank_value is None and bank_sha256 is None:
+        return None
+    if not isinstance(bank_value, str) or not bank_value or not isinstance(bank_sha256, str):
+        raise ValueError("Development initial-state bank path and SHA-256 must be provided together.")
+    bank = initial_states.InitialStateBank(bank_value)
+    if bank.sha256 != bank_sha256:
+        raise ValueError("Development initial-state bank changed after the split manifest was frozen.")
+    identities = {bank.identity(task, episode) for task, episode in development_groups}
+    if len(identities) != len(development_groups):
+        raise ValueError("Development split reuses at least one initial-state pose.")
+    return bank
+
+
+def _audit_initial_state_isolation(
+    *,
+    final_bank: initial_states.InitialStateBank,
+    development_bank: initial_states.InitialStateBank | None,
+    development_groups: set[tuple[int, int]],
+    final_groups: set[tuple[int, int]],
+) -> dict[str, Any]:
+    """Audit legacy single-bank or schema-v2 parent/child isolation."""
+
+    if development_bank is None:
+        return final_bank.audit_partitions({"development": development_groups, "final": final_groups})
+    lineage = initial_states.audit_bank_prefix(final_bank, development_bank)
+    isolation = initial_states.audit_partitions_across_banks(
+        {
+            "development": (development_bank, development_groups),
+            "final": (final_bank, final_groups),
+        }
+    )
+    isolation["bank_lineage"] = lineage
+    return isolation
 
 
 def _validate_development_identity(
@@ -106,11 +184,13 @@ def _validate_development_identity(
         raise ValueError("Development audit provenance differs from the frozen aggregate artifact.")
 
     calibration_groups = tuple(sorted({int(value) for value in audit["calibration_group_ids"]}))
-    validation_groups = tuple(sorted({int(value) for value in audit["selected_group_ids"]}))
+    audit_groups = tuple(sorted({int(value) for value in audit["selected_group_ids"]}))
     if calibration_groups != artifact.provenance.calibration_group_ids:
         raise ValueError("Development audit calibration groups differ from aggregate provenance.")
-    if not validation_groups or set(calibration_groups).intersection(validation_groups):
-        raise ValueError("Development calibration/validation groups are empty or overlapping.")
+    if not audit_groups or set(calibration_groups).intersection(audit_groups):
+        raise ValueError("Development calibration/audit groups are empty or overlapping.")
+    if _manifest_audit_groups(audit, split_manifest) != audit_groups:
+        raise ValueError("Development audit groups differ from the frozen split manifest.")
 
     live = common.provenance_values(
         predictor_dir=predictor_dir,
@@ -126,7 +206,7 @@ def _validate_development_identity(
         dataclasses.asdict(artifact.pointwise_calibration)
     ):
         raise ValueError("Pointwise calibration differs from the copy embedded in aggregate calibration.")
-    return predictor_dir, params_path, pointwise_path, split_manifest, development_inputs, validation_groups
+    return predictor_dir, params_path, pointwise_path, split_manifest, development_inputs, audit_groups
 
 
 def _write_exclusive_json(path: pathlib.Path, payload: Mapping[str, Any]) -> None:
@@ -273,12 +353,25 @@ def main(args: argparse.Namespace) -> None:
         pointwise_path,
         split_manifest,
         development_inputs,
-        validation_groups,
+        audit_groups,
     ) = _validate_development_identity(
         development_audit,
         artifact=artifact,
         aggregate_path=aggregate_path,
     )
+    manifest, split_manifest_raw_sha256 = _json_snapshot(split_manifest)
+    split_manifest_digest = common.json_file_digest(split_manifest)
+    if split_manifest_digest != artifact.provenance.split_manifest_digest:
+        raise ValueError("Frozen split manifest digest differs from aggregate calibration provenance.")
+    manifest_groups = horizon_splits.validate_manifest(
+        manifest,
+        require_four_way=horizon_splits.is_four_way_manifest(manifest),
+    )
+    declared_development_group_ids = {
+        int(group) for values in manifest_groups.values() for group in np.asarray(values, dtype=np.uint64)
+    }
+    development_state_groups = _state_groups(tuple(declared_development_group_ids))
+    development_bank = _development_bank_from_manifest(manifest, development_state_groups)
     if not (checkpoint_dir / "params").exists():
         raise FileNotFoundError(checkpoint_dir / "params")
     checkpoint_digest = common.params_tree_digest(checkpoint_dir)
@@ -307,6 +400,12 @@ def main(args: argparse.Namespace) -> None:
         "predictor_config_digest": artifact.provenance.predictor_config_digest,
         "params_digest": artifact.provenance.params_digest,
         "pointwise_calibration_digest": artifact.provenance.pointwise_calibration_digest,
+        "split_manifest": str(split_manifest),
+        "split_manifest_digest": split_manifest_digest,
+        "split_manifest_raw_sha256": split_manifest_raw_sha256,
+        "development_initial_state_bank": (
+            development_bank.metadata() if development_bank is not None else None
+        ),
         "checkpoint_dir": str(checkpoint_dir),
         "checkpoint_digest": checkpoint_digest,
         "initial_state_isolation_json": (
@@ -352,51 +451,53 @@ def main(args: argparse.Namespace) -> None:
         expected_episode_end=args.expected_episode_end,
     )
 
-    manifest = json.loads(split_manifest.read_text())
-    declared_development_groups = {
-        int(value)
-        for name, values in manifest.items()
-        if name.endswith("_group_ids") and name != "bootstrap_train_group_counts"
-        for value in values
-    }
     final_groups = {int(value) for value in final_group_ids}
-    overlap = sorted(final_groups.intersection(declared_development_groups))
+    overlap = sorted(final_groups.intersection(declared_development_group_ids))
     if overlap:
         raise ValueError(f"Fresh-final groups overlap declared development groups: {overlap[:10]}.")
     if final_groups.intersection(artifact.provenance.calibration_group_ids):
         raise ValueError("Fresh-final groups overlap aggregate calibration groups.")
-    if final_groups.intersection(validation_groups):
-        raise ValueError("Fresh-final groups overlap development validation groups.")
+    if final_groups.intersection(audit_groups):
+        raise ValueError("Fresh-final groups overlap development audit groups.")
 
-    manifest_validation_groups = tuple(sorted(int(value) for value in manifest["validation_group_ids"]))
-    if manifest_validation_groups != validation_groups:
-        raise ValueError("Development audit validation groups differ from the frozen split manifest.")
+    audit_split_name = str(development_audit["split_name"])
+    audit_group_key = f"{audit_split_name}_group_ids"
+    if audit_group_key not in manifest:
+        raise KeyError(f"Frozen split manifest is missing {audit_group_key!r}.")
+    manifest_audit_groups = _manifest_audit_groups(development_audit, split_manifest)
+    if manifest_audit_groups != audit_groups:
+        raise ValueError("Development audit groups differ from the frozen split manifest.")
     manifest_calibration_groups = tuple(sorted(int(value) for value in manifest["calibration_group_ids"]))
     if manifest_calibration_groups != artifact.provenance.calibration_group_ids:
         raise ValueError("Aggregate calibration groups differ from the frozen split manifest.")
 
-    bank_value = final_summary.get("initial_state_bank")
-    bank_sha256 = final_summary.get("initial_state_bank_sha256")
-    if not bank_value or not bank_sha256:
+    final_bank_value = final_summary.get("initial_state_bank")
+    final_bank_sha256 = final_summary.get("initial_state_bank_sha256")
+    if not final_bank_value or not final_bank_sha256:
         raise ValueError("Fresh-final summary lacks frozen initial-state bank provenance.")
-    bank = initial_states.InitialStateBank(bank_value)
-    if bank.sha256 != bank_sha256:
+    final_bank = initial_states.InitialStateBank(final_bank_value)
+    if final_bank.sha256 != final_bank_sha256:
         raise ValueError("Fresh-final initial-state bank changed after collection.")
-    verified_final_state_groups = initial_states.dataset_groups(list(final_inputs), bank)
+    verified_final_state_groups = initial_states.dataset_groups(list(final_inputs), final_bank)
     if verified_final_state_groups != final_state_groups:
         raise ValueError("Fresh-final HDF5 provenance does not match its exact task/episode grid.")
-    development_state_groups = {
-        (int(group // 1_000_000_000), int(group % 1_000_000_000)) for group in declared_development_groups
-    }
-    isolation = bank.audit_partitions(
-        {
-            "development": development_state_groups,
-            "final": final_state_groups,
-        }
+    isolation = _audit_initial_state_isolation(
+        final_bank=final_bank,
+        development_bank=development_bank,
+        development_groups=development_state_groups,
+        final_groups=final_state_groups,
     )
     if supplied_isolation is not None:
-        if supplied_isolation.get("initial_state_bank_sha256") != bank.sha256:
-            raise ValueError("Initial-state isolation bank changed after its audit.")
+        if development_bank is None:
+            if supplied_isolation.get("initial_state_bank_sha256") != final_bank.sha256:
+                raise ValueError("Initial-state isolation bank changed after its audit.")
+        else:
+            supplied_banks = supplied_isolation.get("partition_banks")
+            expected_banks = isolation["partition_banks"]
+            if common.jsonable(supplied_banks) != common.jsonable(expected_banks):
+                raise ValueError("Cross-bank initial-state isolation bindings changed after their audit.")
+            if supplied_isolation.get("partition_group_counts") != isolation["partition_group_counts"]:
+                raise ValueError("Cross-bank initial-state isolation group counts changed after their audit.")
         assert supplied_isolation_path is not None
         isolation["supplied_isolation_json"] = str(supplied_isolation_path)
         isolation["supplied_isolation_sha256"] = supplied_isolation_sha256

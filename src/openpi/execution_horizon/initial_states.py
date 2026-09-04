@@ -43,6 +43,7 @@ class InitialStateBank:
             raise ValueError("Initial-state bank is incomplete or has an unsupported schema.")
         self.tasks: dict[int, dict[str, Any]] = {}
         self.states: dict[int, np.ndarray] = {}
+        self.generation_seeds: dict[int, np.ndarray] = {}
         self.fingerprints: dict[int, list[str]] = {}
         for entry in self.manifest["tasks"]:
             task_id = int(entry["task_id"])
@@ -68,6 +69,7 @@ class InitialStateBank:
                 raise ValueError(f"Invalid generation provenance for task{task_id}.")
             self.tasks[task_id] = entry
             self.states[task_id] = states
+            self.generation_seeds[task_id] = seeds
             self.fingerprints[task_id] = identities
         if not self.tasks or len(self.tasks) != int(self.manifest["max_tasks"]):
             raise ValueError("Initial-state bank task count is inconsistent.")
@@ -110,6 +112,80 @@ class InitialStateBank:
             "pairwise_initial_state_overlap": 0,
             "semantics": "Task-qualified frozen initial-pose identities, not merely distinct episode numbers.",
         }
+
+
+def audit_bank_prefix(parent: InitialStateBank, child: InitialStateBank) -> dict[str, Any]:
+    """Prove that ``child`` extends ``parent`` without changing any old state."""
+
+    if parent.manifest["task_suite"] != child.manifest["task_suite"]:
+        raise ValueError("Initial-state bank lineage task suites differ.")
+    if set(parent.tasks) != set(child.tasks):
+        raise ValueError("Initial-state bank lineage task sets differ.")
+    prefix_counts: dict[str, int] = {}
+    new_counts: dict[str, int] = {}
+    strictly_extended = False
+    for task_id in sorted(parent.tasks):
+        parent_states = parent.states[task_id]
+        count = len(parent_states)
+        if len(child.states[task_id]) < count:
+            raise ValueError(f"Child initial-state bank is shorter than its parent for task{task_id}.")
+        if int(parent.tasks[task_id]["preset_count"]) != int(child.tasks[task_id]["preset_count"]):
+            raise ValueError(f"Initial-state bank lineage preset count differs for task{task_id}.")
+        if int(parent.tasks[task_id]["state_dim"]) != int(child.tasks[task_id]["state_dim"]):
+            raise ValueError(f"Initial-state bank lineage state dimension differs for task{task_id}.")
+        if int(parent.tasks[task_id]["nq"]) != int(child.tasks[task_id]["nq"]):
+            raise ValueError(f"Initial-state bank lineage nq differs for task{task_id}.")
+        if not np.array_equal(child.states[task_id][:count], parent_states):
+            raise ValueError(f"Child initial-state bank changed parent states for task{task_id}.")
+        if not np.array_equal(child.generation_seeds[task_id][:count], parent.generation_seeds[task_id]):
+            raise ValueError(f"Child initial-state bank changed parent generation seeds for task{task_id}.")
+        if child.fingerprints[task_id][:count] != parent.fingerprints[task_id]:
+            raise ValueError(f"Child initial-state bank changed parent fingerprints for task{task_id}.")
+        prefix_counts[str(task_id)] = count
+        new_count = len(child.states[task_id]) - count
+        new_counts[str(task_id)] = new_count
+        strictly_extended |= new_count > 0
+    if not strictly_extended:
+        raise ValueError("Child initial-state bank does not extend its parent with any new episodes.")
+    return {
+        "status": "complete",
+        "schema_version": 1,
+        "semantics": "The child bank exactly preserves every parent state, seed, and fingerprint as a prefix.",
+        "parent": parent.metadata(),
+        "child": child.metadata(),
+        "prefix_episode_counts_by_task": prefix_counts,
+        "new_episode_counts_by_task": new_counts,
+    }
+
+
+def audit_partitions_across_banks(
+    partitions: dict[str, tuple[InitialStateBank, set[tuple[int, int]]]],
+) -> dict[str, Any]:
+    """Audit task-qualified pose isolation when partitions use different banks."""
+
+    if not partitions:
+        raise ValueError("At least one initial-state partition is required.")
+    suites = {str(bank.manifest["task_suite"]) for bank, _ in partitions.values()}
+    if len(suites) != 1:
+        raise ValueError("Initial-state partition banks use different task suites.")
+    identities: dict[str, set[tuple[int, str]]] = {}
+    for name, (bank, groups) in partitions.items():
+        if not name or name in identities:
+            raise ValueError("Initial-state partition names must be unique and non-empty.")
+        identities[name] = {bank.identity(task, episode) for task, episode in groups}
+        if len(identities[name]) != len(groups):
+            raise ValueError(f"Multiple episode IDs reuse the same initial pose within {name}.")
+        for previous in identities.keys() - {name}:
+            if identities[name] & identities[previous]:
+                raise ValueError(f"Initial-state overlap between {previous} and {name}.")
+    return {
+        "status": "complete",
+        "schema_version": 2,
+        "partition_banks": {name: bank.metadata() for name, (bank, _) in partitions.items()},
+        "partition_group_counts": {name: len(groups) for name, (_, groups) in partitions.items()},
+        "pairwise_initial_state_overlap": 0,
+        "semantics": "Task-qualified frozen initial-pose identities compared across explicitly bound banks.",
+    }
 
 
 def dataset_groups(

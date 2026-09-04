@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from openpi.execution_horizon import dataset as horizon_dataset
+from openpi.execution_horizon import splits as horizon_splits
 
 _IDENTITY_FIELDS = ("task_id", "episode_id", "decision_step", "root_seed")
 _NON_DEVELOPMENT_COMPONENT = re.compile(r"(?:^|[._-])(final|test|holdout)(?:[._-]|$)", re.IGNORECASE)
@@ -250,20 +251,6 @@ def _manifest_role(manifest: Mapping[str, Any], split_name: str) -> str | None:
     return None
 
 
-def _validated_manifest_groups(name: str, values: Any) -> np.ndarray:
-    raw = np.asarray(values)
-    if raw.ndim != 1 or not raw.size:
-        raise ValueError(f"split_manifest {name!r} must contain a non-empty one-dimensional group list.")
-    if not np.issubdtype(raw.dtype, np.integer):
-        raise ValueError(f"split_manifest {name!r} must contain integer group IDs.")
-    if np.any(raw < 0):
-        raise ValueError(f"split_manifest {name!r} must contain non-negative group IDs.")
-    groups = raw.astype(np.uint64)
-    if np.unique(groups).size != groups.size:
-        raise ValueError(f"split_manifest {name!r} contains duplicate groups.")
-    return groups
-
-
 def load_split_manifest(
     path: pathlib.Path | str,
     *,
@@ -279,6 +266,7 @@ def load_split_manifest(
 
     manifest_path = validate_development_path(path, description="split manifest")
     manifest = json.loads(manifest_path.read_text())
+    declared = horizon_splits.validate_manifest(manifest)
     role = _manifest_role(manifest, split_name)
     if role != required_role:
         raise ValueError(
@@ -288,28 +276,9 @@ def load_split_manifest(
     if _NON_DEVELOPMENT_COMPONENT.search(lowered):
         raise ValueError(f"Non-development split {split_name!r} is forbidden by this command.")
     key = f"{split_name}_group_ids"
-    if key not in manifest:
+    if split_name not in declared:
         raise KeyError(f"split_manifest is missing {key!r}.")
-    groups = np.sort(_validated_manifest_groups(key, manifest[key]))
-
-    # Validate every declared group list, not only the requested one.  The
-    # aggregate rule is invalid if calibration and validation overlap.
-    declared: dict[str, np.ndarray] = {}
-    for manifest_key, values in manifest.items():
-        if not manifest_key.endswith("_group_ids") or manifest_key == "bootstrap_train_group_counts":
-            continue
-        name = manifest_key.removesuffix("_group_ids")
-        candidate = _validated_manifest_groups(manifest_key, values)
-        declared[name] = candidate
-    names = sorted(declared)
-    for left_index, left in enumerate(names):
-        for right in names[left_index + 1 :]:
-            overlap = np.intersect1d(declared[left], declared[right])
-            if overlap.size:
-                raise ValueError(
-                    f"split_manifest groups overlap between {left!r} and {right!r}: " f"{overlap[:10].tolist()}."
-                )
-    return manifest, groups
+    return manifest, np.sort(declared[split_name])
 
 
 def validate_development_dataset_paths(paths: Sequence[pathlib.Path | str]) -> tuple[str, ...]:
@@ -347,9 +316,7 @@ def validate_development_path(path: pathlib.Path | str, *, description: str) -> 
 
 
 def episode_group_ids(arrays: Mapping[str, np.ndarray]) -> np.ndarray:
-    task = np.asarray(arrays["task_id"], dtype=np.uint64)
-    episode = np.asarray(arrays["episode_id"], dtype=np.uint64)
-    return task * np.uint64(1_000_000_000) + episode
+    return horizon_splits.episode_group_ids(arrays)
 
 
 def load_development_split(
@@ -368,6 +335,7 @@ def load_development_split(
         required_role=required_role,
     )
     arrays = horizon_dataset.load_counterfactual_arrays(inputs)
+    horizon_splits.validate_manifest(manifest, arrays=arrays)
     groups = episode_group_ids(arrays)
     indices = np.flatnonzero(np.isin(groups, requested_groups))
     if not indices.size:
