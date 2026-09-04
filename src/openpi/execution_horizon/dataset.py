@@ -367,20 +367,21 @@ def load_counterfactual_arrays(
             elif set(shard_arrays) != expected_keys:
                 raise ValueError("Counterfactual shards do not expose the same fixed fields.")
             for name, value in shard_arrays.items():
+                normalized = value
                 if name in _TRIAL_AXIS_FIELDS and value.shape[-1] < maximum_trials:
                     pad_value = np.nan if name == "trial_elapsed" else 0
-                    value = np.pad(
+                    normalized = np.pad(
                         value,
                         ((0, 0), (0, 0), (0, maximum_trials - value.shape[-1])),
                         mode="constant",
                         constant_values=pad_value,
                     )
-                if value.shape[1:] != expected_shapes[name]:
+                if normalized.shape[1:] != expected_shapes[name]:
                     raise ValueError(
                         f"Counterfactual shard shape mismatch for {name}: "
-                        f"expected {expected_shapes[name]}, got {value.shape[1:]}."
+                        f"expected {expected_shapes[name]}, got {normalized.shape[1:]}."
                     )
-                pieces.setdefault(name, []).append(value)
+                pieces.setdefault(name, []).append(normalized)
             if include_physics:
                 physics_rows.extend(np.asarray(row, dtype=np.float64) for row in handle["physics_state"])
     if len(versions) > 1:
