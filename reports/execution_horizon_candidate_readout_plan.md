@@ -1,6 +1,6 @@
 # H25 候选执行长度感知 Transformer 方案
 
-状态：2026-09-06 A/B/R及Round5闭环比较完成，保留A。下一项仅比较时间软标签的噪声缩放方式，不新增数据或模型容量。实测与后续设计见文末。
+状态：2026-09-06 A/B/R/Round5/N闭环比较全部完成，当前保留A。本批不追加训练；完整指标与使用方式见`execution_horizon_h25_iteration_results.md`。
 
 ## 目标与依据
 
@@ -85,6 +85,7 @@ Z 是已有全时序编码器的输出，包含整个已生成动作计划的上
 | B：2层candidate替换头 | 184/200，92.0% | 3.55056 | 3.92340 | 13.20893 | 5.92184 |
 | R：冻结A、候选残差 | 185/200，92.5% | 1.72134 | 1.89884 | 10.99298 | 5.70550 |
 | Round5：A整轨迹动态relabel | 177/200，88.5% | 1.72811 | 1.92147 | 11.44115 | 6.16828 |
+| N：配对噪声时间软标签 | 183/200，91.5% | 2.56054 | 2.83611 | 12.18037 | 5.90980 |
 
 A相对H5配对救回9局、退化10局，RPC时间减少68.59%、整局减少29.39%；相对旧θ0救回21局、退化9局。B相对A救回9局、退化14局，RPC增加106.37%、整局增加21.71%，本轮保留A。
 
@@ -98,10 +99,12 @@ Round5保持A的架构和损失，更新为A自身source与continuation的反事
 
 Round5实际复用180组、无新增group；root步数10–995、中位140，23条超过260步、12条超过500步。训练200步早停best step1，验证NLL1.66175，闭环相对A救回8局、退化20局，净少12局，RPC多1.07%、整局多5.42%，仍保留A。覆盖扩展未在这次小样本训练中转化为收益，不能将其解释为扩大状态覆盖本身无效。
 
-只读标签分析发现：Round5的100个训练root中89个存在最佳success并列，46个并列候选的elapsed跨度小于0.5秒。旧`root_minmax`在跨度大于1e-6时，temperature=0.25固定给最快/最慢约54.6倍目标概率；50个所有H都成功的训练root中，31个H25-vs-H10在不同seed间快慢反转。时间监督可能强于数据支持，下一项N仅改变这一处目标。
+只读标签分析发现：Round5的100个训练root中89个存在最佳success并列，46个并列候选的elapsed跨度小于0.5秒。旧`root_minmax`在跨度大于1e-6时，temperature=0.25固定给最快/最慢约54.6倍目标概率；50个所有H都成功的训练root中，31个H25-vs-H10在不同seed间快慢反转。时间监督可能强于数据支持，N仅改变这一处目标。
 
-N保留success最佳候选集合S，使用实际秒差`delta_H = mean_elapsed_H - min(mean_elapsed_S)`。在S内对不同H的共同有效seeds计算paired elapsed差的样本方差，取候选对方差的平均再开方得到`noise_std`；`scale = max(1.0秒, noise_std)`，目标为`softmax(-delta_H / scale)`。不再使用逐root min-max或旧temperature，固定1秒floor、不扫描；这是一项待测正则化选择，不是已校准的成功概率保证。默认模式保持`root_minmax`，仅实验N显式指定`paired_noise`。
+N保留success最佳候选集合S，使用实际秒差`delta_H = mean_elapsed_H - min(mean_elapsed_S)`。在S内对不同H的共同有效seeds计算paired elapsed差的样本方差，取候选对方差的平均再开方得到`noise_std`；`scale = max(1.0秒, noise_std)`，目标为`softmax(-delta_H / scale)`。不再使用逐root min-max或旧temperature，固定1秒floor、不扫描；这是一项正则化对照，不是已校准的成功概率保证。默认模式保持`root_minmax`，仅实验N显式指定`paired_noise`。
 
 N以A初始化，复用Round5数据、split、2层global结构、全部旧loss权重、lr1e-4及validation-best/early stopping，不增加step0选择或冻结方式等其他变量；训练后同200局闭环。不同时间目标的NLL不能直接互比，最终仍按成功率、真实耗时和配对救回/退化判断。
 
-原始结果位于服务器`ROOT/ordered_closedloop_6e533f8_20260905_v1/pilot_10x20`、`ROOT/ordered_dynamic_round4_a5e60b1_20260905_v1/eval_ordered_10x20`及`ROOT/candidate_readout_63e2165_20260905_v1/eval_ordered_10x20`，ROOT为`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19`。以上仅单seed200局pilot，不构成正式统计非劣证明；下一轮A动态relabel与较晚状态覆盖仍待推进。
+N训练250步早停、best step50，闭环183/200。相对Round5救回19局、退化13局，净多6局（+3个百分点），但RPC增加47.60%、整局增加6.46%；相对A救回9局、退化15局，成功率低3个百分点，RPC增加49.18%、整局增加12.23%。该时间目标带来更短H和部分成功率恢复，但没有超过A，本批不采用N。
+
+原始结果目录汇总在`execution_horizon_h25_iteration_results.md`，ROOT为`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19`。以上为单seed200局开发对照，不构成正式统计非劣或独立最终验证；后续若开新批，应先明确独立root规模与稳定标签目标，不继续无边界地加层或增加同类训练步数。
