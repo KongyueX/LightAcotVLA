@@ -1,6 +1,6 @@
 # H25 候选执行长度感知 Transformer 方案
 
-状态：2026-09-05 A/B闭环比较完成，保留A。新增R采用A上的零初始化候选残差，仅训练新增模块；代码已实现，效果待训练和闭环验证。实测与后续设计见文末。
+状态：2026-09-05 A/B/R闭环比较完成，保留A。下一项使用A进行整轨迹快照采样和动态relabel，不继续在本批数据上增加readout容量。实测与后续设计见文末。
 
 ## 目标与依据
 
@@ -83,11 +83,16 @@ Z 是已有全时序编码器的输出，包含整个已生成动作计划的上
 | 旧动态θ0 | 177/200，88.5% | 1.76853 | 1.95760 | 11.50606 | 5.78950 |
 | A：动态数据微调，2层global | 189/200，94.5% | 1.71550 | 1.90112 | 10.85277 | 6.08885 |
 | B：2层candidate替换头 | 184/200，92.0% | 3.55056 | 3.92340 | 13.20893 | 5.92184 |
+| R：冻结A、候选残差 | 185/200，92.5% | 1.72134 | 1.89884 | 10.99298 | 5.70550 |
 
 A相对H5配对救回9局、退化10局，RPC时间减少68.59%、整局减少29.39%；相对旧θ0救回21局、退化9局。B相对A救回9局、退化14局，RPC增加106.37%、整局增加21.71%，本轮保留A。
 
 B验证NLL为1.61635，略低于A的1.64444，但最佳checkpoint在step1；B到step200时train/validation NLL为0.74470/3.28330。实际部署的是step1，不是过拟合后的末步。B恢复共享参数，但候选头新初始化并取代已学会的global选择头。若相邻continue概率接近相同值c，有序分布为`[1-c, c(1-c), c²(1-c), c³(1-c), c⁴]`，中间H不会成为最大值；这提供了B实际只选H5/H25的机制解释，但未通过logit测量单独定责。
 
-下一项R保留两层A，增加候选头的零初始化残差：`continue_logits = A_logits + candidate_residual`。冻结A全部原参数，仅优化候选模块，step0参数与验证NLL也参加checkpoint选择；这样起点继承A，能单独检验前缀/边界特征是否提供可泛化修正。复用相同180条数据与split，不混入新标签规则。若最优仍为step0，保留A且不重复相同行为的200局；若选中更新参数，再完成同协议200局比较。4层仍不启动。
+R保留两层A，增加候选头的零初始化残差：`continue_logits = A_logits + candidate_residual`。冻结A全部原参数，仅优化候选模块，step0也参加checkpoint选择。相同180条数据与split训练后，best step1的验证NLL为1.64386（step0为1.64443），闭环相对A救回4局、退化8局，净少4局；RPC差-0.12%、整局+1.29%。微小验证增益仍未转化为闭环收益，本批保留A、不启动4层。
+
+下一轮保持A的架构和损失，更新为A自身source与continuation的反事实标签。采样改为单遍完整source轨迹上的reservoir：在每次实际policy call以`1/(j+1)`的概率替换唯一缓存root，保留真实physics snapshot、当时已有policy响应、raw/normalized动作与previous-H等输入。轨迹结束后只从最终选中的快照展开原五H×3 paired branches，teacher仅补MC风险，不覆盖缓存主动作或输入。该方式均匀采样policy calls而非物理时间，允许中后段状态进入数据，但不保证每条root都晚于某个绝对步数。
+
+每episode仍一条root，沿用上一轮实际180组的train/early-stop/calibration/dev角色（100/30/30/20），新seed57007、source_iteration5；真实复用和新增group计数写入summary，不宣称全新180个独立episode。只用新轮Q^A标签训练，以A参数继承历史，避免将Q^θ0标签与Q^A混称为统一relabel。该采样不重放整轨迹、不按终局结果选root，也不把未来观测或source总决策数放入模型输入。
 
 原始结果位于服务器`ROOT/ordered_closedloop_6e533f8_20260905_v1/pilot_10x20`、`ROOT/ordered_dynamic_round4_a5e60b1_20260905_v1/eval_ordered_10x20`及`ROOT/candidate_readout_63e2165_20260905_v1/eval_ordered_10x20`，ROOT为`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19`。以上仅单seed200局pilot，不构成正式统计非劣证明；下一轮A动态relabel与较晚状态覆盖仍待推进。

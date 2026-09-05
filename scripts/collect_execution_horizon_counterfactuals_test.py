@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import pathlib
 import sys
 from types import SimpleNamespace
@@ -196,6 +197,190 @@ def test_prefix_tokens_are_exported_only_for_collected_teacher_root() -> None:
 
     assert "export_execution_horizon_prefix_tokens" in client.requests[0]
     assert "export_execution_horizon_prefix_tokens" not in client.requests[1]
+
+
+def test_source_prefix_export_does_not_request_mc_teacher() -> None:
+    client = _RecordingClient()
+    args = collector.build_parser().parse_args(["--output-dir", "/tmp/counterfactuals", "--prefix-token-count", "2"])
+    assert args.root_sampling == "call_offset"
+    collector._policy_request(  # noqa: SLF001
+        client, {}, seed=7, args=args, export_prefix_tokens=True
+    )
+    assert bool(client.requests[0]["export_execution_horizon_prefix_tokens"])
+    assert "batched_mc_samples" not in client.requests[0]
+
+
+@pytest.mark.parametrize("source_steps", [5, 30])
+def test_trajectory_reservoir_finishes_source_and_preserves_cached_root(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, source_steps: int
+) -> None:
+    args = collector.build_parser().parse_args(
+        [
+            "--output-dir", str(tmp_path),
+            "--root-sampling", "trajectory_reservoir",
+            "--source-policy", "current_student",
+            "--continuation-policy", "current_student",
+            "--student-mode", "ordered_transformer",
+            "--max-roots-per-episode", "1",
+            "--candidate-horizons", "5", "10",
+            "--student-candidates", "5", "10",
+            "--num-steps-wait", "0",
+            "--model-action-dim", "7",
+            "--model-state-dim", "3",
+            "--model-coarse-horizon", "3",
+            "--prefix-feature-dim", "4",
+            "--prefix-token-count", "2",
+            "--branch-repeats", "3",
+            "--debug-failure-videos", "0",
+        ]
+    )
+    events = []
+    records = []
+
+    class Env:
+        pos = 0
+
+        def __deepcopy__(self, _memo):
+            raise AssertionError("The simulator object must not be deep-copied.")
+
+        def reset(self):
+            self.pos = 0
+
+        def set_init_state(self, _initial_state):
+            return {"source_position": self.pos}
+
+        def step(self, action):
+            assert action[0] == self.pos // 5 * 5 + 1
+            self.pos += 1
+            events.append(("step", self.pos))
+            return {"source_position": self.pos}, 0, self.pos == source_steps, {}
+
+    env = Env()
+
+    class Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def infer(self, request):
+            position = int(request["source_position"])
+            teacher = "batched_mc_samples" in request
+            events.append(("teacher" if teacher else "source", position))
+            if teacher:
+                assert env.pos == source_steps
+            value = 99 if teacher else position + 1
+            result = {
+                "actions": np.full((10, 7), value, dtype=np.float32),
+                "execution_horizon_final_actions_normalized": np.full((10, 7), value + 0.25),
+                "execution_horizon_coarse_actions_normalized": np.full((3, 7), value + 0.5),
+                "execution_horizon_prefix_feature": np.full((4,), value + 0.75),
+                "execution_horizon_state_normalized": np.full((3,), value + 0.125),
+                "execution_horizon_ordered_selected_h": np.asarray(5),
+                "execution_horizon_candidate_horizons": np.asarray([5, 10]),
+            }
+            if bool(request.get("export_execution_horizon_prefix_tokens", False)):
+                result["execution_horizon_prefix_tokens"] = np.full((2, 4), value + 0.875)
+                result["execution_horizon_prefix_mask"] = np.ones((2,), dtype=np.bool_)
+            if teacher:
+                result["mc_actions_normalized"] = np.full((20, 10, 7), value)
+                result["mc_coarse_actions_normalized"] = np.full((20, 3, 7), value)
+            return result
+
+    class Writer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def append(self, record):
+            records.append(record)
+
+    def run_branch(_env, snapshot, primary_actions, **kwargs):
+        assert env.pos == source_steps
+        assert ("step", source_steps) in events
+        events.append(("branch", kwargs["forced_horizon"]))
+        root_step = int(snapshot.physics_state[0])
+        assert kwargs["root_step"] == root_step
+        np.testing.assert_array_equal(primary_actions, root_step + 1)
+        return True, False, 5, 1, 0.1, []
+
+    suite = SimpleNamespace(
+        n_tasks=1,
+        get_task=lambda _task_id: "task",
+        get_task_init_states=lambda _task_id: [np.zeros((1,))],
+    )
+    monkeypatch.setattr(collector.libero_eval.benchmark, "get_benchmark_dict", lambda: {"libero_10": lambda: suite})
+    monkeypatch.setattr(collector.libero_eval, "_get_libero_env", lambda *_args: (env, "task"))
+    monkeypatch.setattr(collector.libero_eval, "_env_horizon", lambda _env: source_steps)
+    monkeypatch.setattr(collector.libero_eval, "_max_steps", lambda _suite: source_steps)
+    monkeypatch.setattr(collector.libero_eval, "_env_success", lambda _env: env.pos == source_steps)
+    monkeypatch.setattr(collector.libero_eval, "_safe_close_env", lambda _env: None)
+    monkeypatch.setattr(collector.libero_eval, "_observation_to_policy_input", lambda obs, *_args: dict(obs))
+    monkeypatch.setattr(collector.websocket_policy, "WebsocketClientPolicy", Client)
+    monkeypatch.setattr(collector.horizon_dataset, "ShardedCounterfactualWriter", Writer)
+    monkeypatch.setattr(
+        collector, "_capture_snapshot",
+        lambda _env: collector.SimulatorSnapshot(np.asarray([env.pos]), [(env, "pos", env.pos)], []),
+    )
+    monkeypatch.setattr(collector, "_run_branch", run_branch)
+    monkeypatch.setattr(
+        collector.v2,
+        "risk_targets_from_normalized_mc",
+        lambda *_args, **_kwargs: {
+            "event_index": -1,
+            "final_risk": np.zeros((10,)),
+            "action_cot_risk": np.zeros((10,)),
+            "fused_risk": np.zeros((10,)),
+            "event_mask": np.zeros((10,), dtype=np.bool_),
+        },
+    )
+    collector.main(args)
+
+    assert len(records) == 1
+    record = records[0]
+    decision_count = source_steps // 5
+    rng = np.random.default_rng(np.random.SeedSequence([args.seed, 0, 0, 0x524F4F54]))
+    expected_index = 0
+    for index in range(decision_count):
+        if int(rng.integers(index + 1)) == 0:
+            expected_index = index
+    root_step = expected_index * 5
+    assert record["decision_step"] == root_step
+    assert 0 <= root_step < source_steps
+    assert len([event for event in events if event[0] == "source"]) == decision_count
+    assert len([event for event in events if event[0] == "teacher"]) == 1
+    assert len([event for event in events if event[0] == "branch"]) == 6
+    assert events.index(("step", source_steps)) < next(i for i, event in enumerate(events) if event[0] == "branch")
+    np.testing.assert_array_equal(record["final_actions"], root_step + 1.25)
+    np.testing.assert_array_equal(record["coarse_actions"], root_step + 1.5)
+    np.testing.assert_array_equal(record["state"], root_step + 1.125)
+    np.testing.assert_array_equal(record["prefix_tokens"], root_step + 1.875)
+    np.testing.assert_array_equal(record["physics_state"], [root_step])
+    assert record["previous_valid"] == (expected_index > 0)
+    np.testing.assert_array_equal(record["previous_actions"], root_step - 3.75 if expected_index else 0)
+    assert record["episode_progress"] == root_step / source_steps
+    outcome = json.loads((tmp_path / "repeated_branch_outcomes.jsonl").read_text())
+    assert outcome["source_decision_index"] == expected_index
+    assert outcome["source_decision_count"] == decision_count
+    assert outcome["root_sampling"] == "trajectory_reservoir"
+    assert "source_decision_count" not in record
+
+
+@pytest.mark.parametrize("source_policy,max_roots", [("fixed_reference", 1), ("current_student", 0)])
+def test_trajectory_reservoir_requires_one_root_and_student_source(source_policy: str, max_roots: int) -> None:
+    args = collector.build_parser().parse_args(
+        [
+            "--output-dir", "/tmp/counterfactuals",
+            "--root-sampling", "trajectory_reservoir",
+            "--source-policy", source_policy,
+            "--max-roots-per-episode", str(max_roots),
+        ]
+    )
+    with pytest.raises(ValueError, match="trajectory_reservoir requires"):
+        collector.main(args)
 
 
 def test_fixed_h5_continuation_is_explicit_and_legacy_h9_is_preserved() -> None:

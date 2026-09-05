@@ -41,6 +41,22 @@ class SimulatorSnapshot:
     random_states: list[tuple[Any, str, Any]]
 
 
+@dataclasses.dataclass
+class TrajectoryRoot:
+    snapshot: SimulatorSnapshot
+    policy_input: dict[str, Any]
+    result: dict[str, Any]
+    primary_actions: np.ndarray
+    previous_actions_raw: np.ndarray | None
+    previous_actions_normalized: np.ndarray
+    previous_h: int
+    budget_state: v2.EpisodeBudgetState
+    progress: float
+    step: int
+    root_seed: int
+    decision_index: int
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
@@ -85,6 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Episode e starts collecting at policy call e modulo this value.",
     )
     parser.add_argument("--max-roots-per-episode", type=int, default=0)
+    parser.add_argument(
+        "--root-sampling",
+        choices=("call_offset", "trajectory_reservoir"),
+        default="call_offset",
+        help="trajectory_reservoir samples one call uniformly from a complete current-student source rollout.",
+    )
     parser.add_argument("--records-per-shard", type=int, default=1024)
     parser.add_argument("--source-iteration", type=int, default=0)
     parser.add_argument("--candidate-horizons", nargs="+", type=int, default=list(range(1, 11)))
@@ -525,6 +547,7 @@ def _policy_request(
     previous_h: int = 1,
     budget_balance: float = 0.0,
     episode_progress: float = 0.0,
+    export_prefix_tokens: bool = False,
 ) -> dict[str, Any]:
     request = dict(observation)
     seed = _uint32_seed(seed, description="policy_seed")
@@ -549,7 +572,7 @@ def _policy_request(
         request["execution_horizon_budget_balance"] = np.asarray(budget_balance, dtype=np.float32)
         request["execution_horizon_episode_progress"] = np.asarray(episode_progress, dtype=np.float32)
         request["execution_horizon_previous_valid"] = np.asarray(previous_actions is not None)
-    if args.prefix_token_count and teacher:
+    if args.prefix_token_count and (teacher or export_prefix_tokens):
         request["export_execution_horizon_prefix_tokens"] = np.asarray(1, dtype=np.bool_)
     started = time.perf_counter()
     result = client.infer(request)
@@ -684,6 +707,120 @@ def _source_uses_student(args: argparse.Namespace) -> bool:
     raise ValueError(f"Unsupported source_policy: {source_policy!r}.")
 
 
+def _trajectory_reservoir_root(
+    env: Any,
+    observation: dict[str, Any],
+    *,
+    step: int,
+    episode_step_limit: int,
+    task_id: int,
+    episode_id: int,
+    task_description: str,
+    args: argparse.Namespace,
+    client: websocket_policy.WebsocketClientPolicy,
+) -> tuple[TrajectoryRoot | None, int]:
+    """Finish one source trajectory, retaining one uniformly sampled policy call."""
+    # This local generator never consumes simulator or policy randomness.
+    sampling_rng = np.random.default_rng(np.random.SeedSequence([args.seed, task_id, episode_id, 0x524F4F54]))
+    root = None
+    decision_index = 0
+    done = False
+    previous_actions_raw = None
+    previous_actions_normalized = np.zeros((args.model_action_horizon, args.model_action_dim), dtype=np.float32)
+    previous_h = args.reference_horizon
+    budget_state = v2.EpisodeBudgetState(balance=min(args.v2_initial_budget, args.v2_budget_capacity))
+    while not done and step < episode_step_limit:
+        replace_root = int(sampling_rng.integers(decision_index + 1)) == 0
+        root_seed = _root_seed(args.seed, task_id, episode_id, step, task_stride=args.root_seed_task_stride)
+        policy_input = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
+        progress = float(np.clip(step / max(episode_step_limit, 1), 0.0, 1.0))
+        result = _policy_request(
+            client,
+            policy_input,
+            seed=root_seed,
+            args=args,
+            run_student=True,
+            previous_actions=previous_actions_raw,
+            previous_h=previous_h,
+            budget_balance=budget_state.balance / args.v2_budget_capacity,
+            episode_progress=progress,
+            export_prefix_tokens=replace_root,
+        )
+        primary_actions = np.asarray(result["actions"], dtype=np.float32)
+        if replace_root:
+            root = TrajectoryRoot(
+                snapshot=_capture_snapshot(env),
+                policy_input=copy.deepcopy(policy_input),
+                result=copy.deepcopy(result),
+                primary_actions=primary_actions.copy(),
+                previous_actions_raw=None if previous_actions_raw is None else previous_actions_raw.copy(),
+                previous_actions_normalized=previous_actions_normalized.copy(),
+                previous_h=previous_h,
+                budget_state=copy.deepcopy(budget_state),
+                progress=progress,
+                step=step,
+                root_seed=root_seed,
+                decision_index=decision_index,
+            )
+        _, rollout_horizon = _student_horizon(result, args=args, budget_state=budget_state)
+        rollout_horizon = min(rollout_horizon, len(primary_actions))
+        for action in primary_actions[:rollout_horizon]:
+            if step >= episode_step_limit:
+                break
+            try:
+                observation, _, done, _ = env.step(np.asarray(action).tolist())
+            except Exception as exc:
+                if not libero_eval._is_terminated_episode_error(exc):
+                    raise
+                done = libero_eval._env_success(env)
+                break
+            step += 1
+            if done or libero_eval._env_success(env):
+                done = True
+                break
+        previous_actions_normalized = np.asarray(
+            result["execution_horizon_final_actions_normalized"], dtype=np.float32
+        )
+        previous_actions_raw = primary_actions
+        previous_h = rollout_horizon
+        decision_index += 1
+        print(
+            json.dumps(
+                {
+                    "task": task_id,
+                    "episode": episode_id,
+                    "step": step,
+                    "last_h": rollout_horizon,
+                    "source_decision_count": decision_index,
+                    "root_sampling": "trajectory_reservoir",
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+    return root, decision_index
+
+
+def _trajectory_root_with_mc(
+    root: TrajectoryRoot,
+    *,
+    args: argparse.Namespace,
+    client: websocket_policy.WebsocketClientPolicy,
+) -> dict[str, Any]:
+    """Add auxiliary MC risk samples without replacing the executed source plan."""
+    teacher_result = _policy_request(
+        client,
+        root.policy_input,
+        seed=root.root_seed,
+        args=args,
+        teacher=True,
+    )
+    result = dict(root.result)
+    for name in ("mc_actions_normalized", "mc_coarse_actions_normalized"):
+        result[name] = teacher_result[name]
+    return result
+
+
 def _frame(observation: dict[str, Any]) -> np.ndarray | None:
     image = observation.get("agentview_image")
     return np.asarray(image)[::-1, ::-1] if image is not None else None
@@ -812,6 +949,8 @@ def _root_record(
     v2_min_horizon: int,
     shape: horizon_dataset.DatasetShape,
     reference_horizon: int,
+    primary_final_actions_normalized: np.ndarray | None = None,
+    primary_coarse_actions_normalized: np.ndarray | None = None,
 ) -> dict[str, Any]:
     final_mc = np.asarray(result["mc_actions_normalized"], dtype=np.float32)
     coarse_mc = np.asarray(result["mc_coarse_actions_normalized"], dtype=np.float32)
@@ -896,8 +1035,16 @@ def _root_record(
     record = {
         "prefix_feature": np.asarray(result["execution_horizon_prefix_feature"], dtype=np.float32),
         "state": np.asarray(result["execution_horizon_state_normalized"], dtype=np.float32),
-        "coarse_actions": coarse_mc[0],
-        "final_actions": final_mc[0],
+        "coarse_actions": (
+            coarse_mc[0]
+            if primary_coarse_actions_normalized is None
+            else np.asarray(primary_coarse_actions_normalized, dtype=np.float32)
+        ),
+        "final_actions": (
+            final_mc[0]
+            if primary_final_actions_normalized is None
+            else np.asarray(primary_final_actions_normalized, dtype=np.float32)
+        ),
         "previous_actions": previous_actions_normalized,
         "previous_h": previous_h,
         "previous_valid": previous_valid,
@@ -967,6 +1114,9 @@ def _root_record(
 
 
 def main(args: argparse.Namespace) -> None:
+    reservoir_sampling = args.root_sampling == "trajectory_reservoir"
+    if reservoir_sampling and (args.max_roots_per_episode != 1 or not _source_uses_student(args)):
+        raise ValueError("trajectory_reservoir requires max_roots_per_episode=1 and a current_student source.")
     if (
         args.root_stride_calls <= 0
         or args.root_call_offset_cycle <= 0
@@ -1099,6 +1249,7 @@ def main(args: argparse.Namespace) -> None:
         "action_cot_denoising_steps": args.action_cot_denoising_steps,
         "source_iteration": args.source_iteration,
         "root_call_offset_cycle": args.root_call_offset_cycle,
+        "root_sampling": args.root_sampling,
         **_seed_scheme_metadata(args),
         "episode_ids": episode_ids,
         "branch_repeats": args.branch_repeats,
@@ -1170,8 +1321,30 @@ def main(args: argparse.Namespace) -> None:
                     previous_actions_normalized = np.zeros((shape.action_horizon, shape.action_dim), dtype=np.float32)
                     previous_h = args.reference_horizon
                     budget_state = v2.EpisodeBudgetState(balance=min(args.v2_initial_budget, args.v2_budget_capacity))
+                    trajectory_root = None
+                    source_decision_count = None
+                    if reservoir_sampling and not done:
+                        trajectory_root, source_decision_count = _trajectory_reservoir_root(
+                            env,
+                            observation,
+                            step=step,
+                            episode_step_limit=episode_step_limit,
+                            task_id=task_id,
+                            episode_id=episode_id,
+                            task_description=task_description,
+                            args=args,
+                            client=client,
+                        )
+                        if trajectory_root is None:
+                            continue
+                        step = trajectory_root.step
+                        decision_index = trajectory_root.decision_index
+                        previous_actions_raw = trajectory_root.previous_actions_raw
+                        previous_actions_normalized = trajectory_root.previous_actions_normalized
+                        previous_h = trajectory_root.previous_h
+                        budget_state = trajectory_root.budget_state
                     while not done and step < episode_step_limit:
-                        collect_root = (
+                        collect_root = reservoir_sampling or (
                             decision_index >= root_call_offset
                             and (decision_index - root_call_offset) % args.root_stride_calls == 0
                         )
@@ -1184,26 +1357,32 @@ def main(args: argparse.Namespace) -> None:
                             step,
                             task_stride=args.root_seed_task_stride,
                         )
-                        policy_input = libero_eval._observation_to_policy_input(
-                            observation, task_description, args.resize_size
-                        )
                         progress = float(np.clip(step / max(episode_step_limit, 1), 0.0, 1.0))
                         use_student = _source_uses_student(args)
-                        result = _policy_request(
-                            client,
-                            policy_input,
-                            seed=root_seed,
-                            args=args,
-                            teacher=collect_root,
-                            run_student=use_student,
-                            previous_actions=previous_actions_raw,
-                            previous_h=previous_h,
-                            budget_balance=budget_state.balance / args.v2_budget_capacity,
-                            episode_progress=progress,
-                        )
-                        primary_actions = np.asarray(result["actions"], dtype=np.float32)
+                        if trajectory_root is not None:
+                            root_seed = trajectory_root.root_seed
+                            progress = trajectory_root.progress
+                            result = _trajectory_root_with_mc(trajectory_root, args=args, client=client)
+                            primary_actions = trajectory_root.primary_actions
+                        else:
+                            policy_input = libero_eval._observation_to_policy_input(
+                                observation, task_description, args.resize_size
+                            )
+                            result = _policy_request(
+                                client,
+                                policy_input,
+                                seed=root_seed,
+                                args=args,
+                                teacher=collect_root,
+                                run_student=use_student,
+                                previous_actions=previous_actions_raw,
+                                previous_h=previous_h,
+                                budget_balance=budget_state.balance / args.v2_budget_capacity,
+                                episode_progress=progress,
+                            )
+                            primary_actions = np.asarray(result["actions"], dtype=np.float32)
                         if collect_root:
-                            snapshot = _capture_snapshot(env)
+                            snapshot = trajectory_root.snapshot if trajectory_root is not None else _capture_snapshot(env)
                             risk = v2.risk_targets_from_normalized_mc(
                                 result["mc_coarse_actions_normalized"],
                                 result["mc_actions_normalized"],
@@ -1305,6 +1484,16 @@ def main(args: argparse.Namespace) -> None:
                                 v2_min_horizon=args.v2_min_horizon,
                                 shape=shape,
                                 reference_horizon=args.reference_horizon,
+                                primary_final_actions_normalized=(
+                                    trajectory_root.result["execution_horizon_final_actions_normalized"]
+                                    if trajectory_root is not None
+                                    else None
+                                ),
+                                primary_coarse_actions_normalized=(
+                                    trajectory_root.result["execution_horizon_coarse_actions_normalized"]
+                                    if trajectory_root is not None
+                                    else None
+                                ),
                             )
                             writer.append(root_record)
                             if repeated_outcomes_writer is not None:
@@ -1316,6 +1505,9 @@ def main(args: argparse.Namespace) -> None:
                                             "episode_id": episode_id,
                                             "decision_step": step,
                                             "root_seed": root_seed,
+                                            "root_sampling": args.root_sampling,
+                                            "source_decision_index": decision_index,
+                                            "source_decision_count": source_decision_count,
                                             "raw_h": int(root_record["raw_h"]),
                                             "continuation_policy": args.continuation_policy,
                                             "branch_repeats": args.branch_repeats,
@@ -1330,6 +1522,8 @@ def main(args: argparse.Namespace) -> None:
                                 repeated_outcomes_writer.flush()
                             total_records += 1
                             roots_this_episode += 1
+                            if reservoir_sampling:
+                                break
                             observation = _restore_snapshot(env, snapshot)
 
                         if use_student:

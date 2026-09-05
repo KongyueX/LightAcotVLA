@@ -32,16 +32,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--initial-state-bank", required=True)
-    parser.add_argument("--round3-breadth-summary", required=True)
-    parser.add_argument("--round3-selection", required=True)
-    parser.add_argument("--base-split-manifest", required=True)
+    parser.add_argument("--round3-breadth-summary")
+    parser.add_argument("--round3-selection")
+    parser.add_argument("--base-split-manifest")
+    parser.add_argument("--reuse-collection-summary")
     parser.add_argument("--predictor-dir", required=True)
     parser.add_argument("--round3-collection-dir", default=None)
     parser.add_argument("--collector-script", default=None)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8040)
     parser.add_argument("--episodes-per-attempt", type=int, default=10)
+    parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--source-iteration", type=int, default=SOURCE_ITERATION)
+    parser.add_argument("--root-sampling", choices=("call_offset", "trajectory_reservoir"), default="call_offset")
     return parser
+
+
+def _protocol_name(source_iteration: int) -> str:
+    return f"h25_ordered_dynamic_continuation_round{source_iteration}_v1"
 
 
 def _write_json(path: pathlib.Path, payload: dict[str, Any], *, once: bool = False) -> None:
@@ -166,6 +174,67 @@ def build_selection(
     }
 
 
+def build_reuse_selection(
+    previous_summary: dict[str, Any],
+    previous_selection: dict[str, Any],
+    *,
+    source_iteration: int,
+    seed: int,
+    root_sampling: str,
+    reuse_collection_summary: pathlib.Path,
+) -> dict[str, Any]:
+    if previous_summary.get("status") != "complete" or int(previous_summary.get("num_roots", -1)) != 180:
+        raise ValueError("Reuse collection summary must be a complete 180-root result.")
+    tasks: dict[str, Any] = {}
+    for task in TASK_IDS:
+        roles: dict[str, Any] = {}
+        seen: dict[int, str] = {}
+        for role, target in ROLE_TARGETS.items():
+            actual = [int(value) for value in previous_summary["realized_by_task"][str(task)][role]["episodes"]]
+            if len(actual) != target or len(set(actual)) != target:
+                raise ValueError(f"Task {task}/{role} lacks exactly {target} distinct realized groups.")
+            old_plan = previous_selection["tasks"][str(task)]["roles"][role]
+            old_pool = list(dict.fromkeys(int(value) for key in ("primary", "fallback") for value in old_plan[key]))
+            if not set(actual).issubset(old_pool):
+                raise ValueError(f"Task {task}/{role} realized groups differ from their recorded selection role.")
+            fallback = [episode for episode in old_pool if episode not in set(actual)]
+            roles[role] = {"primary": actual, "fallback": fallback}
+            for episode in (*actual, *fallback):
+                previous_role = seen.setdefault(episode, role)
+                if previous_role != role:
+                    raise ValueError(f"Task {task} episode {episode} crosses roles {previous_role}/{role}.")
+        tasks[str(task)] = {"roles": roles}
+    return {
+        "status": "complete",
+        "protocol": _protocol_name(source_iteration),
+        "selection_semantics": "Reuse realized episode groups as same-role primary; retain same-role unused pool as fallback.",
+        "role_targets_per_task": ROLE_TARGETS,
+        "seed": seed,
+        "source_iteration": source_iteration,
+        "root_sampling": root_sampling,
+        "reuse_collection_summary": str(reuse_collection_summary),
+        "primary_reused_groups": 180,
+        "primary_new_groups": 0,
+        "tasks": tasks,
+    }
+
+
+def _group_reuse_counts(realized: dict[str, Any], previous_summary: dict[str, Any]) -> dict[str, Any]:
+    by_role = {role: {"reused_groups": 0, "new_groups": 0} for role in ROLE_TARGETS}
+    for task, roles in realized.items():
+        for role, values in roles.items():
+            previous = set(previous_summary["realized_by_task"][task][role]["episodes"])
+            actual = set(values["episodes"])
+            by_role[role]["reused_groups"] += len(actual & previous)
+            by_role[role]["new_groups"] += len(actual - previous)
+    return {
+        "comparison_scope": "immediately_previous_collection_same_role",
+        "reused_groups": sum(value["reused_groups"] for value in by_role.values()),
+        "new_groups": sum(value["new_groups"] for value in by_role.values()),
+        "by_role": by_role,
+    }
+
+
 def build_collector_command(
     *,
     python: pathlib.Path,
@@ -176,16 +245,19 @@ def build_collector_command(
     port: int,
     task: int,
     episodes: list[int],
+    seed: int = SEED,
+    source_iteration: int = SOURCE_ITERATION,
+    root_sampling: str = "call_offset",
 ) -> list[str]:
-    return [
+    command = [
         str(python), str(collector), "--host", host, "--port", str(port), "--output-dir", str(output),
         "--task-suite-name", "libero_10", "--task-start", str(task), "--max-tasks", "1",
         "--episode-ids", *[str(value) for value in episodes], "--initial-state-bank", str(bank),
-        "--num-steps-wait", "10", "--resize-size", "224", "--seed", str(SEED),
+        "--num-steps-wait", "10", "--resize-size", "224", "--seed", str(seed),
         "--root-seed-task-stride", str(TASK_SEED_STRIDE), "--teacher-samples", "20",
         "--action-cot-denoising-steps", "10", "--root-stride-calls", "1",
         "--root-call-offset-cycle", "12", "--max-roots-per-episode", "1", "--records-per-shard", "10",
-        "--source-iteration", str(SOURCE_ITERATION), "--candidate-horizons",
+        "--source-iteration", str(source_iteration), "--candidate-horizons",
         *[str(value) for value in CANDIDATE_HORIZONS], "--reference-horizon", "10",
         "--model-action-horizon", "25", "--model-coarse-horizon", "15", "--model-action-dim", "32",
         "--model-state-dim", "32", "--prefix-feature-dim", "2048", "--prefix-token-count", "1024",
@@ -194,6 +266,9 @@ def build_collector_command(
         "--branch-repeat-seed-stride", str(BRANCH_SEED_STRIDE), "--student-mode", "ordered_transformer",
         "--debug-failure-videos", "0",
     ]
+    if root_sampling != "call_offset":
+        command.extend(("--root-sampling", root_sampling))
+    return command
 
 
 def _scan_attempts(role_dir: pathlib.Path, task: int) -> tuple[set[int], set[tuple[int, int]], int, list[str]]:
@@ -239,10 +314,11 @@ def _run_attempt(
     task: int,
     episodes: list[int],
     command: list[str],
+    metadata: dict[str, Any],
 ) -> None:
     attempt = role_dir / f"attempt-{index:04d}"
     attempt.mkdir(parents=True, exist_ok=False)
-    _write_json(attempt / "run_config.json", {"protocol": PROTOCOL, "role": role, "task": task, "episodes": episodes}, once=True)
+    _write_json(attempt / "run_config.json", {**metadata, "role": role, "task": task, "episodes": episodes}, once=True)
     with (attempt / "collector.log").open("x") as log:
         completed = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False)
     (attempt / "collector.exit").write_text(f"{completed.returncode}\n")
@@ -253,47 +329,84 @@ def _run_attempt(
 def main(args: argparse.Namespace) -> None:
     if args.episodes_per_attempt <= 0 or args.episodes_per_attempt > 10:
         raise ValueError("episodes_per_attempt must lie in [1, 10].")
+    if args.source_iteration < 1:
+        raise ValueError("source_iteration must be positive.")
+    if not args.reuse_collection_summary and not all(
+        (args.round3_breadth_summary, args.round3_selection, args.base_split_manifest)
+    ):
+        raise ValueError("Provide reuse-collection-summary or all three Round-3/base selection inputs.")
     output = pathlib.Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     with (output / "controller.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        breadth_path = pathlib.Path(args.round3_breadth_summary).resolve()
-        round3_path = pathlib.Path(args.round3_selection).resolve()
-        base_path = pathlib.Path(args.base_split_manifest).resolve()
         predictor = pathlib.Path(args.predictor_dir).resolve()
         bank = pathlib.Path(args.initial_state_bank).resolve()
         code = pathlib.Path(args.code_dir).resolve()
         python = pathlib.Path(args.python).absolute()
         collector = pathlib.Path(args.collector_script).resolve() if args.collector_script else code / "scripts/collect_execution_horizon_counterfactuals.py"
-        round3_collection = pathlib.Path(args.round3_collection_dir).resolve() if args.round3_collection_dir else breadth_path.parent.parent
-        for required in (breadth_path, round3_path, base_path, predictor / "params", bank, collector, python):
+        reuse_path = pathlib.Path(args.reuse_collection_summary).resolve() if args.reuse_collection_summary else None
+        previous_summary = None
+        if reuse_path is not None:
+            selection_inputs = {"reuse_collection_summary": str(reuse_path)}
+            selection_files = (reuse_path, reuse_path.parent / "selection.json")
+        else:
+            breadth_path = pathlib.Path(args.round3_breadth_summary).resolve()
+            round3_path = pathlib.Path(args.round3_selection).resolve()
+            base_path = pathlib.Path(args.base_split_manifest).resolve()
+            round3_collection = pathlib.Path(args.round3_collection_dir).resolve() if args.round3_collection_dir else breadth_path.parent.parent
+            selection_inputs = {
+                "round3_breadth_summary": str(breadth_path), "round3_selection": str(round3_path),
+                "base_split_manifest": str(base_path),
+            }
+            selection_files = (breadth_path, round3_path, base_path)
+        for required in (*selection_files, predictor / "params", bank, collector, python):
             if not required.exists():
                 raise FileNotFoundError(required)
+        collection_metadata = {
+            "protocol": _protocol_name(args.source_iteration),
+            "seed": args.seed, "source_iteration": args.source_iteration, "root_sampling": args.root_sampling,
+        }
+        if reuse_path is not None:
+            collection_metadata["reuse_collection_summary"] = str(reuse_path)
+            previous_summary = json.loads(reuse_path.read_text())
         protocol = {
-            "protocol": PROTOCOL, "code_dir": str(code), "code_commit": args.code_commit,
+            **collection_metadata, "code_dir": str(code), "code_commit": args.code_commit,
             "collector_script": str(collector), "python": str(python), "initial_state_bank": str(bank),
-            "round3_breadth_summary": str(breadth_path), "round3_selection": str(round3_path),
-            "base_split_manifest": str(base_path), "predictor_dir": str(predictor),
+            **selection_inputs, "predictor_dir": str(predictor),
             "predictor_params": str(predictor / "params"), "host": args.host, "port": args.port,
-            "seed": SEED, "task_seed_stride": TASK_SEED_STRIDE, "branch_seed_stride": BRANCH_SEED_STRIDE,
-            "source_iteration": SOURCE_ITERATION, "candidate_horizons": CANDIDATE_HORIZONS,
+            "task_seed_stride": TASK_SEED_STRIDE, "branch_seed_stride": BRANCH_SEED_STRIDE,
+            "candidate_horizons": CANDIDATE_HORIZONS,
             "source_policy": "current_student", "continuation_policy": "current_student",
             "student_mode": "ordered_transformer", "role_targets_per_task": ROLE_TARGETS,
         }
-        _write_json(output / "run_config.json", protocol, once=True)
+        config_path = output / "run_config.json"
+        if config_path.exists() and "root_sampling" not in json.loads(config_path.read_text()) and args.root_sampling == "call_offset":
+            protocol.pop("root_sampling")
+        _write_json(config_path, protocol, once=True)
         selection_path = output / "selection.json"
         if selection_path.exists():
             selection = json.loads(selection_path.read_text())
         else:
-            selection = build_selection(
-                json.loads(breadth_path.read_text()), json.loads(round3_path.read_text()),
-                json.loads(base_path.read_text()), round3_collection,
-            )
+            if previous_summary is not None:
+                selection = build_reuse_selection(
+                    previous_summary, json.loads((reuse_path.parent / "selection.json").read_text()),
+                    source_iteration=args.source_iteration, seed=args.seed, root_sampling=args.root_sampling,
+                    reuse_collection_summary=reuse_path,
+                )
+            else:
+                selection = build_selection(
+                    json.loads(breadth_path.read_text()), json.loads(round3_path.read_text()),
+                    json.loads(base_path.read_text()), round3_collection,
+                )
+                selection.update(collection_metadata)
+                selection["selection_semantics"] = (
+                    f"Role-preserving, outcome-blind Round-{args.source_iteration} primary and fallback episode groups."
+                )
             _write_json(selection_path, selection, once=True)
         if (output / "summary.json").exists():
             summary = json.loads((output / "summary.json").read_text())
             if summary.get("status") != "complete" or int(summary.get("num_roots", -1)) != 180:
-                raise ValueError("Existing Round-4 summary is not a complete 180-root result.")
+                raise ValueError("Existing collection summary is not a complete 180-root result.")
             print(json.dumps(summary, indent=2, sort_keys=True))
             return
         with socket.create_connection((args.host, args.port), timeout=3):
@@ -320,8 +433,12 @@ def main(args: argparse.Namespace) -> None:
                     command = build_collector_command(
                         python=python, collector=collector, output=data, bank=bank, host=args.host,
                         port=args.port, task=task, episodes=episodes,
+                        seed=args.seed, source_iteration=args.source_iteration, root_sampling=args.root_sampling,
                     )
-                    _run_attempt(role_dir, index=maximum + 1, role=role, task=task, episodes=episodes, command=command)
+                    _run_attempt(
+                        role_dir, index=maximum + 1, role=role, task=task, episodes=episodes, command=command,
+                        metadata=collection_metadata,
+                    )
                 if len(roots) != target:
                     raise ValueError(f"Task {task}/{role} produced {len(roots)} roots; expected {target}.")
                 episodes = sorted(episode for _, episode in roots)
@@ -337,12 +454,14 @@ def main(args: argparse.Namespace) -> None:
         }
         _write_json(output / "split_manifest.json", split, once=True)
         summary = {
-            "status": "complete", "protocol": PROTOCOL, "num_roots": sum(map(len, groups.values())),
+            "status": "complete", **collection_metadata, "num_roots": sum(map(len, groups.values())),
             "roots_by_role": {role: len(values) for role, values in groups.items()},
             "realized_by_task": by_task, "data_dirs": sorted(set(data_dirs)),
             "split_manifest": str(output / "split_manifest.json"), "predictor_dir": str(predictor),
             "source_policy": "current_student", "continuation_policy": "current_student",
         }
+        if previous_summary is not None:
+            summary["group_reuse"] = _group_reuse_counts(by_task, previous_summary)
         _write_json(output / "summary.json", summary, once=True)
         _write_json(output / "status.json", {"status": "complete", "roots": 180, "target": 180})
         (output / "controller.exit").write_text("0\n")
