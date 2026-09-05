@@ -329,6 +329,116 @@ def test_success_first_listwise_target_uses_elapsed_only_within_best_success_tie
     assert target[0, 1] > target[0, 0]
     assert target[1, 4] == np.max(target[1])
     np.testing.assert_allclose(np.sum(target, axis=-1), 1.0, atol=1e-6)
+    explicit_target, explicit_valid = predictor_lib.success_first_listwise_target(
+        labels["success_count"],
+        labels["trial_count"],
+        labels["elapsed_mean"],
+        labels["branch_valid"],
+        elapsed_temperature=0.25,
+        elapsed_mode="root_minmax",
+    )
+    expected = jax.nn.softmax(jnp.asarray([[-4.0, 0.0, -1e30, -1e30, -1e30], [-4.0, -3.0, -2.0, -1.0, 0.0]]))
+    np.testing.assert_array_equal(target, np.asarray(expected))
+    np.testing.assert_array_equal(target, np.asarray(explicit_target))
+    np.testing.assert_array_equal(valid, explicit_valid)
+
+
+def test_paired_noise_listwise_millisecond_differences_stay_near_uniform():
+    means = jnp.asarray([[10.0, 10.001, 10.002]])
+    trials = jnp.repeat(means[..., None], 3, axis=-1)
+    counts = jnp.full_like(means, 3)
+    target, valid = predictor_lib.success_first_listwise_target(
+        counts,
+        counts,
+        means,
+        jnp.ones_like(means, dtype=jnp.bool_),
+        elapsed_temperature=0.001,
+        elapsed_mode="paired_noise",
+        trial_elapsed=trials,
+        trial_valid=jnp.ones_like(trials, dtype=jnp.bool_),
+    )
+
+    np.testing.assert_array_equal(valid, [True])
+    np.testing.assert_allclose(target, 1.0 / 3.0, atol=0.001)
+    np.testing.assert_allclose(target, jax.nn.softmax(-(means - means.min(axis=-1, keepdims=True))), atol=1e-7)
+    assert float(target[0, 0]) > float(target[0, 2])
+
+
+def test_paired_noise_uses_pair_variance_and_cancels_common_seed_delay():
+    means = jnp.asarray([[10.0, 11.0, 12.0]])
+    counts = jnp.full_like(means, 3)
+
+    def target_for(trials):
+        return predictor_lib.success_first_listwise_target(
+            counts,
+            counts,
+            trials.mean(axis=-1),
+            jnp.ones_like(means, dtype=jnp.bool_),
+            elapsed_temperature=0.25,
+            elapsed_mode="paired_noise",
+            trial_elapsed=trials,
+            trial_valid=jnp.ones_like(trials, dtype=jnp.bool_),
+        )[0]
+
+    stable = target_for(jnp.repeat(means[..., None], 3, axis=-1))
+    trials = jnp.asarray([[[8.0, 10.0, 12.0], [13.0, 11.0, 9.0], [12.0, 12.0, 12.0]]])
+    noisy = target_for(trials)
+    shifted = target_for(trials + jnp.asarray([100.0, 200.0, 300.0]))
+
+    # The three distinct candidate pairs have sample variances 16, 4, and 4.
+    expected = jax.nn.softmax(jnp.asarray([[0.0, -1.0, -2.0]]) / jnp.sqrt(8.0))
+    np.testing.assert_allclose(noisy, expected, atol=1e-7)
+    np.testing.assert_array_equal(noisy, shifted)
+    assert float(noisy[0, 0]) < float(stable[0, 0])
+    assert float(noisy[0, 2]) > float(stable[0, 2])
+
+
+def test_paired_noise_handles_missing_pairs_padding_and_ineligible_roots():
+    counts = jnp.full((3, 3), 3.0)
+    success = counts.at[2, 1:].set(0)
+    means = jnp.asarray([[10.0, 11.0, 12.0], [jnp.nan, jnp.nan, jnp.nan], [10.0, 1.0, 2.0]])
+    branch_valid = jnp.asarray([[True, True, True], [False, False, False], [True, True, True]])
+    trials = jnp.asarray(
+        [
+            [[10.0, 10.0, 1000.0], [jnp.nan, 11.0, 11.0], [12.0, jnp.nan, 12.0]],
+            [[jnp.nan] * 3] * 3,
+            [[9.0, 11.0, jnp.nan], [100.0, 500.0, 900.0], [1.0, 2.0, 3.0]],
+        ]
+    )
+    valid_trials = jnp.ones_like(trials, dtype=jnp.bool_).at[0, 0, 2].set(False).at[2, 0, 2].set(False)
+    target, valid = predictor_lib.success_first_listwise_target(
+        success,
+        counts,
+        means,
+        branch_valid,
+        elapsed_temperature=0.25,
+        elapsed_mode="paired_noise",
+        elapsed_floor_seconds=2.0,
+        trial_elapsed=trials,
+        trial_valid=valid_trials,
+    )
+
+    # Every pair in root 0 shares only one finite trial, so only the floor applies.
+    np.testing.assert_allclose(target[0], jax.nn.softmax(jnp.asarray([0.0, -0.5, -1.0])), atol=1e-7)
+    np.testing.assert_array_equal(target[1], [0.0, 0.0, 0.0])
+    np.testing.assert_array_equal(target[2], [1.0, 0.0, 0.0])
+    np.testing.assert_array_equal(valid, [True, False, True])
+    assert np.isfinite(np.asarray(target)).all()
+    with pytest.raises(ValueError, match="requires trial_elapsed and trial_valid"):
+        predictor_lib.success_first_listwise_target(
+            success, counts, means, branch_valid, elapsed_temperature=0.25, elapsed_mode="paired_noise"
+        )
+    with pytest.raises(ValueError, match="trial arrays must have shape"):
+        predictor_lib.success_first_listwise_target(
+            success,
+            counts,
+            means,
+            branch_valid,
+            elapsed_temperature=0.25,
+            elapsed_mode="paired_noise",
+            trial_elapsed=trials[..., :2],
+            trial_valid=valid_trials,
+        )
 
 
 def test_ordered_listwise_warm_start_loss_is_finite():

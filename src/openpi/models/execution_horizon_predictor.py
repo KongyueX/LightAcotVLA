@@ -239,16 +239,29 @@ def success_first_listwise_target(
     valid: jax.Array,
     *,
     elapsed_temperature: float,
+    elapsed_mode: Literal["root_minmax", "paired_noise"] = "root_minmax",
+    elapsed_floor_seconds: float = 1.0,
+    trial_elapsed: jax.Array | None = None,
+    trial_valid: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array]:
     """Build a lexicographic target: best success rate, then lower elapsed time.
 
     Candidates below the root's best observed success rate receive no target
-    mass.  Among candidates tied at the best success rate, elapsed time defines
-    a soft listwise target after root-local range normalization.
+    mass. Among tied candidates, root_minmax uses the historical range-normalized
+    target. paired_noise uses elapsed differences in seconds, scaled by paired
+    seed variation and a fixed floor.
     """
 
-    if not math.isfinite(elapsed_temperature) or elapsed_temperature <= 0:
-        raise ValueError("elapsed_temperature must be finite and positive.")
+    if elapsed_mode not in {"root_minmax", "paired_noise"}:
+        raise ValueError("elapsed_mode must be root_minmax or paired_noise.")
+    if elapsed_mode == "root_minmax":
+        if not math.isfinite(elapsed_temperature) or elapsed_temperature <= 0:
+            raise ValueError("elapsed_temperature must be finite and positive.")
+    else:
+        if not math.isfinite(elapsed_floor_seconds) or elapsed_floor_seconds <= 0:
+            raise ValueError("elapsed_floor_seconds must be finite and positive.")
+        if trial_elapsed is None or trial_valid is None:
+            raise ValueError("paired_noise requires trial_elapsed and trial_valid.")
     success_count = jnp.asarray(success_count, dtype=jnp.float32)
     trial_count = jnp.asarray(trial_count, dtype=jnp.float32)
     elapsed_mean = jnp.asarray(elapsed_mean, dtype=jnp.float32)
@@ -264,16 +277,40 @@ def success_first_listwise_target(
     root_valid = jnp.any(best_mask, axis=-1)
 
     best_elapsed_min = jnp.min(jnp.where(best_mask, elapsed_mean, jnp.inf), axis=-1, keepdims=True)
-    best_elapsed_max = jnp.max(jnp.where(best_mask, elapsed_mean, -jnp.inf), axis=-1, keepdims=True)
     best_elapsed_min = jnp.where(root_valid[..., None], best_elapsed_min, 0.0)
-    best_elapsed_max = jnp.where(root_valid[..., None], best_elapsed_max, best_elapsed_min)
-    elapsed_range = best_elapsed_max - best_elapsed_min
-    normalized_elapsed = jnp.where(
-        elapsed_range > 1e-6,
-        (elapsed_mean - best_elapsed_min) / jnp.maximum(elapsed_range, 1e-6),
-        0.0,
-    )
-    target_logits = jnp.where(best_mask, -normalized_elapsed / elapsed_temperature, -1e30)
+    if elapsed_mode == "root_minmax":
+        best_elapsed_max = jnp.max(jnp.where(best_mask, elapsed_mean, -jnp.inf), axis=-1, keepdims=True)
+        best_elapsed_max = jnp.where(root_valid[..., None], best_elapsed_max, best_elapsed_min)
+        elapsed_range = best_elapsed_max - best_elapsed_min
+        normalized_elapsed = jnp.where(
+            elapsed_range > 1e-6,
+            (elapsed_mean - best_elapsed_min) / jnp.maximum(elapsed_range, 1e-6),
+            0.0,
+        )
+        target_logits = jnp.where(best_mask, -normalized_elapsed / elapsed_temperature, -1e30)
+    else:
+        trial_elapsed = jnp.asarray(trial_elapsed, dtype=jnp.float32)
+        trial_valid = jnp.asarray(trial_valid, dtype=jnp.bool_)
+        if trial_elapsed.shape[:-1] != success_count.shape or trial_valid.shape != trial_elapsed.shape:
+            raise ValueError("paired_noise trial arrays must have shape success_count.shape + (num_trials,).")
+        valid_samples = trial_valid & jnp.isfinite(trial_elapsed) & best_mask[..., None]
+        safe_elapsed = jnp.where(valid_samples, trial_elapsed, 0.0)
+        paired_valid = valid_samples[..., :, None, :] & valid_samples[..., None, :, :]
+        paired_delta = safe_elapsed[..., :, None, :] - safe_elapsed[..., None, :, :]
+        paired_count = jnp.sum(paired_valid, axis=-1)
+        paired_mean = jnp.sum(jnp.where(paired_valid, paired_delta, 0.0), axis=-1) / jnp.maximum(paired_count, 1)
+        paired_variance = jnp.sum(
+            jnp.where(paired_valid, jnp.square(paired_delta - paired_mean[..., None]), 0.0), axis=-1
+        ) / jnp.maximum(paired_count - 1, 1)
+        upper_triangle = jnp.triu(jnp.ones((best_mask.shape[-1], best_mask.shape[-1]), dtype=jnp.bool_), k=1)
+        eligible_pairs = upper_triangle & (paired_count >= 2)
+        mean_pair_variance = jnp.sum(jnp.where(eligible_pairs, paired_variance, 0.0), axis=(-2, -1)) / jnp.maximum(
+            jnp.sum(eligible_pairs, axis=(-2, -1)), 1
+        )
+        root_noise_std = jnp.sqrt(jnp.maximum(mean_pair_variance, 0.0))
+        scale = jnp.maximum(elapsed_floor_seconds, root_noise_std)[..., None]
+        elapsed_delta = jnp.where(best_mask, elapsed_mean, best_elapsed_min) - best_elapsed_min
+        target_logits = jnp.where(best_mask, -elapsed_delta / scale, -1e30)
     target = jax.nn.softmax(target_logits, axis=-1)
     target = jnp.where(root_valid[..., None], target, 0.0)
     return target, root_valid
@@ -927,6 +964,8 @@ def execution_horizon_loss(
     remaining_steps_scale: float = 512.0,
     elapsed_advantage_scale: float = 1.0,
     ordered_listwise_elapsed_temperature: float = 0.25,
+    ordered_listwise_elapsed_mode: Literal["root_minmax", "paired_noise"] = "root_minmax",
+    ordered_listwise_elapsed_floor_seconds: float = 1.0,
     candidate_horizons: tuple[int, ...] | None = None,
     reference_horizon: int = 10,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
@@ -1039,6 +1078,10 @@ def execution_horizon_loss(
             labels["elapsed_mean"],
             branch_mask,
             elapsed_temperature=ordered_listwise_elapsed_temperature,
+            elapsed_mode=ordered_listwise_elapsed_mode,
+            elapsed_floor_seconds=ordered_listwise_elapsed_floor_seconds,
+            trial_elapsed=labels.get("trial_elapsed"),
+            trial_valid=labels.get("trial_valid"),
         )
         ordered_listwise_loss = _masked_mean(
             -jnp.sum(ordered_target * ordered_log_probability, axis=-1),

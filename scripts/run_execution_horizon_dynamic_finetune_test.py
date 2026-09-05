@@ -73,6 +73,42 @@ def test_dynamic_collection_builds_only_requested_finetune_command(tmp_path: pat
         assert command[command.index(option) + 1] == value
     for flag in ("--paired-distribution-heads", "--ordered-continuation-head"):
         assert flag in command
+    assert "--ordered-listwise-elapsed-mode" not in command
+    assert "--ordered-listwise-elapsed-floor-seconds" not in command
+
+
+def test_dynamic_paired_noise_cli_changes_only_elapsed_target_flags() -> None:
+    required = [
+        "--collection-summary", "/round5/summary.json", "--resume-predictor-dir", "/A",
+        "--output-dir", "/output", "--policy-server-tmux", "h25_server",
+    ]
+    default = dynamic.build_parser().parse_args(required)
+    assert default.ordered_listwise_elapsed_mode == "root_minmax"
+    assert default.ordered_listwise_elapsed_floor_seconds == 1.0
+    args = dynamic.build_parser().parse_args([
+        *required, "--ordered-listwise-elapsed-mode", "paired_noise",
+        "--ordered-listwise-elapsed-floor-seconds", "1.0",
+    ])
+    common = {
+        "python": pathlib.Path("/python"), "train_script": pathlib.Path("/train.py"),
+        "data_dirs": [pathlib.Path("/round5/data")], "output_dir": pathlib.Path("/output"),
+        "resume_params": pathlib.Path("/A/params"), "split_manifest": pathlib.Path("/round5/split.json"),
+    }
+    original = dynamic.build_train_command(**common)
+    paired = dynamic.build_train_command(
+        **common, ordered_listwise_elapsed_mode=args.ordered_listwise_elapsed_mode,
+        ordered_listwise_elapsed_floor_seconds=args.ordered_listwise_elapsed_floor_seconds,
+    )
+    assert paired[:-4] == original
+    assert paired[-4:] == [
+        "--ordered-listwise-elapsed-mode", "paired_noise", "--ordered-listwise-elapsed-floor-seconds", "1.0",
+    ]
+
+
+@pytest.mark.parametrize("mode, floor", [("unknown", 1.0), ("paired_noise", 0.0), ("paired_noise", float("nan"))])
+def test_dynamic_elapsed_target_rejects_invalid_arguments(mode, floor) -> None:
+    with pytest.raises(ValueError, match="ordered_listwise_elapsed"):
+        dynamic._validate_elapsed_target(mode, floor)  # noqa: SLF001
 
 
 def test_dynamic_collection_must_be_complete_before_server_stop(tmp_path: pathlib.Path) -> None:

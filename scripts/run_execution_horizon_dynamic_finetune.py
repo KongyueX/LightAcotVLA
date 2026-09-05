@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pathlib
 import subprocess
 import sys
@@ -22,7 +23,16 @@ def build_parser() -> argparse.ArgumentParser:
     for option in ("--collection-summary", "--resume-predictor-dir", "--output-dir", "--policy-server-tmux"):
         parser.add_argument(option, required=True)
     parser.add_argument("--python")
+    parser.add_argument("--ordered-listwise-elapsed-mode", choices=("root_minmax", "paired_noise"), default="root_minmax")
+    parser.add_argument("--ordered-listwise-elapsed-floor-seconds", type=float, default=1.0)
     return parser
+
+
+def _validate_elapsed_target(mode: str, floor_seconds: float) -> None:
+    if mode not in ("root_minmax", "paired_noise"):
+        raise ValueError("ordered_listwise_elapsed_mode must be root_minmax or paired_noise.")
+    if not math.isfinite(floor_seconds) or floor_seconds <= 0:
+        raise ValueError("ordered_listwise_elapsed_floor_seconds must be finite and positive.")
 
 
 def _summary_path(parent: pathlib.Path, value: str) -> pathlib.Path:
@@ -71,7 +81,10 @@ def build_train_command(
     output_dir: pathlib.Path,
     resume_params: pathlib.Path,
     split_manifest: pathlib.Path,
+    ordered_listwise_elapsed_mode: str = "root_minmax",
+    ordered_listwise_elapsed_floor_seconds: float = 1.0,
 ) -> list[str]:
+    _validate_elapsed_target(ordered_listwise_elapsed_mode, ordered_listwise_elapsed_floor_seconds)
     command = post_breadth.build_train_command(
         python=python,
         train_script=train_script,
@@ -88,6 +101,11 @@ def build_train_command(
         "--early-stopping-patience-logs": "8",
     }.items():
         command[command.index(option) + 1] = value
+    if ordered_listwise_elapsed_mode != "root_minmax" or ordered_listwise_elapsed_floor_seconds != 1.0:
+        command.extend((
+            "--ordered-listwise-elapsed-mode", ordered_listwise_elapsed_mode,
+            "--ordered-listwise-elapsed-floor-seconds", str(ordered_listwise_elapsed_floor_seconds),
+        ))
     return command
 
 
@@ -128,6 +146,7 @@ def stop_policy_server(name: str, timeout_seconds: float = 60.0) -> bool:
 
 
 def main(args: argparse.Namespace) -> None:
+    _validate_elapsed_target(args.ordered_listwise_elapsed_mode, args.ordered_listwise_elapsed_floor_seconds)
     collection_path = pathlib.Path(args.collection_summary).resolve()
     collection, split_manifest, data_dirs = load_collection(collection_path)
     resume_dir = pathlib.Path(args.resume_predictor_dir).resolve()
@@ -140,9 +159,6 @@ def main(args: argparse.Namespace) -> None:
     if not python.is_file() or not train_script.is_file():
         raise FileNotFoundError("Python executable or predictor training script is missing.")
 
-    output_dir.mkdir(parents=True)
-    _status(output_dir, "stopping_policy_server")
-    server_stopped = stop_policy_server(args.policy_server_tmux)
     command = build_train_command(
         python=python,
         train_script=train_script,
@@ -150,7 +166,21 @@ def main(args: argparse.Namespace) -> None:
         output_dir=output_dir,
         resume_params=resume_params,
         split_manifest=split_manifest,
+        ordered_listwise_elapsed_mode=args.ordered_listwise_elapsed_mode,
+        ordered_listwise_elapsed_floor_seconds=args.ordered_listwise_elapsed_floor_seconds,
     )
+    elapsed_target = {
+        "ordered_listwise_elapsed_mode": args.ordered_listwise_elapsed_mode,
+        "ordered_listwise_elapsed_floor_seconds": args.ordered_listwise_elapsed_floor_seconds,
+    }
+    output_dir.mkdir(parents=True)
+    post_breadth._write_json(output_dir / "run_config.json", {  # noqa: SLF001
+        "collection_summary": str(collection_path), "resume_predictor_dir": str(resume_dir),
+        "split_manifest": str(split_manifest), "data_dirs": [str(path) for path in data_dirs],
+        "policy_server_tmux": args.policy_server_tmux, "command": command, **elapsed_target,
+    })
+    _status(output_dir, "stopping_policy_server")
+    server_stopped = stop_policy_server(args.policy_server_tmux)
     _status(output_dir, "training", command=command)
     with (output_dir / "train.log").open("x", encoding="utf-8") as log:
         completed = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False)
@@ -168,6 +198,8 @@ def main(args: argparse.Namespace) -> None:
         or [pathlib.Path(value).resolve() for value in training_summary.get("dataset_inputs", ())] != data_dirs
         or not config.get("paired_distribution_heads")
         or not config.get("ordered_continuation_head")
+        or training_summary.get("ordered_listwise_elapsed_mode", "root_minmax") != args.ordered_listwise_elapsed_mode
+        or training_summary.get("ordered_listwise_elapsed_floor_seconds", 1.0) != args.ordered_listwise_elapsed_floor_seconds
     ):
         _status(output_dir, "failed", reason="training_summary_contract")
         raise ValueError("Dynamic fine-tune training summary does not match the requested contract.")
@@ -184,6 +216,7 @@ def main(args: argparse.Namespace) -> None:
         "training_summary": str(output_dir / "summary.json"),
         "policy_server_stopped": server_stopped,
         "calibration_or_gate_run": False,
+        **elapsed_target,
     }
     post_breadth._write_json(output_dir / "finetune_summary.json", finetune_summary)  # noqa: SLF001
     _status(output_dir, "complete", summary=str(output_dir / "finetune_summary.json"))

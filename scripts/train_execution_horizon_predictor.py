@@ -103,6 +103,8 @@ class Args:
     loss_faster_long: float = 0.0
     loss_ordered_listwise: float = 0.0
     ordered_listwise_elapsed_temperature: float = 0.25
+    ordered_listwise_elapsed_mode: str = "root_minmax"
+    ordered_listwise_elapsed_floor_seconds: float = 1.0
 
     success_failure_multiplier: float = 4.0
     timeout_positive_multiplier: float = 4.0
@@ -208,6 +210,13 @@ def _validate_paired_args(args: Args) -> None:
         raise ValueError("--train-candidate-readout-only requires positive --loss-ordered-listwise.")
     if args.loss_ordered_listwise > 0 and not args.ordered_continuation_head:
         raise ValueError("--loss-ordered-listwise requires --ordered-continuation-head.")
+    if args.ordered_listwise_elapsed_mode not in ("root_minmax", "paired_noise"):
+        raise ValueError("ordered_listwise_elapsed_mode must be root_minmax or paired_noise.")
+    if (
+        not math.isfinite(args.ordered_listwise_elapsed_floor_seconds)
+        or args.ordered_listwise_elapsed_floor_seconds <= 0
+    ):
+        raise ValueError("ordered_listwise_elapsed_floor_seconds must be finite and positive.")
     if (
         not math.isfinite(args.ordered_listwise_elapsed_temperature)
         or args.ordered_listwise_elapsed_temperature <= 0
@@ -802,6 +811,8 @@ def main(args: Args) -> None:
                 remaining_steps_scale=predictor_config.remaining_steps_scale,
                 elapsed_advantage_scale=predictor_config.elapsed_advantage_scale,
                 ordered_listwise_elapsed_temperature=args.ordered_listwise_elapsed_temperature,
+                ordered_listwise_elapsed_mode=args.ordered_listwise_elapsed_mode,
+                ordered_listwise_elapsed_floor_seconds=args.ordered_listwise_elapsed_floor_seconds,
                 candidate_horizons=predictor_config.candidate_horizons,
                 reference_horizon=predictor_config.reference_horizon,
             )
@@ -821,6 +832,8 @@ def main(args: Args) -> None:
             remaining_steps_scale=predictor_config.remaining_steps_scale,
             elapsed_advantage_scale=predictor_config.elapsed_advantage_scale,
             ordered_listwise_elapsed_temperature=args.ordered_listwise_elapsed_temperature,
+            ordered_listwise_elapsed_mode=args.ordered_listwise_elapsed_mode,
+            ordered_listwise_elapsed_floor_seconds=args.ordered_listwise_elapsed_floor_seconds,
             candidate_horizons=predictor_config.candidate_horizons,
             reference_horizon=predictor_config.reference_horizon,
         )
@@ -1207,6 +1220,9 @@ def main(args: Args) -> None:
         "initial_validation_in_checkpoint_selection": args.train_candidate_readout_only and args.select_best_validation,
         "stopped_early": stopped_early,
         "loss_weights": dataclasses.asdict(weights),
+        "ordered_listwise_elapsed_mode": args.ordered_listwise_elapsed_mode,
+        "ordered_listwise_elapsed_floor_seconds": args.ordered_listwise_elapsed_floor_seconds,
+        "ordered_listwise_elapsed_temperature": args.ordered_listwise_elapsed_temperature,
         "label_weights": dataclasses.asdict(label_weights),
         "predictor_config": dataclasses.asdict(predictor_config),
         "resume": resume_report,

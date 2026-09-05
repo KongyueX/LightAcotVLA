@@ -190,6 +190,39 @@ def test_ordered_listwise_requires_explicit_continuation_head(tmp_path) -> None:
     assert not (tmp_path / "out").exists()
 
 
+def test_ordered_elapsed_target_cli_defaults_and_paired_noise() -> None:
+    default = trainer.Args(dataset=("dataset.h5",), output_dir="output")
+    assert default.ordered_listwise_elapsed_mode == "root_minmax"
+    assert default.ordered_listwise_elapsed_floor_seconds == 1.0
+    args = trainer.tyro.cli(
+        trainer.Args,
+        args=[
+            "--dataset", "dataset.h5", "--output-dir", "output",
+            "--ordered-listwise-elapsed-mode", "paired_noise",
+            "--ordered-listwise-elapsed-floor-seconds", "1.5",
+        ],
+    )
+    trainer._validate_paired_args(args)  # noqa: SLF001
+    assert args.ordered_listwise_elapsed_mode == "paired_noise"
+    assert args.ordered_listwise_elapsed_floor_seconds == 1.5
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("ordered_listwise_elapsed_mode", "unknown"),
+        ("ordered_listwise_elapsed_floor_seconds", 0.0),
+        ("ordered_listwise_elapsed_floor_seconds", -1.0),
+        ("ordered_listwise_elapsed_floor_seconds", float("nan")),
+        ("ordered_listwise_elapsed_floor_seconds", float("inf")),
+    ],
+)
+def test_ordered_elapsed_target_rejects_invalid_mode_or_floor(field, value) -> None:
+    args = trainer.Args(dataset=("dataset.h5",), output_dir="output", **{field: value})
+    with pytest.raises(ValueError, match=field):
+        trainer._validate_paired_args(args)  # noqa: SLF001
+
+
 def test_ordered_continuation_strict_resume_keeps_existing_parameter_tree(monkeypatch) -> None:
     source = trainer.ExecutionHorizonPredictor(_predictor_config(), rngs=nnx.Rngs(7))
     loaded = {"execution_horizon_predictor": nnx.state(source, nnx.Param).to_pure_dict()}
