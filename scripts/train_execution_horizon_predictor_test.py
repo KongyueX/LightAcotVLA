@@ -6,8 +6,10 @@ import pathlib
 import sys
 
 from flax import nnx
+import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 import pytest
 
 _SCRIPT = pathlib.Path(__file__).with_name("train_execution_horizon_predictor.py")
@@ -301,8 +303,9 @@ def test_resume_legacy_paired_heads_rejects_shared_shape_mismatch() -> None:
 
 
 @pytest.mark.parametrize("target_depth", [2, 4])
+@pytest.mark.parametrize("readout", ["candidate", "candidate_residual"])
 def test_candidate_readout_resume_preserves_shared_weights_and_initializes_new_parameters(
-    monkeypatch, target_depth
+    monkeypatch, target_depth, readout
 ) -> None:
     source = trainer.ExecutionHorizonPredictor(
         _predictor_config(ordered_continuation=True, paired_distribution=True), rngs=nnx.Rngs(7)
@@ -314,7 +317,7 @@ def test_candidate_readout_resume_preserves_shared_weights_and_initializes_new_p
         _predictor_config(
             ordered_continuation=True,
             paired_distribution=True,
-            ordered_readout="candidate",
+            ordered_readout=readout,
             temporal_layers=target_depth,
         ),
         rngs=nnx.Rngs(11),
@@ -331,7 +334,10 @@ def test_candidate_readout_resume_preserves_shared_weights_and_initializes_new_p
     tokens = jnp.arange(2 * 25 * 32, dtype=jnp.float32).reshape(2, 25, 32) / 100
     for layer in restored.temporal_layers[2:]:
         np.testing.assert_array_equal(layer(tokens), tokens)
-    assert report["mode"] == "global_to_candidate_readout"
+    expected_mode = (
+        "global_to_candidate_residual_readout" if readout == "candidate_residual" else "global_to_candidate_readout"
+    )
+    assert report["mode"] == expected_mode
     assert report["identity_initialized_layers"] == list(range(2, target_depth))
 
 
@@ -379,3 +385,64 @@ def test_candidate_readout_cli_and_migration_modes_are_explicit() -> None:
     )
     with pytest.raises(ValueError, match="mutually exclusive"):
         trainer._validate_paired_args(args)  # noqa: SLF001
+
+
+def test_candidate_readout_only_cli_requires_residual_and_ordered_loss() -> None:
+    args = trainer.tyro.cli(
+        trainer.Args,
+        args=[
+            "--dataset", "dataset.h5", "--output-dir", "output",
+            "--temporal-backbone", "transformer", "--ordered-continuation-head",
+            "--ordered-readout", "candidate_residual", "--resume-params", "global/params",
+            "--resume-candidate-readout", "--train-candidate-readout-only", "--loss-ordered-listwise", "2",
+        ],
+    )
+    trainer._validate_paired_args(args)  # noqa: SLF001
+    assert args.train_candidate_readout_only
+    with pytest.raises(ValueError, match="requires --ordered-readout candidate_residual"):
+        trainer._validate_paired_args(trainer.dataclasses.replace(args, ordered_readout="candidate"))  # noqa: SLF001
+    with pytest.raises(ValueError, match="positive --loss-ordered-listwise"):
+        trainer._validate_paired_args(trainer.dataclasses.replace(args, loss_ordered_listwise=0))  # noqa: SLF001
+
+
+def test_candidate_readout_only_update_preserves_frozen_parameters_with_weight_decay() -> None:
+    module = trainer.ExecutionHorizonPredictor(
+        _predictor_config(ordered_continuation=True, ordered_readout="candidate_residual"), rngs=nnx.Rngs(7)
+    )
+    args = trainer.Args(dataset=("data.h5",), output_dir="out", train_candidate_readout_only=True)
+    trainable_filter = trainer._trainable_filter(args)  # noqa: SLF001
+    optimizer = optax.adamw(1e-3, weight_decay=1.0)
+    state = nnx.state(module)
+    before = {path: np.asarray(variable.value).copy() for path, variable in state.flat_state().items()}
+    optimizer_state = optimizer.init(state.filter(trainable_filter))
+    inputs = {
+        "prefix_feature": jnp.zeros((1, 16)),
+        "prefix_tokens": jnp.zeros((1, 4, 16)),
+        "prefix_mask": jnp.ones((1, 4), dtype=jnp.bool_),
+        "state": jnp.zeros((1, 4)),
+        "coarse_actions": jnp.zeros((1, 15, 7)),
+        "final_actions": jnp.zeros((1, 25, 7)),
+        "previous_actions": jnp.zeros((1, 25, 7)),
+        "previous_h": jnp.asarray([10]),
+        "budget_balance": jnp.asarray([0.5]),
+        "episode_progress": jnp.asarray([0.25]),
+        "previous_valid": jnp.asarray([True]),
+    }
+
+    def loss_fn(candidate):
+        logits = candidate(**inputs)["ordered_continuation_logits"]
+        return jnp.mean(jax.nn.softplus(-logits)), {}
+
+    updated, _, metrics = trainer._update_predictor(  # noqa: SLF001
+        module, loss_fn, optimizer, optimizer_state, trainable_filter
+    )
+    updated_flat = updated.flat_state()
+    for path, value in before.items():
+        if path[0] != "candidate_readout":
+            np.testing.assert_array_equal(updated_flat[path].value, value)
+    assert float(metrics["gradient_norm"]) > 0
+    assert any(
+        not np.array_equal(updated_flat[path].value, value)
+        for path, value in before.items()
+        if path[0] == "candidate_readout"
+    )

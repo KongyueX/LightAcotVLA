@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         parser.add_argument(option, required=True)
     parser.add_argument("--temporal-layers", type=int, choices=(2, 4), default=2)
+    parser.add_argument("--ordered-readout", choices=("candidate", "candidate_residual"), default="candidate")
     parser.add_argument("--python")
     return parser
 
@@ -38,6 +39,7 @@ def build_train_command(
     resume_params: pathlib.Path,
     split_manifest: pathlib.Path,
     temporal_layers: int = 2,
+    ordered_readout: str = "candidate",
 ) -> list[str]:
     command = dynamic.build_train_command(
         python=python,
@@ -48,7 +50,9 @@ def build_train_command(
         split_manifest=split_manifest,
     )
     command[command.index("--temporal-layers") + 1] = str(temporal_layers)
-    command.extend(("--ordered-readout", "candidate", "--resume-candidate-readout"))
+    command.extend(("--ordered-readout", ordered_readout, "--resume-candidate-readout"))
+    if ordered_readout == "candidate_residual":
+        command.append("--train-candidate-readout-only")
     return command
 
 
@@ -74,6 +78,8 @@ def _run(args: argparse.Namespace, output_dir: pathlib.Path) -> None:
     resume_dir = pathlib.Path(args.resume_predictor_dir).resolve()
     resume_params = dynamic.validate_resume_predictor(resume_dir)
     baseline_dir = pathlib.Path(args.baseline_predictor_dir).resolve()
+    if args.ordered_readout == "candidate_residual" and (resume_dir != baseline_dir or args.temporal_layers != 2):
+        raise ValueError("Residual-only comparison must start from the two-layer reference predictor.")
     baseline_summary, baseline_objective = _read_validation_objective(
         baseline_dir, data_dirs=data_dirs, split_manifest=split_manifest
     )
@@ -93,6 +99,7 @@ def _run(args: argparse.Namespace, output_dir: pathlib.Path) -> None:
         resume_params=resume_params,
         split_manifest=split_manifest,
         temporal_layers=args.temporal_layers,
+        ordered_readout=args.ordered_readout,
     )
     run_config = {
         "purpose": "candidate_readout_dynamic_comparison",
@@ -103,7 +110,8 @@ def _run(args: argparse.Namespace, output_dir: pathlib.Path) -> None:
         "resume_predictor_dir": str(resume_dir),
         "baseline_predictor_dir": str(baseline_dir),
         "predictor_dir": str(predictor_dir),
-        "ordered_readout": "candidate",
+        "ordered_readout": args.ordered_readout,
+        "train_candidate_readout_only": args.ordered_readout == "candidate_residual",
         "temporal_layers": args.temporal_layers,
         "selection_split": "early_stop",
         "selection_objective": "ordered_listwise_nll",
@@ -123,7 +131,7 @@ def _run(args: argparse.Namespace, output_dir: pathlib.Path) -> None:
         predictor_dir, data_dirs=data_dirs, split_manifest=split_manifest
     )
     config = training_summary.get("predictor_config", {})
-    if config.get("ordered_readout") != "candidate" or config.get("temporal_layers") != args.temporal_layers:
+    if config.get("ordered_readout") != args.ordered_readout or config.get("temporal_layers") != args.temporal_layers:
         raise ValueError("Completed predictor does not use the requested candidate-readout architecture.")
     summary = {
         "status": "complete",

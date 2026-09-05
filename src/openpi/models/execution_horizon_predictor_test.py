@@ -113,11 +113,12 @@ def test_predictor_config_rejects_ordered_continuation_on_legacy_backbone():
         predictor_lib.ExecutionHorizonPredictorConfig(ordered_continuation_head=True)
 
 
-def test_candidate_readout_requires_transformer_and_ordered_head():
-    with pytest.raises(ValueError, match="candidate ordered_readout"):
-        predictor_lib.ExecutionHorizonPredictorConfig(ordered_readout="candidate")
-    with pytest.raises(ValueError, match="candidate ordered_readout"):
-        dataclasses.replace(_transformer_config(), ordered_readout="candidate")
+@pytest.mark.parametrize("readout", ["candidate", "candidate_residual"])
+def test_candidate_readout_requires_transformer_and_ordered_head(readout):
+    with pytest.raises(ValueError, match=f"{readout} ordered_readout"):
+        predictor_lib.ExecutionHorizonPredictorConfig(ordered_readout=readout)
+    with pytest.raises(ValueError, match=f"{readout} ordered_readout"):
+        dataclasses.replace(_transformer_config(), ordered_readout=readout)
     with pytest.raises(ValueError, match="ordered_readout must"):
         dataclasses.replace(_transformer_config(), ordered_readout="unknown")
 
@@ -265,6 +266,37 @@ def test_candidate_readout_preserves_global_heads_and_has_finite_gradients():
     assert np.isfinite(np.asarray(loss))
     assert all(np.all(np.isfinite(np.asarray(leaf))) for leaf in jax.tree.leaves(gradients))
     assert any(np.any(np.asarray(leaf) != 0) for leaf in jax.tree.leaves(gradients["candidate_readout"]))
+
+
+def test_candidate_residual_starts_exactly_as_global_and_adds_the_correction():
+    global_config = dataclasses.replace(_transformer_config(), ordered_continuation_head=True)
+    global_module = predictor_lib.ExecutionHorizonPredictor(global_config, rngs=nnx.Rngs(7))
+    residual_module = predictor_lib.ExecutionHorizonPredictor(
+        dataclasses.replace(global_config, ordered_readout="candidate_residual"),
+        rngs=nnx.Rngs(7),
+    )
+    global_state = nnx.state(global_module, nnx.Param).flat_state()
+    residual_state = nnx.state(residual_module, nnx.Param).flat_state()
+    for path, value in global_state.items():
+        np.testing.assert_array_equal(value.value, residual_state[path].value)
+    projection = residual_module.candidate_readout.continuation_out
+    np.testing.assert_array_equal(projection.kernel.value, jnp.zeros_like(projection.kernel.value))
+    np.testing.assert_array_equal(projection.bias.value, jnp.zeros_like(projection.bias.value))
+
+    inputs = _inputs()
+    inputs["final_actions"] = jax.random.normal(jax.random.key(2), inputs["final_actions"].shape)
+    global_outputs = global_module(**inputs)
+    residual_outputs = residual_module(**inputs)
+    assert global_outputs.keys() == residual_outputs.keys()
+    for key in global_outputs:
+        np.testing.assert_array_equal(np.asarray(global_outputs[key]), np.asarray(residual_outputs[key]))
+
+    projection.bias.value = jnp.full_like(projection.bias.value, 0.25)
+    changed_outputs = residual_module(**inputs)
+    np.testing.assert_array_equal(
+        changed_outputs["ordered_continuation_logits"],
+        global_outputs["raw_h_ordinal_logits"] + 0.25,
+    )
 
 
 def test_new_transformer_block_can_initialize_as_identity():

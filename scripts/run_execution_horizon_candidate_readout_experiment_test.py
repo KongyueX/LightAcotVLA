@@ -24,3 +24,9 @@ def test_candidate_readout_keeps_dynamic_baseline_training_protocol() -> None:
     expected = list(default_command)
     expected[expected.index("--temporal-layers") + 1] = "4"
     assert deeper == expected
+
+    residual = candidate.build_train_command(**arguments, ordered_readout="candidate_residual")
+    assert residual == [
+        *baseline, "--ordered-readout", "candidate_residual", "--resume-candidate-readout",
+        "--train-candidate-readout-only",
+    ]

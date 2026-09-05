@@ -41,7 +41,7 @@ class ExecutionHorizonPredictorConfig:
     paired_advantage_heads: bool = False
     paired_distribution_heads: bool = False
     ordered_continuation_head: bool = False
-    ordered_readout: Literal["global", "candidate"] = "global"
+    ordered_readout: Literal["global", "candidate", "candidate_residual"] = "global"
     remaining_calls_scale: float = 64.0
     remaining_steps_scale: float = 512.0
     elapsed_advantage_scale: float = 1.0
@@ -101,12 +101,12 @@ class ExecutionHorizonPredictorConfig:
             raise ValueError("paired_distribution_heads are supported only by the transformer backbone.")
         if self.ordered_continuation_head and self.temporal_backbone != "transformer":
             raise ValueError("ordered_continuation_head is supported only by the transformer backbone.")
-        if self.ordered_readout not in {"global", "candidate"}:
-            raise ValueError("ordered_readout must be global or candidate.")
-        if self.ordered_readout == "candidate" and (
+        if self.ordered_readout not in {"global", "candidate", "candidate_residual"}:
+            raise ValueError("ordered_readout must be global, candidate, or candidate_residual.")
+        if self.ordered_readout in {"candidate", "candidate_residual"} and (
             self.temporal_backbone != "transformer" or not self.ordered_continuation_head
         ):
-            raise ValueError("candidate ordered_readout requires the transformer ordered_continuation_head.")
+            raise ValueError(f"{self.ordered_readout} ordered_readout requires the transformer ordered_continuation_head.")
         if self.paired_advantage_heads and self.paired_distribution_heads:
             raise ValueError("paired_advantage_heads and paired_distribution_heads are mutually exclusive.")
         if not math.isfinite(self.elapsed_advantage_scale) or self.elapsed_advantage_scale <= 0:
@@ -545,13 +545,20 @@ class ExecutionHorizonPredictor(nnx.Module):
             self.elapsed_advantage_log_scale_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.calls_advantage_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.calls_advantage_log_scale_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
-        if config.ordered_readout == "candidate":
+        if config.ordered_readout in {"candidate", "candidate_residual"}:
             self.candidate_readout = _CandidateReadout(
                 h,
                 config.candidate_horizons,
                 rngs=rngs,
                 param_dtype=param_dtype,
             )
+            if config.ordered_readout == "candidate_residual":
+                self.candidate_readout.continuation_out.kernel.value = jnp.zeros_like(
+                    self.candidate_readout.continuation_out.kernel.value
+                )
+                self.candidate_readout.continuation_out.bias.value = jnp.zeros_like(
+                    self.candidate_readout.continuation_out.bias.value
+                )
 
     def _align_coarse(self, coarse_actions: jax.Array) -> jax.Array:
         if self.config.temporal_backbone == "local_mlp":
@@ -760,11 +767,11 @@ class ExecutionHorizonPredictor(nnx.Module):
             "overlap_consistency": consistency[..., 0],
         }
         if cfg.ordered_continuation_head:
-            continuation_logits = (
-                self.candidate_readout(tokens, context)
-                if cfg.ordered_readout == "candidate"
-                else raw_h_ordinal_logits
-            )
+            continuation_logits = raw_h_ordinal_logits
+            if cfg.ordered_readout == "candidate":
+                continuation_logits = self.candidate_readout(tokens, context)
+            elif cfg.ordered_readout == "candidate_residual":
+                continuation_logits = continuation_logits + self.candidate_readout(tokens, context)
             ordered_log_probability, ordered_probability = ordered_continuation_distribution(continuation_logits)
             ordered_index = jnp.argmax(ordered_probability, axis=-1)
             ordered_selected_h = jnp.asarray(cfg.candidate_horizons, dtype=jnp.int32)[ordered_index]

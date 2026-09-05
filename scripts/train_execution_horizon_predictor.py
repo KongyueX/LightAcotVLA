@@ -6,6 +6,7 @@ the standalone predictor is optimized and written as an Orbax sidecar.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import dataclasses
 import json
 import math
@@ -69,6 +70,7 @@ class Args:
     ordered_readout: str = "global"
     resume_legacy_paired_heads: bool = False
     resume_candidate_readout: bool = False
+    train_candidate_readout_only: bool = False
     physical_action_dim: int = 7
     minimum_trials_per_candidate: int = 3
     selection_false_long_upper_bound: float = 0.05
@@ -196,10 +198,14 @@ def _validate_paired_args(args: Args) -> None:
         raise ValueError("paired_distribution_heads require temporal_backbone=transformer.")
     if args.ordered_continuation_head and args.temporal_backbone != "transformer":
         raise ValueError("ordered_continuation_head requires temporal_backbone=transformer.")
-    if args.ordered_readout not in ("global", "candidate"):
-        raise ValueError("ordered_readout must be global or candidate.")
-    if args.ordered_readout == "candidate" and not args.ordered_continuation_head:
-        raise ValueError("--ordered-readout candidate requires --ordered-continuation-head.")
+    if args.ordered_readout not in ("global", "candidate", "candidate_residual"):
+        raise ValueError("ordered_readout must be global, candidate or candidate_residual.")
+    if args.ordered_readout != "global" and not args.ordered_continuation_head:
+        raise ValueError("Candidate readouts require --ordered-continuation-head.")
+    if args.train_candidate_readout_only and args.ordered_readout != "candidate_residual":
+        raise ValueError("--train-candidate-readout-only requires --ordered-readout candidate_residual.")
+    if args.train_candidate_readout_only and args.loss_ordered_listwise <= 0:
+        raise ValueError("--train-candidate-readout-only requires positive --loss-ordered-listwise.")
     if args.loss_ordered_listwise > 0 and not args.ordered_continuation_head:
         raise ValueError("--loss-ordered-listwise requires --ordered-continuation-head.")
     if (
@@ -217,10 +223,34 @@ def _validate_paired_args(args: Args) -> None:
         raise ValueError("--resume-legacy-paired-heads requires --resume-params.")
     if args.resume_candidate_readout and args.resume_legacy_paired_heads:
         raise ValueError("--resume-candidate-readout and --resume-legacy-paired-heads are mutually exclusive.")
-    if args.resume_candidate_readout and args.ordered_readout != "candidate":
-        raise ValueError("--resume-candidate-readout requires --ordered-readout candidate.")
+    if args.resume_candidate_readout and args.ordered_readout not in ("candidate", "candidate_residual"):
+        raise ValueError("--resume-candidate-readout requires a candidate readout.")
     if args.resume_candidate_readout and args.resume_params is None:
         raise ValueError("--resume-candidate-readout requires --resume-params.")
+
+
+def _is_candidate_readout(path: tuple[Any, ...], _value: Any) -> bool:
+    return bool(path) and path[0] == "candidate_readout"
+
+
+def _trainable_filter(args: Args) -> nnx.filterlib.Filter:
+    return nnx.All(nnx.Param, _is_candidate_readout) if args.train_candidate_readout_only else nnx.Param
+
+
+def _update_predictor(
+    module: ExecutionHorizonPredictor,
+    loss_fn: Callable[[ExecutionHorizonPredictor], tuple[jax.Array, dict[str, jax.Array]]],
+    optimizer: optax.GradientTransformation,
+    optimizer_state: optax.OptState,
+    trainable_filter: nnx.filterlib.Filter,
+) -> tuple[nnx.State, optax.OptState, dict[str, jax.Array]]:
+    diff_state = nnx.DiffState(0, trainable_filter)
+    (loss, metrics), gradients = nnx.value_and_grad(loss_fn, argnums=diff_state, has_aux=True)(module)
+    trainable_params = nnx.state(module, trainable_filter)
+    updates, next_optimizer_state = optimizer.update(gradients, optimizer_state, trainable_params)
+    nnx.update(module, optax.apply_updates(trainable_params, updates))
+    metrics = {**metrics, "loss": loss, "gradient_norm": optax.global_norm(gradients)}
+    return nnx.state(module), next_optimizer_state, metrics
 
 
 def _split_indices(arrays: dict[str, np.ndarray], args: Args) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -432,7 +462,10 @@ def _migrate_candidate_readout_state(
     loaded: dict[str, Any],
 ) -> tuple[nnx.State, dict[str, Any]]:
     """Reuse a global-readout sidecar and initialize the candidate readout independently."""
-    if module.config.ordered_readout != "candidate" or not module.config.ordered_continuation_head:
+    if (
+        module.config.ordered_readout not in ("candidate", "candidate_residual")
+        or not module.config.ordered_continuation_head
+    ):
         raise ValueError("Candidate-readout migration requires an ordered candidate-readout predictor.")
     loaded_flat = traverse_util.flatten_dict(loaded)
     old_layer_indices = {path[1] for path in loaded_flat if path[0] == "temporal_layers"}
@@ -466,7 +499,11 @@ def _migrate_candidate_readout_state(
     }
     state.replace_by_pure_dict(traverse_util.unflatten_dict(merged_flat))
     return state, {
-        "mode": "global_to_candidate_readout",
+        "mode": (
+            "global_to_candidate_residual_readout"
+            if module.config.ordered_readout == "candidate_residual"
+            else "global_to_candidate_readout"
+        ),
         "enabled": True,
         "shared_parameter_leaves": len(shared_paths),
         "initialized_parameter_leaves": sorted(_path_text(path) for path in new_paths),
@@ -736,12 +773,13 @@ def main(args: Args) -> None:
             resume_candidate_readout=args.resume_candidate_readout,
         )
     graphdef, params = nnx.split(module)
+    trainable_filter = _trainable_filter(args)
     schedule = optax.cosine_decay_schedule(args.learning_rate, args.train_steps, alpha=0.1)
     optimizer = optax.chain(
         optax.clip_by_global_norm(args.gradient_clip_norm),
         optax.adamw(schedule, weight_decay=args.weight_decay),
     )
-    optimizer_state = optimizer.init(params)
+    optimizer_state = optimizer.init(params.filter(trainable_filter))
     weights = _loss_weights(args)
     label_weights = _label_weights(args)
 
@@ -768,11 +806,7 @@ def main(args: Args) -> None:
                 reference_horizon=predictor_config.reference_horizon,
             )
 
-        (loss, metrics), gradients = nnx.value_and_grad(loss_fn, has_aux=True)(current_module)
-        updates, next_optimizer_state = optimizer.update(gradients, current_optimizer_state, current_params)
-        updated_params = optax.apply_updates(current_params, updates)
-        metrics = {**metrics, "loss": loss, "gradient_norm": optax.global_norm(gradients)}
-        return updated_params, next_optimizer_state, metrics
+        return _update_predictor(current_module, loss_fn, optimizer, current_optimizer_state, trainable_filter)
 
     @jax.jit
     def validation_step(current_params: nnx.State, batch: dict[str, jax.Array]) -> dict[str, jax.Array]:
@@ -999,13 +1033,28 @@ def main(args: Args) -> None:
     best_long_coverage = -1.0
     best_selection_feasible = False
     baseline_success_brier: float | None = None
+    initial_validation_record: dict[str, Any] | None = None
     if args.temporal_backbone == "transformer":
         initial_validation = jax.device_get(validation_step(params, _batch(arrays, validation_indices)))
         baseline_success_brier = float(initial_validation["success_brier"])
+        if args.train_candidate_readout_only:
+            best_validation_loss = float(initial_validation["loss"])
+            best_validation_objective = float(initial_validation["ordered_listwise_nll"])
+            best_long_coverage = float(initial_validation["long_coverage"])
+            best_params = params
+            initial_validation_record = {
+                "step": 0,
+                "elapsed_seconds": time.monotonic() - start_time,
+                **{f"validation/{name}": float(value) for name, value in initial_validation.items()},
+            }
     logs_without_improvement = 0
     completed_steps = 0
     stopped_early = False
     with metrics_path.open("a") as metrics_file:
+        if initial_validation_record is not None:
+            metrics_file.write(json.dumps(initial_validation_record, sort_keys=True) + "\n")
+            metrics_file.flush()
+            print(json.dumps(initial_validation_record, sort_keys=True), flush=True)
         for step in range(1, args.train_steps + 1):
             sampled = rng.choice(
                 train_indices,
@@ -1118,6 +1167,7 @@ def main(args: Args) -> None:
         "status": "complete",
         "base_policy_loaded": False,
         "base_policy_frozen": True,
+        "train_candidate_readout_only": args.train_candidate_readout_only,
         "dataset_inputs": list(args.dataset),
         "num_records": len(arrays["task_id"]),
         "num_train_records": int(train_indices.size),
@@ -1154,6 +1204,7 @@ def main(args: Args) -> None:
         "best_long_coverage": best_long_coverage if args.temporal_backbone == "transformer" else None,
         "best_selection_feasible": best_selection_feasible if args.temporal_backbone == "transformer" else None,
         "initial_validation_success_brier": baseline_success_brier,
+        "initial_validation_in_checkpoint_selection": args.train_candidate_readout_only and args.select_best_validation,
         "stopped_early": stopped_early,
         "loss_weights": dataclasses.asdict(weights),
         "label_weights": dataclasses.asdict(label_weights),
