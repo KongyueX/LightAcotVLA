@@ -369,6 +369,7 @@ class ACOTConfig(_model.BaseModelConfig):
     execution_horizon_paired_advantage_heads: bool = False
     execution_horizon_paired_distribution_heads: bool = False
     execution_horizon_ordered_continuation_head: bool = False
+    execution_horizon_ordered_readout: str = "global"
     execution_horizon_elapsed_advantage_scale: float = 1.0
     execution_horizon_calls_advantage_scale: float = 1.0
     execution_horizon_physical_action_dim: int = 7
@@ -417,6 +418,7 @@ class ACOTConfig(_model.BaseModelConfig):
                 paired_advantage_heads=self.execution_horizon_paired_advantage_heads,
                 paired_distribution_heads=self.execution_horizon_paired_distribution_heads,
                 ordered_continuation_head=self.execution_horizon_ordered_continuation_head,
+                ordered_readout=self.execution_horizon_ordered_readout,
                 elapsed_advantage_scale=self.execution_horizon_elapsed_advantage_scale,
                 calls_advantage_scale=self.execution_horizon_calls_advantage_scale,
             )
@@ -628,6 +630,7 @@ class ACOT_VLA(_model.BaseModel):
                     paired_advantage_heads=config.execution_horizon_paired_advantage_heads,
                     paired_distribution_heads=config.execution_horizon_paired_distribution_heads,
                     ordered_continuation_head=config.execution_horizon_ordered_continuation_head,
+                    ordered_readout=config.execution_horizon_ordered_readout,
                     elapsed_advantage_scale=config.execution_horizon_elapsed_advantage_scale,
                     calls_advantage_scale=config.execution_horizon_calls_advantage_scale,
                 ),

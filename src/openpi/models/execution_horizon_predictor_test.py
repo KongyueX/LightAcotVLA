@@ -113,6 +113,15 @@ def test_predictor_config_rejects_ordered_continuation_on_legacy_backbone():
         predictor_lib.ExecutionHorizonPredictorConfig(ordered_continuation_head=True)
 
 
+def test_candidate_readout_requires_transformer_and_ordered_head():
+    with pytest.raises(ValueError, match="candidate ordered_readout"):
+        predictor_lib.ExecutionHorizonPredictorConfig(ordered_readout="candidate")
+    with pytest.raises(ValueError, match="candidate ordered_readout"):
+        dataclasses.replace(_transformer_config(), ordered_readout="candidate")
+    with pytest.raises(ValueError, match="ordered_readout must"):
+        dataclasses.replace(_transformer_config(), ordered_readout="unknown")
+
+
 def test_predictor_config_rejects_both_paired_head_modes():
     with pytest.raises(ValueError, match="mutually exclusive"):
         dataclasses.replace(
@@ -198,6 +207,78 @@ def test_ordered_continuation_head_is_opt_in_and_reuses_ordinal_projection():
     default_state = nnx.state(default_module, nnx.Param).flat_state()
     ordered_state = nnx.state(ordered_module, nnx.Param).flat_state()
     assert default_state.keys() == ordered_state.keys()
+
+
+def test_candidate_readout_only_pools_the_encoded_prefix():
+    config = _transformer_config()
+    readout = predictor_lib._CandidateReadout(  # noqa: SLF001
+        config.hidden_dim,
+        config.candidate_horizons,
+        rngs=nnx.Rngs(7),
+        param_dtype=jnp.float32,
+    )
+    encoded = jax.random.normal(jax.random.key(1), (2, 25, config.hidden_dim))
+    context = jax.random.normal(jax.random.key(2), (2, config.hidden_dim))
+    changed_suffix = encoded.at[:, 10:].add(10.0)
+
+    original = readout.candidate_features(encoded, context)
+    changed = readout.candidate_features(changed_suffix, context)
+
+    np.testing.assert_array_equal(np.asarray(original[:, :2]), np.asarray(changed[:, :2]))
+    assert not np.allclose(np.asarray(original[:, 2:]), np.asarray(changed[:, 2:]))
+
+
+def test_candidate_readout_preserves_global_heads_and_has_finite_gradients():
+    global_config = dataclasses.replace(_transformer_config(), ordered_continuation_head=True)
+    global_module = predictor_lib.ExecutionHorizonPredictor(global_config, rngs=nnx.Rngs(7))
+    candidate_module = predictor_lib.ExecutionHorizonPredictor(
+        dataclasses.replace(global_config, ordered_readout="candidate"),
+        rngs=nnx.Rngs(7),
+    )
+    global_state = nnx.state(global_module, nnx.Param).flat_state()
+    candidate_state = nnx.state(candidate_module, nnx.Param).flat_state()
+    assert {path for path in candidate_state if path[0] != "candidate_readout"} == set(global_state)
+    for path, value in global_state.items():
+        np.testing.assert_array_equal(value.value, candidate_state[path].value)
+    global_outputs = global_module(**_inputs())
+    candidate_outputs = candidate_module(**_inputs())
+    assert candidate_outputs.keys() == global_outputs.keys()
+    for key in global_outputs:
+        if not key.startswith("ordered_"):
+            np.testing.assert_array_equal(np.asarray(global_outputs[key]), np.asarray(candidate_outputs[key]))
+    assert candidate_outputs["ordered_continuation_logits"].shape == (2, 4)
+    assert candidate_outputs["ordered_horizon_probability"].shape == (2, 5)
+    np.testing.assert_allclose(
+        np.asarray(candidate_outputs["ordered_horizon_probability"]).sum(axis=-1), 1.0, atol=1e-6
+    )
+    expected_h = np.asarray(global_config.candidate_horizons)[
+        np.argmax(np.asarray(candidate_outputs["ordered_horizon_probability"]), axis=-1)
+    ]
+    np.testing.assert_array_equal(candidate_outputs["ordered_selected_h"], expected_h)
+    graphdef, params = nnx.split(candidate_module)
+
+    def objective(current_params):
+        outputs = nnx.merge(graphdef, current_params)(**_inputs())
+        return -jnp.mean(outputs["ordered_horizon_log_probability"][:, -1])
+
+    loss, gradients = jax.value_and_grad(objective)(params)
+    assert np.isfinite(np.asarray(loss))
+    assert all(np.all(np.isfinite(np.asarray(leaf))) for leaf in jax.tree.leaves(gradients))
+    assert any(np.any(np.asarray(leaf) != 0) for leaf in jax.tree.leaves(gradients["candidate_readout"]))
+
+
+def test_new_transformer_block_can_initialize_as_identity():
+    block = predictor_lib._TransformerBlock(  # noqa: SLF001
+        32,
+        4,
+        4,
+        rngs=nnx.Rngs(7),
+        param_dtype=jnp.float32,
+    )
+    tokens = jax.random.normal(jax.random.key(1), (2, 29, 32))
+    block.initialize_identity()
+
+    np.testing.assert_array_equal(np.asarray(block(tokens)), np.asarray(tokens))
 
 
 def test_success_first_listwise_target_uses_elapsed_only_within_best_success_tier():

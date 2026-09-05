@@ -20,6 +20,8 @@ def _predictor_config(
     legacy_paired: bool = False,
     paired_distribution: bool = False,
     ordered_continuation: bool = False,
+    ordered_readout: str = "global",
+    temporal_layers: int = 2,
 ):
     return trainer.ExecutionHorizonPredictorConfig(
         prefix_feature_dim=16,
@@ -29,7 +31,7 @@ def _predictor_config(
         coarse_horizon=15,
         action_horizon=25,
         hidden_dim=32,
-        temporal_layers=2,
+        temporal_layers=temporal_layers,
         temporal_backbone="transformer",
         num_heads=4,
         candidate_horizons=(5, 10, 15, 20, 25),
@@ -38,6 +40,7 @@ def _predictor_config(
         paired_advantage_heads=legacy_paired,
         paired_distribution_heads=paired_distribution,
         ordered_continuation_head=ordered_continuation,
+        ordered_readout=ordered_readout,
     )
 
 
@@ -295,3 +298,84 @@ def test_resume_legacy_paired_heads_rejects_shared_shape_mismatch() -> None:
 
     with pytest.raises(ValueError, match="shared parameter shape mismatches"):
         trainer._migrate_legacy_paired_state(target, state, loaded)  # noqa: SLF001
+
+
+@pytest.mark.parametrize("target_depth", [2, 4])
+def test_candidate_readout_resume_preserves_shared_weights_and_initializes_new_parameters(
+    monkeypatch, target_depth
+) -> None:
+    source = trainer.ExecutionHorizonPredictor(
+        _predictor_config(ordered_continuation=True, paired_distribution=True), rngs=nnx.Rngs(7)
+    )
+    source_state = nnx.state(source, nnx.Param)
+    loaded = {"execution_horizon_predictor": source_state.to_pure_dict()}
+    monkeypatch.setattr(trainer.model_lib, "restore_params", lambda *_args, **_kwargs: loaded)
+    target = trainer.ExecutionHorizonPredictor(
+        _predictor_config(
+            ordered_continuation=True,
+            paired_distribution=True,
+            ordered_readout="candidate",
+            temporal_layers=target_depth,
+        ),
+        rngs=nnx.Rngs(11),
+    )
+    initial_readout = nnx.state(target.candidate_readout, nnx.Param).flat_state()
+
+    restored, report = trainer._restore_predictor(target, "global/params", resume_candidate_readout=True)  # noqa: SLF001
+
+    restored_state = nnx.state(restored, nnx.Param).flat_state()
+    for path, variable in source_state.flat_state().items():
+        np.testing.assert_array_equal(restored_state[path].value, variable.value)
+    for path, variable in initial_readout.items():
+        np.testing.assert_array_equal(restored_state[("candidate_readout", *path)].value, variable.value)
+    tokens = jnp.arange(2 * 25 * 32, dtype=jnp.float32).reshape(2, 25, 32) / 100
+    for layer in restored.temporal_layers[2:]:
+        np.testing.assert_array_equal(layer(tokens), tokens)
+    assert report["mode"] == "global_to_candidate_readout"
+    assert report["identity_initialized_layers"] == list(range(2, target_depth))
+
+
+def test_candidate_readout_requires_explicit_migration_and_rejects_incompatible_weights(monkeypatch) -> None:
+    source = trainer.ExecutionHorizonPredictor(_predictor_config(ordered_continuation=True), rngs=nnx.Rngs(7))
+    loaded = nnx.state(source, nnx.Param).to_pure_dict()
+    monkeypatch.setattr(trainer.model_lib, "restore_params", lambda *_args, **_kwargs: loaded)
+    target = trainer.ExecutionHorizonPredictor(
+        _predictor_config(ordered_continuation=True, ordered_readout="candidate"), rngs=nnx.Rngs(11)
+    )
+    with pytest.raises(ValueError, match="Strict resume requires an identical parameter tree"):
+        trainer._restore_predictor(target, "global/params")  # noqa: SLF001
+    loaded["summary_proj"]["kernel"] = jnp.zeros((1, 1))
+    with pytest.raises(ValueError, match="shared parameter shape mismatches"):
+        trainer._restore_predictor(target, "global/params", resume_candidate_readout=True)  # noqa: SLF001
+
+
+def test_candidate_readout_cli_and_migration_modes_are_explicit() -> None:
+    args = trainer.tyro.cli(
+        trainer.Args,
+        args=[
+            "--dataset",
+            "dataset.h5",
+            "--output-dir",
+            "output",
+            "--temporal-backbone",
+            "transformer",
+            "--ordered-continuation-head",
+            "--ordered-readout",
+            "candidate",
+            "--resume-params",
+            "global/params",
+            "--resume-candidate-readout",
+        ],
+    )
+    trainer._validate_paired_args(args)  # noqa: SLF001
+    assert args.ordered_readout == "candidate"
+    assert args.resume_candidate_readout
+    args = trainer.dataclasses.replace(
+        args,
+        paired_distribution_heads=True,
+        loss_danger_rescue=1.0,
+        loss_paired_elapsed=1.0,
+        resume_legacy_paired_heads=True,
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        trainer._validate_paired_args(args)  # noqa: SLF001

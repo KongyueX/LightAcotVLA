@@ -66,7 +66,9 @@ class Args:
     paired_advantage_heads: bool = False
     paired_distribution_heads: bool = False
     ordered_continuation_head: bool = False
+    ordered_readout: str = "global"
     resume_legacy_paired_heads: bool = False
+    resume_candidate_readout: bool = False
     physical_action_dim: int = 7
     minimum_trials_per_candidate: int = 3
     selection_false_long_upper_bound: float = 0.05
@@ -194,6 +196,10 @@ def _validate_paired_args(args: Args) -> None:
         raise ValueError("paired_distribution_heads require temporal_backbone=transformer.")
     if args.ordered_continuation_head and args.temporal_backbone != "transformer":
         raise ValueError("ordered_continuation_head requires temporal_backbone=transformer.")
+    if args.ordered_readout not in ("global", "candidate"):
+        raise ValueError("ordered_readout must be global or candidate.")
+    if args.ordered_readout == "candidate" and not args.ordered_continuation_head:
+        raise ValueError("--ordered-readout candidate requires --ordered-continuation-head.")
     if args.loss_ordered_listwise > 0 and not args.ordered_continuation_head:
         raise ValueError("--loss-ordered-listwise requires --ordered-continuation-head.")
     if (
@@ -209,6 +215,12 @@ def _validate_paired_args(args: Args) -> None:
         raise ValueError("--resume-legacy-paired-heads is allowed only with --paired-distribution-heads.")
     if args.resume_legacy_paired_heads and args.resume_params is None:
         raise ValueError("--resume-legacy-paired-heads requires --resume-params.")
+    if args.resume_candidate_readout and args.resume_legacy_paired_heads:
+        raise ValueError("--resume-candidate-readout and --resume-legacy-paired-heads are mutually exclusive.")
+    if args.resume_candidate_readout and args.ordered_readout != "candidate":
+        raise ValueError("--resume-candidate-readout requires --ordered-readout candidate.")
+    if args.resume_candidate_readout and args.resume_params is None:
+        raise ValueError("--resume-candidate-readout requires --resume-params.")
 
 
 def _split_indices(arrays: dict[str, np.ndarray], args: Args) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -415,12 +427,64 @@ def _migrate_legacy_paired_state(
     return state, report
 
 
+def _migrate_candidate_readout_state(
+    module: ExecutionHorizonPredictor,
+    loaded: dict[str, Any],
+) -> tuple[nnx.State, dict[str, Any]]:
+    """Reuse a global-readout sidecar and initialize the candidate readout independently."""
+    if module.config.ordered_readout != "candidate" or not module.config.ordered_continuation_head:
+        raise ValueError("Candidate-readout migration requires an ordered candidate-readout predictor.")
+    loaded_flat = traverse_util.flatten_dict(loaded)
+    old_layer_indices = {path[1] for path in loaded_flat if path[0] == "temporal_layers"}
+    if not old_layer_indices or old_layer_indices != set(range(len(old_layer_indices))):
+        raise ValueError("The source checkpoint must contain contiguous temporal layers starting at zero.")
+    old_depth = len(old_layer_indices)
+    if old_depth > len(module.temporal_layers):
+        raise ValueError("Candidate-readout migration cannot remove source temporal layers.")
+
+    for layer in module.temporal_layers[old_depth:]:
+        layer.initialize_identity()
+    state = nnx.state(module)
+    expected_flat = traverse_util.flatten_dict(state.to_pure_dict())
+    candidate_paths = {path for path in expected_flat if path[0] == "candidate_readout"}
+    added_layer_paths = {path for path in expected_flat if path[0] == "temporal_layers" and path[1] >= old_depth}
+    new_paths = candidate_paths | added_layer_paths
+    missing = set(expected_flat).difference(loaded_flat)
+    unexpected = set(loaded_flat).difference(expected_flat)
+    if missing != new_paths or unexpected:
+        invalid = sorted(_path_text(path) for path in missing.symmetric_difference(new_paths) | unexpected)
+        raise ValueError(f"Candidate-readout checkpoint has non-migratable parameters: {invalid[:8]}")
+    shared_paths = set(expected_flat).intersection(loaded_flat)
+    mismatched = sorted(
+        _path_text(path) for path in shared_paths if np.shape(loaded_flat[path]) != np.shape(expected_flat[path])
+    )
+    if mismatched:
+        raise ValueError(f"Candidate-readout checkpoint has shared parameter shape mismatches: {mismatched[:8]}")
+    merged_flat = {
+        path: jnp.asarray(expected if path in new_paths else loaded_flat[path], dtype=expected.dtype)
+        for path, expected in expected_flat.items()
+    }
+    state.replace_by_pure_dict(traverse_util.unflatten_dict(merged_flat))
+    return state, {
+        "mode": "global_to_candidate_readout",
+        "enabled": True,
+        "shared_parameter_leaves": len(shared_paths),
+        "initialized_parameter_leaves": sorted(_path_text(path) for path in new_paths),
+        "source_temporal_layers": old_depth,
+        "target_temporal_layers": len(module.temporal_layers),
+        "identity_initialized_layers": list(range(old_depth, len(module.temporal_layers))),
+    }
+
+
 def _restore_predictor(
     module: ExecutionHorizonPredictor,
     params_path: str,
     *,
     resume_legacy_paired_heads: bool = False,
+    resume_candidate_readout: bool = False,
 ) -> tuple[ExecutionHorizonPredictor, dict[str, Any]]:
+    if resume_legacy_paired_heads and resume_candidate_readout:
+        raise ValueError("Legacy paired-head and candidate-readout migrations are mutually exclusive.")
     loaded = model_lib.restore_params(params_path, dtype=jnp.float32)
     # Orbax serializes integer keys used by NNX list containers (for example
     # temporal_layers/0) as strings.  Convert them back before replacing the
@@ -429,10 +493,22 @@ def _restore_predictor(
     loaded = model_lib.convert_str_keys_to_int(loaded)
     if "execution_horizon_predictor" in loaded:
         loaded = loaded["execution_horizon_predictor"]
+    if resume_candidate_readout:
+        state, report = _migrate_candidate_readout_state(module, loaded)
+        return nnx.merge(nnx.graphdef(module), state), report
     graphdef, state = nnx.split(module)
     if resume_legacy_paired_heads:
         state, report = _migrate_legacy_paired_state(module, state, loaded)
     else:
+        expected_flat = traverse_util.flatten_dict(state.to_pure_dict())
+        loaded_flat = traverse_util.flatten_dict(loaded)
+        if expected_flat.keys() != loaded_flat.keys():
+            raise ValueError("Strict resume requires an identical parameter tree; use an explicit migration option.")
+        mismatched = sorted(
+            _path_text(path) for path in expected_flat if np.shape(loaded_flat[path]) != np.shape(expected_flat[path])
+        )
+        if mismatched:
+            raise ValueError(f"Strict resume has parameter shape mismatches: {mismatched[:8]}")
         state.replace_by_pure_dict(loaded)
         report = {"mode": "strict", "enabled": False}
     return nnx.merge(graphdef, state), report
@@ -617,6 +693,7 @@ def main(args: Args) -> None:
         paired_advantage_heads=args.paired_advantage_heads,
         paired_distribution_heads=args.paired_distribution_heads,
         ordered_continuation_head=args.ordered_continuation_head,
+        ordered_readout=args.ordered_readout,
         elapsed_advantage_scale=elapsed_advantage_scale,
         calls_advantage_scale=calls_advantage_scale,
     )
@@ -656,6 +733,7 @@ def main(args: Args) -> None:
             module,
             args.resume_params,
             resume_legacy_paired_heads=args.resume_legacy_paired_heads,
+            resume_candidate_readout=args.resume_candidate_readout,
         )
     graphdef, params = nnx.split(module)
     schedule = optax.cosine_decay_schedule(args.learning_rate, args.train_steps, alpha=0.1)

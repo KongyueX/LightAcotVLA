@@ -41,6 +41,7 @@ class ExecutionHorizonPredictorConfig:
     paired_advantage_heads: bool = False
     paired_distribution_heads: bool = False
     ordered_continuation_head: bool = False
+    ordered_readout: Literal["global", "candidate"] = "global"
     remaining_calls_scale: float = 64.0
     remaining_steps_scale: float = 512.0
     elapsed_advantage_scale: float = 1.0
@@ -100,6 +101,12 @@ class ExecutionHorizonPredictorConfig:
             raise ValueError("paired_distribution_heads are supported only by the transformer backbone.")
         if self.ordered_continuation_head and self.temporal_backbone != "transformer":
             raise ValueError("ordered_continuation_head is supported only by the transformer backbone.")
+        if self.ordered_readout not in {"global", "candidate"}:
+            raise ValueError("ordered_readout must be global or candidate.")
+        if self.ordered_readout == "candidate" and (
+            self.temporal_backbone != "transformer" or not self.ordered_continuation_head
+        ):
+            raise ValueError("candidate ordered_readout requires the transformer ordered_continuation_head.")
         if self.paired_advantage_heads and self.paired_distribution_heads:
             raise ValueError("paired_advantage_heads and paired_distribution_heads are mutually exclusive.")
         if not math.isfinite(self.elapsed_advantage_scale) or self.elapsed_advantage_scale <= 0:
@@ -351,6 +358,12 @@ class _TransformerBlock(nnx.Module):
             param_dtype=param_dtype,
         )
 
+    def initialize_identity(self) -> None:
+        """Start an added pre-norm block as the identity when expanding depth."""
+        for projection in (self.attention.out, self.feed_forward_out):
+            projection.kernel.value = jnp.zeros_like(projection.kernel.value)
+            projection.bias.value = jnp.zeros_like(projection.bias.value)
+
     def __call__(self, tokens: jax.Array) -> jax.Array:
         normalized = self.attention_norm(tokens)
         tokens = tokens + self.attention(
@@ -392,6 +405,52 @@ class _LearnedQueryPool(nnx.Module):
         weights = jnp.where(mask, weights, 0.0)
         weights = weights / jnp.maximum(jnp.sum(weights, axis=-1, keepdims=True), 1e-6)
         return jnp.einsum("bqt,btd->bqd", weights, values)
+
+
+class _CandidateReadout(nnx.Module):
+    """Read encoded action prefixes and compare adjacent execution horizons."""
+
+    def __init__(
+        self,
+        hidden_dim: int,
+        candidate_horizons: tuple[int, ...],
+        *,
+        rngs: nnx.Rngs,
+        param_dtype: jnp.dtype,
+    ) -> None:
+        self.hidden_dim = hidden_dim
+        self.candidate_horizons = candidate_horizons
+        self.key_proj = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.value_proj = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        shape = (len(candidate_horizons), hidden_dim)
+        scale = jnp.sqrt(float(hidden_dim))
+        self.queries = nnx.Param(jax.random.normal(rngs.params(), shape, dtype=param_dtype) / scale)
+        self.horizon_embedding = nnx.Param(jax.random.normal(rngs.params(), shape, dtype=param_dtype) / scale)
+        self.feature_in = nnx.Linear(4 * hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.feature_out = nnx.Linear(hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.continuation_in = nnx.Linear(3 * hidden_dim, hidden_dim, rngs=rngs, param_dtype=param_dtype)
+        self.continuation_out = nnx.Linear(hidden_dim, 1, rngs=rngs, param_dtype=param_dtype)
+
+    def candidate_features(self, encoded_tokens: jax.Array, context: jax.Array) -> jax.Array:
+        """Pool Z[:H] and Z[H-1]; Z itself may contain global encoder context."""
+        horizons = jnp.asarray(self.candidate_horizons, dtype=jnp.int32)
+        keys = self.key_proj(encoded_tokens)
+        values = self.value_proj(encoded_tokens)
+        logits = jnp.einsum("mh,bth->bmt", self.queries.value, keys) / jnp.sqrt(float(self.hidden_dim))
+        prefix_mask = jnp.arange(encoded_tokens.shape[1])[None, :] < horizons[:, None]
+        weights = jax.nn.softmax(jnp.where(prefix_mask[None], logits, -jnp.inf), axis=-1)
+        pooled = jnp.einsum("bmt,bth->bmh", weights, values)
+        boundary = jnp.take(encoded_tokens, horizons - 1, axis=1)
+        context = jnp.broadcast_to(context[:, None, :], pooled.shape)
+        horizon_embedding = jnp.broadcast_to(self.horizon_embedding.value[None], pooled.shape)
+        features = jnp.concatenate([pooled, boundary, context, horizon_embedding], axis=-1)
+        return self.feature_out(nnx.gelu(self.feature_in(features)))
+
+    def __call__(self, encoded_tokens: jax.Array, context: jax.Array) -> jax.Array:
+        features = self.candidate_features(encoded_tokens, context)
+        current, following = features[:, :-1], features[:, 1:]
+        adjacent = jnp.concatenate([current, following, following - current], axis=-1)
+        return self.continuation_out(nnx.gelu(self.continuation_in(adjacent)))[..., 0]
 
 
 class ExecutionHorizonPredictor(nnx.Module):
@@ -486,6 +545,13 @@ class ExecutionHorizonPredictor(nnx.Module):
             self.elapsed_advantage_log_scale_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.calls_advantage_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
             self.calls_advantage_log_scale_head = nnx.Linear(h, long_width, rngs=rngs, param_dtype=param_dtype)
+        if config.ordered_readout == "candidate":
+            self.candidate_readout = _CandidateReadout(
+                h,
+                config.candidate_horizons,
+                rngs=rngs,
+                param_dtype=param_dtype,
+            )
 
     def _align_coarse(self, coarse_actions: jax.Array) -> jax.Array:
         if self.config.temporal_backbone == "local_mlp":
@@ -694,15 +760,18 @@ class ExecutionHorizonPredictor(nnx.Module):
             "overlap_consistency": consistency[..., 0],
         }
         if cfg.ordered_continuation_head:
-            ordered_log_probability, ordered_probability = ordered_continuation_distribution(
-                raw_h_ordinal_logits
+            continuation_logits = (
+                self.candidate_readout(tokens, context)
+                if cfg.ordered_readout == "candidate"
+                else raw_h_ordinal_logits
             )
+            ordered_log_probability, ordered_probability = ordered_continuation_distribution(continuation_logits)
             ordered_index = jnp.argmax(ordered_probability, axis=-1)
             ordered_selected_h = jnp.asarray(cfg.candidate_horizons, dtype=jnp.int32)[ordered_index]
             result.update(
                 {
-                    "ordered_continuation_logits": raw_h_ordinal_logits,
-                    "ordered_continuation_probability": jax.nn.sigmoid(raw_h_ordinal_logits),
+                    "ordered_continuation_logits": continuation_logits,
+                    "ordered_continuation_probability": jax.nn.sigmoid(continuation_logits),
                     "ordered_horizon_log_probability": ordered_log_probability,
                     "ordered_horizon_probability": ordered_probability,
                     "ordered_selected_h": ordered_selected_h,

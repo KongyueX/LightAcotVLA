@@ -28,18 +28,20 @@ def test_execution_horizon_artifact_resolves_output_or_params_dir(tmp_path) -> N
 def test_execution_horizon_artifact_paired_distribution_flag_is_opt_in() -> None:
     legacy = policy_config._execution_horizon_paired_head_overrides({"paired_advantage_heads": True})  # noqa: SLF001
     distribution = policy_config._execution_horizon_paired_head_overrides(  # noqa: SLF001
-        {"paired_distribution_heads": True, "ordered_continuation_head": True}
+        {"paired_distribution_heads": True, "ordered_continuation_head": True, "ordered_readout": "candidate"}
     )
 
     assert legacy == {
         "execution_horizon_paired_advantage_heads": True,
         "execution_horizon_paired_distribution_heads": False,
         "execution_horizon_ordered_continuation_head": False,
+        "execution_horizon_ordered_readout": "global",
     }
     assert distribution == {
         "execution_horizon_paired_advantage_heads": False,
         "execution_horizon_paired_distribution_heads": True,
         "execution_horizon_ordered_continuation_head": True,
+        "execution_horizon_ordered_readout": "candidate",
     }
 
 
