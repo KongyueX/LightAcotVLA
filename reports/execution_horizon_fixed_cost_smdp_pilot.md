@@ -23,6 +23,16 @@
 
 `ROOT=/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19`。
 
+## 启动与训练记录
+
+2026-09-07 04:24（Asia/Shanghai）启动，代码及计划提交`6f94c5c`已通过本地代理推送GitHub main并同步服务器`LightAcotVLA_6f94c5c`。4项入口/命令/单次流程检查通过（0.05秒），未增加数据重采或VLA smoke。
+
+- `STAGE=ROOT/fixed_cost_smdp_6f94c5c_20260907_v1`，实际输出为`STAGE/experiment`；外层`controller.log/exit`，内部`status.json`、`training/`、`validation/`及条件`final/`。
+- tmux `h25_fixed_cost_smdp`，controller PID42695（shell42691）。VLA仍为原服务PID26134/8040，未重启或改权重。
+- 04:26完成训练：4epochs/136updates全部接受、`actor_changed=true`、old-policy KL0.003704、无回退、耗时100.78秒；eta before/after均精确为0.02。
+- checkpoint为`STAGE/experiment/training/checkpoint`，04:28已进入100局greedy验证并完成7局，尚无完整性能结果。
+- 继续沿用30分钟飞书自动任务`h25-transformer`，已切换到本单次试验。只有该候选胜出才进入final200；结束后交付结果，不追加第二次训练或扫权重。
+
 ## Limitations
 
 固定0.02与原首轮实际0.016065差距较小，本次是低成本目标设置试验，不保证提高成功率，也不能用单次结果排除所有成本建模方法。输入仍没有新历史观测或执行反馈。验证状态已反复用于开发，不构成独立泛化或统计非劣证明。所有模型都按成功率和真实时间比较，是否多选H25不是优劣标准。
