@@ -45,6 +45,22 @@ H25→H5共185次、H25→H10共211次；这396次中，新H相对旧H的选择�
 - 报告成功率、救回/退化、实际policy/RPC/整局耗时、H分布及客户端后处理开销。速度可能下降，保留真实不利结果。
 - 只做相关CPU逻辑检查后运行完整200局。若失败率或耗时不改善，报告该候选无收益；不依据partial结果调阈值，不自动扩成扫描。
 
+### 匹配的历史子集
+
+| 参考 | 同200局成功数 | calls/局 | policy/RPC/整局秒 |
+| --- | ---: | ---: | ---: |
+| 当前A1000局中episode0–19 | 180/200，90.0% | 16.970 | 1.771086 / 1.957479 / 11.281483 |
+| 旧A开发pilot | 189/200，94.5% | 15.795 | 1.715501 / 1.901117 / 10.852770 |
+| 原始50999历史相同200局 | 187/200，93.5% | 60.890 | 5.486089 / 6.072724 / 15.673045 |
+
+本次直接对照采用当前同一服务进程的A结果。旧A与当前A同200个task/episode/initial_state_id，但当前有5救回、14退化；不能把两次结果当成同一组成绩。已核对权重、norm stats、seed、offset、NFE、wait、warmup、图像尺寸一致且均未用bank；服务代码由a5e60b1变为6af844a，A仍使用global readout。尚无证据解释9局差异，不直接归因随机波动，也不因此重跑原版。
+
+### 运行记录
+
+代码e705ce8已在main提交并推送。26项相关CPU测试通过（2.26秒），覆盖旧默认、旧ordered选择、概率输入、新阈值、previous H及日志；未重新测试VLA。2026-09-06 21:15启动tmux `h25_h10_hysteresis_eval`、初始PID14153，沿用A server PID1937/8040，不重启服务器。
+
+输出：`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/h10_hysteresis_e705ce8_20260906_v1/eval_10x20`；上级目录为`eval.log`和`eval.exit`。21:16已完成4局、成功4，属于启动进度，不是最终成绩；首call将raw H25、margin0.077663按阈值0.10改为H10，原始概率和后处理时间已正确记录。完整200局后更新结果。
+
 ## 来源与范围
 
 原始分析：`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/current_vs_original_history_20260906_v1/eval_10x100/{rollout_rows.csv,decisions.csv}`。
