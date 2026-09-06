@@ -68,8 +68,30 @@
 - 截至首次启动检查，首轮已有10条关闭轨迹；这只是训练采集进度，不是新checkpoint性能。实际梯度更新在100条采集完成后自动进行。
 - 30分钟heartbeat `h25-transformer`已启用；启动说明已通过既有飞书脚本发送并确认`FEISHU_OK`。根据初期每局约13秒及上一批阶段耗时，首轮完整结果暂估40–60分钟，全批含条件final暂估2.5–3.5小时，后续按实测修正。
 
+## 第一轮训练进度
+
+2026-09-07 02:23（Asia/Shanghai），第一轮训练完成并进入100局greedy闭环验证，尚无完整的新模型success/time成绩。
+
+- 采集：100条完整随机轨迹，87成功、2167个决策；平均RPC2.606506秒、全episode13.086870秒。这是训练数据统计。
+- critic预热：80条训练、20条内部留出，10epochs中选择epoch8。以下指标按留出轨迹中的决策计算，不是20局部署成功率，也不是独立校准。
+
+| 内部留出指标（越低越好） | 初始critic | 预热所选critic | 变化 |
+| --- | ---: | ---: | ---: |
+| 真实success BCE | 0.444361 | 0.322337 | -0.122024 |
+| 真实success Brier | 0.133429 | 0.087935 | -0.045493 |
+| 剩余RPC Huber | 1.417768 | 0.559528 | -0.858240 |
+
+- PPO：4epochs全部接受，136次update，`actor_changed=true`，old-policy KL0.003696，无回退；eta从0.02变为0.016065。读取、预热、更新及保存共99.24秒。
+- checkpoint：`ACTIVE/experiment/round01/training/checkpoint`。下一步按既定100局validation检查真正的成功率/时间表现，之后自动进入第2/3轮。
+
+当前运行位置为`ACTIVE=ROOT/last_block_smdp_4574577_20260907_v1/recovery_csv_9dff492_v1`，控制器tmux `h25_last_block_smdp_resume`、PID33228，训练/客户端代码`LightAcotVLA_9dff492`。VLA服务仍为PID26134、代码4574577，未重启。
+
+新运行用`--reuse-first-round-dir`直接读取旧阶段完整的`experiment/round01/collection`与其绑定的step0 checkpoint；引用记录为`step0/summary.json`的`initialization_reused=true`及`round01/collection_reused.json`。首轮没有重新初始化或重新采集，新运行也没有对应`initialize.exit/collect.exit`。旧数据和日志保留；后两轮数据在ACTIVE正常生成。CSV生产读取支持1MiB字段（提交052e276），该读取及接续流程（提交9dff492）的8项基本测试通过，未改变算法或超参数。
+
 ## Limitations
 
 本批依旧没有新的历史观测/执行反馈输入，也不直接约束action expert的跨chunk连续性。预热改善的critic误差不等于已校准成功概率；解冻最后层也不保证提高成功率。三轮、单seed、重复使用的开发验证状态不能构成独立最终泛化或统计非劣证明。服务代码升级与历史计时/复现差异均须在最终结果中说明，不把小幅差异当稳健增益。
 
 初始化的20个actor参数叶子与A逐元素一致且均为float32，首正式缓存CPU重算与实际client所记概率及log-prob误差为0。跨GPU服务与CPU客户端则存在小数值差异：首episode16次call最大概率差0.000875473，贪心H改变0/16；没有定位具体算子，不能承诺跨设备数值或整条轨迹一致。PPO使用实际client行为概率，不以原GPU概率替代。
+
+首次训练入口曾因CSV默认128KiB字段限制在梯度更新前退出，02:21直接复用完整数据恢复。该停顿计入实验交付耗时，不计入机器人episode性能；没有丢失或补跑这100条轨迹。
