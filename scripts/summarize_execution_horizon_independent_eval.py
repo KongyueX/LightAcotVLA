@@ -28,6 +28,10 @@ METRIC_LABELS = {
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--eval-dir", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--reference-eval-dir", type=pathlib.Path, default=None,
+        help="Optional historical evaluation; use only its original-mode rows, without rerunning the reference.",
+    )
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
     parser.add_argument("--bootstrap-samples", type=int, default=5000)
     parser.add_argument("--seed", type=int, default=7)
@@ -40,13 +44,13 @@ def _read_csv(path: pathlib.Path) -> list[dict[str, str]]:
 
 
 def _split_rollouts(
-    rows: list[dict[str, str]], summary: dict[str, Any]
+    rows: list[dict[str, str]], summary: dict[str, Any], *, modes: tuple[str, ...] = MODES
 ) -> tuple[dict[str, dict[tuple[int, int], dict[str, str]]], list[tuple[int, int]]]:
     if summary.get("status") != "complete":
         raise ValueError("Evaluation summary is not complete.")
-    if int(summary["config"]["original_horizon"]) != 5:
+    if REFERENCE in modes and int(summary["config"]["original_horizon"]) != 5:
         raise ValueError("The original-mode execution horizon must be 5.")
-    runs: dict[str, dict[tuple[int, int], dict[str, str]]] = {mode: {} for mode in MODES}
+    runs: dict[str, dict[tuple[int, int], dict[str, str]]] = {mode: {} for mode in modes}
     required = {"mode", "task_id", "episode", "initial_state_id", "success", "timeout", *paired._METRICS}
     for row in rows:
         if missing := required.difference(row):
@@ -64,18 +68,43 @@ def _split_rollouts(
     keys = paired._validate_pairing(runs)
     task_start = int(summary["config"].get("task_start", 0))
     tasks = range(task_start, task_start + int(summary["num_tasks"]))
-    episodes = [int(value) for value in summary["episode_ids"]]
+    recorded_episodes = summary.get("episode_ids")
+    episodes = (
+        list(range(int(summary["num_trials_per_task"])))
+        if recorded_episodes is None else [int(value) for value in recorded_episodes]
+    )
     if len(episodes) != int(summary["num_trials_per_task"]):
         raise ValueError("Summary episode_ids and num_trials_per_task disagree.")
     expected = {(task, episode) for task in tasks for episode in episodes}
     if set(keys) != expected:
         raise ValueError("Actual rollout keys do not match the complete summary's expected task/episode grid.")
-    for mode in MODES:
+    for mode in modes:
         if int(summary["overall"][mode]["episodes"]) != len(keys):
             raise ValueError(f"Summary episode count disagrees with rollout rows for {mode}.")
     if not keys:
         raise ValueError("The complete evaluation has no paired episodes.")
     return runs, keys
+
+
+def _historical_protocol(reference: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "seed", "task_suite", "action_cot_denoising_steps", "final_denoising_steps", "num_steps_wait",
+        "initial_state_offset", "resize_size",
+    )
+    matches, unavailable = {}, {}
+    for field in fields:
+        values = []
+        for summary in (reference, current):
+            config = summary["config"]
+            value = summary.get(field, config.get("task_suite_name" if field == "task_suite" else field))
+            values.append(value)
+        if None in values:
+            unavailable[field] = {"reference": values[0], "current": values[1]}
+        elif values[0] != values[1]:
+            raise ValueError(f"Historical/current protocol mismatch for {field}: {values[0]!r} vs {values[1]!r}.")
+        else:
+            matches[field] = values[0]
+    return {"matched_recorded_fields": matches, "unavailable_recorded_fields": unavailable}
 
 
 def _finite(value: Any) -> float | None:
@@ -250,10 +279,10 @@ def _state_keys(rows: dict, keys: list[tuple[int, int]]) -> list[dict[str, int]]
     ]
 
 
-def _systems(summary: dict[str, Any]) -> dict[str, Any]:
+def _systems(summary: dict[str, Any], reference_summary: dict[str, Any] | None = None) -> dict[str, Any]:
     config = summary["config"]
     separate_original = config.get("original_port") is not None
-    return {
+    systems = {
         REFERENCE: {
             "label": "Original ACoT-VLA" if separate_original else "Same-policy Fixed H5",
             "host": config.get("host"),
@@ -271,6 +300,17 @@ def _systems(summary: dict[str, Any]) -> dict[str, Any]:
             "execution_horizon": "dynamic",
         },
     }
+    if reference_summary is not None:
+        reference_config = reference_summary["config"]
+        systems[REFERENCE] = {
+            "label": "Original ACoT-VLA (historical)",
+            "host": reference_config.get("host"),
+            "port": reference_config.get("port"),
+            "model_action_horizon": reference_config.get("model_action_horizon"),
+            "execution_horizon": reference_config["original_horizon"],
+        }
+        systems[CANDIDATE]["label"] = "Current H25+predictor"
+    return systems
 
 
 def _directions(analysis: dict[str, Any]) -> list[str]:
@@ -312,11 +352,26 @@ def _directions(analysis: dict[str, Any]) -> list[str]:
     return directions[:3]
 
 
-def analyze(eval_dir: pathlib.Path, *, samples: int, seed: int) -> dict[str, Any]:
+def analyze(
+    eval_dir: pathlib.Path, *, samples: int, seed: int, reference_eval_dir: pathlib.Path | None = None
+) -> dict[str, Any]:
     if samples <= 0:
         raise ValueError("bootstrap_samples must be positive.")
     summary = json.loads((eval_dir / "summary.json").read_text(encoding="utf-8"))
-    runs, keys = _split_rollouts(_read_csv(eval_dir / "rollout_rows.csv"), summary)
+    reference_summary = None
+    protocol = None
+    if reference_eval_dir is None:
+        runs, keys = _split_rollouts(_read_csv(eval_dir / "rollout_rows.csv"), summary)
+    else:
+        reference_summary = json.loads((reference_eval_dir / "summary.json").read_text(encoding="utf-8"))
+        reference_rows = [
+            row for row in _read_csv(reference_eval_dir / "rollout_rows.csv") if row["mode"] == REFERENCE
+        ]
+        runs, _ = _split_rollouts(reference_rows, reference_summary, modes=(REFERENCE,))
+        candidate_runs, _ = _split_rollouts(_read_csv(eval_dir / "rollout_rows.csv"), summary, modes=(CANDIDATE,))
+        runs.update(candidate_runs)
+        keys = paired._validate_pairing(runs)
+        protocol = _historical_protocol(reference_summary, summary)
     audit = paired._pairwise_audit(
         runs[REFERENCE], runs[CANDIDATE], keys, samples=samples, seed=seed, noninferiority_margin=0.01
     )
@@ -338,7 +393,7 @@ def analyze(eval_dir: pathlib.Path, *, samples: int, seed: int) -> dict[str, Any
         "status": "complete",
         "eval_dir": str(eval_dir.resolve()),
         "source_summary": summary,
-        "systems": _systems(summary),
+        "systems": _systems(summary, reference_summary),
         "paired_key": ["task_id", "episode"],
         "initial_state_id_verified": True,
         "bootstrap": {
@@ -363,6 +418,21 @@ def analyze(eval_dir: pathlib.Path, *, samples: int, seed: int) -> dict[str, Any
         "regression_states": _state_keys(runs[REFERENCE], regression),
         "decisions": _decision_diagnostics(_read_csv(decisions_path) if decisions_path.exists() else None, runs[CANDIDATE]),
     }
+    if reference_summary is not None:
+        analysis.update(
+            reference_eval_dir=str(reference_eval_dir.resolve()),
+            reference_source_summary=reference_summary,
+            reference_protocol_comparison=protocol,
+            comparison_kind="historical_reference",
+            timing_interpretation=(
+                "Time differences and CIs are cross-run historical references; they do not account for "
+                "hardware/software/load differences and do not establish same-run, same-machine timing gains."
+            ),
+        )
+        for comparison in [audit, *(item["paired"] for item in per_task.values()), analysis["both_success"]["paired"]]:
+            if comparison is not None:
+                comparison["gates"]["strict_engineering_go"] = None
+                comparison["timing_interpretation"] = analysis["timing_interpretation"]
     analysis["improvement_directions"] = _directions(analysis)
     return analysis
 
@@ -371,12 +441,17 @@ def _number(value: float | None, *, scale: float = 1.0) -> str:
     return "missing" if value is None else f"{value / scale:.3f}"
 
 
-def _comparison_table(runs: dict[str, Any], audit: dict[str, Any], systems: dict[str, Any]) -> list[str]:
+def _comparison_table(
+    runs: dict[str, Any], audit: dict[str, Any], systems: dict[str, Any], *, historical: bool = False
+) -> list[str]:
     reference, candidate = runs[REFERENCE], runs[CANDIDATE]
     success_ci = audit["success_delta_cluster_bootstrap"]["ci95"]
+    comparison_label = "New − reference [paired 95% CI; historical time reference]" if historical else (
+        "New − reference [paired 95% CI]"
+    )
     lines = [
         f"| Metric | {systems[REFERENCE]['label']} | {systems[CANDIDATE]['label']} "
-        "| New − reference [paired 95% CI] |",
+        f"| {comparison_label} |",
         "| --- | ---: | ---: | ---: |",
         f"| Success | {reference['success_count']}/{reference['episodes']} ({reference['success_rate']:.1%}) "
         f"| {candidate['success_count']}/{candidate['episodes']} ({candidate['success_rate']:.1%}) "
@@ -396,10 +471,22 @@ def _comparison_table(runs: dict[str, Any], audit: dict[str, Any], systems: dict
 def report_markdown(analysis: dict[str, Any]) -> str:
     summary, audit = analysis["source_summary"], analysis["paired"]
     systems = analysis["systems"]
+    historical = analysis.get("comparison_kind") == "historical_reference"
+    run_description = "Current rollout is compared with an existing historical run." if historical else (
+        "Only this bank/run is compared."
+    )
     lines = [
         "# Independent execution-horizon evaluation", "",
-        f"{audit['paired_episodes']} paired states; {summary['num_tasks']} tasks. Only this bank/run is compared.", "",
+        f"{audit['paired_episodes']} paired episodes; {summary['num_tasks']} tasks. {run_description}", "",
     ]
+    if historical:
+        lines += [
+            f"- Current evaluation: {analysis['eval_dir']}",
+            f"- Historical reference: {analysis['reference_eval_dir']}",
+            "- Original results were reused; no new reference rollout is included.",
+            f"- Recorded protocol comparison: `{json.dumps(analysis['reference_protocol_comparison'], sort_keys=True)}`",
+            "",
+        ]
     for key in ("initial_state_bank", "initial_state_bank_sha256", "initial_state_identity_mode", "timing_semantics"):
         lines.append(f"- {key}: {summary.get(key, 'missing')}")
     lines += ["", "| System | Endpoint | Model action horizon | Execution horizon |", "| --- | --- | ---: | --- |"]
@@ -408,20 +495,21 @@ def report_markdown(analysis: dict[str, Any]) -> str:
         endpoint = f"{system['host']}:{system['port']}" if system["port"] is not None else "missing"
         horizon = system["model_action_horizon"] if system["model_action_horizon"] is not None else "missing"
         lines.append(f"| {system['label']} | {endpoint} | {horizon} | {system['execution_horizon']} |")
-    if summary["config"].get("original_port") is not None:
+    if historical or summary["config"].get("original_port") is not None:
         lines += [
-            "", "This compares Original ACoT-VLA with the complete New H25+predictor system. "
+            "", "This compares Original ACoT-VLA with the complete H25+predictor system. "
             "Performance differences are attributable to the systems as a whole, not the predictor module alone.",
         ]
     lines += [
-        "", "## All episodes", "", *_comparison_table(analysis["runs"], audit, systems), "",
+        "", "## All episodes", "", *_comparison_table(analysis["runs"], audit, systems, historical=historical), "",
         f"Rescues: {audit['rescues']}; regressions: {audit['regressions']}; "
         f"exact paired McNemar two-sided p={audit['exact_mcnemar_two_sided_p']:.5g}.", "",
     ]
     for metric, (label, _) in METRIC_LABELS.items():
         reduction = audit["speedups"][metric]["candidate_reduction_fraction"]
+        qualifier = " (cross-run historical time reference)" if historical and metric != "policy_calls" else ""
         lines.append(
-            f"- {label} reduction vs {systems[REFERENCE]['label']}: {reduction:.2%}."
+            f"- {label} reduction vs {systems[REFERENCE]['label']}{qualifier}: {reduction:.2%}."
             if reduction is not None else f"- {label} reduction: missing."
         )
     overhead = analysis["runs"][CANDIDATE]["predictor_overhead"]
@@ -432,16 +520,17 @@ def report_markdown(analysis: dict[str, Any]) -> str:
     ]
     for task, result in analysis["per_task"].items():
         lines += [
-            f"### Task {task}", "", *_comparison_table(result["runs"], result["paired"], systems), "",
+            f"### Task {task}", "",
+            *_comparison_table(result["runs"], result["paired"], systems, historical=historical), "",
             f"Rescues/regressions: {result['paired']['rescues']}/{result['paired']['regressions']}.", "",
         ]
     both = analysis["both_success"]
     lines += [
         "## Both-success episodes (descriptive)", "",
-        f"{both['episodes']} paired states selected by both outcomes; not a substitute for all episodes.", "",
+        f"{both['episodes']} paired episodes selected by both outcomes; not a substitute for all episodes.", "",
     ]
     if both["paired"] is not None:
-        lines += _comparison_table(both["runs"], both["paired"], systems) + [""]
+        lines += _comparison_table(both["runs"], both["paired"], systems, historical=historical) + [""]
     lines += [f"## {systems[CANDIDATE]['label']} decisions", ""]
     diagnostics = analysis["decisions"]
     lines.append(f"Diagnostics status: {diagnostics['status']}.")
@@ -483,13 +572,24 @@ def report_markdown(analysis: dict[str, Any]) -> str:
         "episode success are not causal effects. Ordered probabilities describe H selection, not success; "
         "no ECE/Brier/false-long metric is inferred without counterfactual labels. "
         "Comparisons between different base checkpoints describe whole-system performance, not isolated predictor effects. "
-        "Complete experiment configuration and bank provenance are retained in analysis.json/source_summary.", "",
+        "Complete current experiment configuration and recorded provenance are retained in analysis.json/source_summary.",
+        "",
     ]
+    if historical:
+        lines += [
+            analysis["timing_interpretation"],
+            "Historical configuration/provenance are separately retained in reference_source_summary. "
+            "Matching task/episode/initial_state_id and recorded settings is not a physical-state fingerprint check. "
+            "Repeated preset IDs remain task-by-initial-state bootstrap clusters, not independent new states.",
+            "",
+        ]
     return "\n".join(lines)
 
 
 def main(args: argparse.Namespace) -> None:
-    analysis = analyze(args.eval_dir, samples=args.bootstrap_samples, seed=args.seed)
+    analysis = analyze(
+        args.eval_dir, samples=args.bootstrap_samples, seed=args.seed, reference_eval_dir=args.reference_eval_dir
+    )
     args.output_dir.mkdir(parents=True, exist_ok=False)
     (args.output_dir / "analysis.json").write_text(json.dumps(analysis, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (args.output_dir / "report.md").write_text(report_markdown(analysis), encoding="utf-8")

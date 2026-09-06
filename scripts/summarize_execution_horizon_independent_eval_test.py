@@ -160,3 +160,52 @@ def test_confidence_is_episode_balanced_not_call_weighted() -> None:
     assert group["entropy_nats"]["count"] == 10
     assert group["entropy_nats"]["episodes"] == 2
     assert group["long_h_fraction"] == pytest.approx(0.5)
+
+
+def test_historical_reference_filters_other_modes_and_preserves_two_runs(tmp_path: pathlib.Path) -> None:
+    current_dir = tmp_path / "current"
+    reference_dir = tmp_path / "historical"
+    current_dir.mkdir()
+    reference_dir.mkdir()
+    summary, rows, decisions = _synthetic()
+    summary["episode_ids"] = [0, 1]
+    summary["task_suite"] = "libero_10"
+    summary["config"].update(seed=7, action_cot_denoising_steps=10, final_denoising_steps=10, num_steps_wait=10)
+    for row in [*rows, *decisions]:
+        row["episode"] = str(int(row["episode"]) - 100)
+    current_summary = json.loads(json.dumps(summary))
+    current_summary["overall"] = {summarizer.CANDIDATE: {"episodes": 4}}
+    historical_summary = json.loads(json.dumps(summary))
+    del historical_summary["episode_ids"]
+    historical_summary["overall"] = {summarizer.REFERENCE: {"episodes": 4}, "fixed_h9": {"episodes": 4}}
+    historical_summary["config"].update(port=8000, model_action_horizon=10)
+    del historical_summary["config"]["final_denoising_steps"]
+    original_rows = [row for row in rows if row["mode"] == summarizer.REFERENCE]
+    _write_csv(reference_dir / "rollout_rows.csv", [*original_rows, *[{**row, "mode": "fixed_h9"} for row in original_rows]])
+    _write_csv(current_dir / "rollout_rows.csv", [row for row in rows if row["mode"] == summarizer.CANDIDATE])
+    _write_csv(current_dir / "decisions.csv", decisions)
+    (reference_dir / "summary.json").write_text(json.dumps(historical_summary))
+    (current_dir / "summary.json").write_text(json.dumps(current_summary))
+
+    analysis = summarizer.analyze(current_dir, samples=20, seed=7, reference_eval_dir=reference_dir)
+    assert analysis["paired"]["paired_episodes"] == 4
+    assert analysis["paired"]["rescues"] == analysis["paired"]["regressions"] == 1
+    assert analysis["reference_eval_dir"] == str(reference_dir.resolve())
+    assert analysis["reference_source_summary"] == historical_summary
+    assert analysis["source_summary"] == current_summary
+    assert analysis["reference_protocol_comparison"]["matched_recorded_fields"]["seed"] == 7
+    assert analysis["reference_protocol_comparison"]["unavailable_recorded_fields"]["final_denoising_steps"] == {
+        "reference": None, "current": 10,
+    }
+    assert analysis["systems"][summarizer.REFERENCE]["label"] == "Original ACoT-VLA (historical)"
+    assert analysis["systems"][summarizer.REFERENCE]["model_action_horizon"] == 10
+    assert analysis["systems"][summarizer.CANDIDATE]["label"] == "Current H25+predictor"
+    assert analysis["paired"]["gates"]["strict_engineering_go"] is None
+    report = summarizer.report_markdown(analysis)
+    assert "cross-run historical time reference" in report
+    assert "hardware/software/load differences" in report
+    assert "Only this bank/run is compared" not in report
+
+    current_summary["config"]["seed"] = 42
+    with pytest.raises(ValueError, match="protocol mismatch for seed"):
+        summarizer._historical_protocol(historical_summary, current_summary)
