@@ -29,6 +29,8 @@ def test_default_eval_modes_and_horizon_remain_legacy() -> None:
     assert args.original_host is None
     assert args.original_port is None
     assert args.original_model_action_horizon is None
+    assert args.ordered_smdp_params is None
+    assert args.ordered_smdp_sample is False
     client = object()
     routed_client, routed_args = evaluator._mode_runtime("original", args, client)  # noqa: SLF001
     assert routed_client is client
@@ -46,6 +48,59 @@ def test_disabled_aggregate_calibration_preserves_legacy_resume_signature() -> N
     assert "record_ordered_diagnostics" not in signature
     assert not {"original_host", "original_port", "original_model_action_horizon"}.intersection(signature)
     assert not {"ordered_h10_enter_margin", "ordered_h10_hold_margin"}.intersection(signature)
+    assert not {"ordered_smdp_params", "ordered_smdp_sample"}.intersection(signature)
+
+
+def test_ordered_smdp_loads_checkpoint_and_logs_actual_sampling_policy(tmp_path) -> None:
+    selector = evaluator.ordered_smdp.OrderedSMDPSelector.initialize(feature_dim=3, seed=7)
+    checkpoint = tmp_path / "selector.npz"
+    selector.save(checkpoint)
+    args = evaluator.build_parser().parse_args([
+        "--output-dir", str(tmp_path / "eval"), "--model-action-horizon", "25",
+        "--modes", "ordered_smdp", "--ordered-smdp-params", str(checkpoint),
+        "--ordered-smdp-sample", "--record-ordered-diagnostics",
+    ])
+    loaded = evaluator._load_selectors(args)["ordered_smdp"]  # noqa: SLF001
+    result = {
+        "execution_horizon_temporal_feature": np.asarray([[.1, -.2, .3]], dtype=np.float32),
+        "execution_horizon_ordered_continuation_logits": np.asarray([[-2., 1., 1., 1.]]),
+        "execution_horizon_candidate_horizons": np.asarray([5, 10, 15, 20, 25]),
+    }
+    horizon, info = evaluator._select_horizon(  # noqa: SLF001
+        evaluator.ORDERED_SMDP_MODE, result, args=args, budget_state=SimpleNamespace(),
+        selector=loaded, selector_rng=np.random.default_rng(7), previous_horizon=25,
+    )
+    index = info["smdp_action_index"]
+    assert horizon == [5, 10, 15, 20, 25][index]
+    assert info["smdp_old_log_prob"] == pytest.approx(np.log(info["smdp_probabilities"][index]))
+    assert info["smdp_sampled"] is True
+    assert len(info["smdp_feature"]) == 3
+    assert info["ordered_continuation_logits"] == [-2., 1., 1., 1.]
+    signature = evaluator._run_signature(args)  # noqa: SLF001
+    assert signature["ordered_smdp_params"] == str(checkpoint)
+    assert signature["ordered_smdp_sample"] is True
+    args.ordered_smdp_sample = False
+    greedy, info = evaluator._select_horizon(  # noqa: SLF001
+        evaluator.ORDERED_SMDP_MODE, result, args=args, budget_state=SimpleNamespace(), selector=loaded,
+    )
+    assert greedy == 5
+    assert info["smdp_sampled"] is False
+
+
+def test_ordered_smdp_requests_single_existing_predictor_forward() -> None:
+    args = evaluator.build_parser().parse_args([
+        "--output-dir", "/tmp/eval", "--model-action-horizon", "25", "--modes", "ordered_smdp",
+    ])
+    requests = []
+    client = SimpleNamespace(infer=lambda request: requests.append(request) or {})
+    evaluator._request(  # noqa: SLF001
+        client, {"state": np.zeros(7)}, mode=evaluator.ORDERED_SMDP_MODE,
+        seed=7, previous_actions=np.zeros((25, 7)), previous_horizon=5,
+        budget_fraction=.5, episode_progress=.3, absolute_decision_step=300, args=args,
+    )
+    assert len(requests) == 1
+    assert bool(requests[0]["run_execution_horizon_predictor"])
+    assert int(requests[0]["execution_horizon_previous_h"]) == 5
 
 
 def test_h10_hysteresis_uses_previous_execution_and_preserves_raw_diagnostics() -> None:

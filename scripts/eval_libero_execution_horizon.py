@@ -20,6 +20,7 @@ from openpi_client import websocket_client_policy as websocket_policy
 from openpi.execution_horizon import hierarchical
 from openpi.execution_horizon import initial_states as horizon_initial_states
 from openpi.execution_horizon import ordered
+from openpi.execution_horizon import ordered_smdp
 from openpi.execution_horizon import rl_selector
 from openpi.execution_horizon import v2
 
@@ -34,7 +35,8 @@ SELECTOR_MODES = ("q_guided_selector", "sft_selector", "ppo_selector")
 HIERARCHICAL_MODE = "hierarchical_transformer"
 ORDERED_MODE = "ordered_transformer"
 ORDERED_H10_HYSTERESIS_MODE = "ordered_h10_hysteresis"
-ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE)
+ORDERED_SMDP_MODE = "ordered_smdp"
+ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE)
 FIXED_H_MODE = "fixed_h"
 MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES)
 
@@ -83,6 +85,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ordered-h10-hold-margin", type=float, default=0.05,
         help="Minimum gap to retain the previous long H; weaker preferences use H10.",
+    )
+    parser.add_argument(
+        "--ordered-smdp-params", default=None,
+        help="Ordered actor/critic NPZ for the opt-in ordered_smdp mode.",
+    )
+    parser.add_argument(
+        "--ordered-smdp-sample", action="store_true",
+        help="Sample the ordered SMDP policy for on-policy training; greedy by default.",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--resize-size", type=int, default=224)
@@ -790,8 +800,10 @@ def _risk_config(args: argparse.Namespace) -> v2.V2RiskConfig:
     )
 
 
-def _load_selectors(args: argparse.Namespace) -> dict[str, rl_selector.FrozenFeatureSelector]:
-    selectors: dict[str, rl_selector.FrozenFeatureSelector] = {}
+def _load_selectors(
+    args: argparse.Namespace,
+) -> dict[str, rl_selector.FrozenFeatureSelector | ordered_smdp.OrderedSMDPSelector]:
+    selectors: dict[str, rl_selector.FrozenFeatureSelector | ordered_smdp.OrderedSMDPSelector] = {}
     needs_q_selector = any(mode in {"q_guided_selector", "sft_selector"} for mode in args.modes)
     if needs_q_selector:
         if args.q_guided_selector_params is None:
@@ -803,6 +815,13 @@ def _load_selectors(args: argparse.Namespace) -> dict[str, rl_selector.FrozenFea
         if args.ppo_selector_params is None:
             raise ValueError("ppo_selector requires --ppo-selector-params.")
         selectors["ppo_selector"] = rl_selector.FrozenFeatureSelector.load(args.ppo_selector_params)
+    if ORDERED_SMDP_MODE in args.modes:
+        if args.ordered_smdp_params is None:
+            raise ValueError("ordered_smdp requires --ordered-smdp-params.")
+        model = ordered_smdp.OrderedSMDPSelector.load(args.ordered_smdp_params)
+        if max(model.candidates) > args.model_action_horizon:
+            raise ValueError("Ordered SMDP candidates cannot exceed the served action horizon.")
+        selectors[ORDERED_SMDP_MODE] = model
     return selectors
 
 
@@ -812,7 +831,7 @@ def _select_horizon(
     *,
     args: argparse.Namespace,
     budget_state: v2.EpisodeBudgetState,
-    selector: rl_selector.FrozenFeatureSelector | None = None,
+    selector: rl_selector.FrozenFeatureSelector | ordered_smdp.OrderedSMDPSelector | None = None,
     selector_rng: np.random.Generator | None = None,
     previous_horizon: int = 10,
 ) -> tuple[int, dict[str, Any]]:
@@ -821,7 +840,17 @@ def _select_horizon(
     if mode in {"fixed_h9", FIXED_H_MODE}:
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
     if mode in ORDERED_MODES:
-        if mode == ORDERED_H10_HYSTERESIS_MODE:
+        if mode == ORDERED_SMDP_MODE:
+            if selector is None:
+                raise ValueError("ordered_smdp requires an actor/critic checkpoint.")
+            started = time.perf_counter()
+            selected, info = selector.decide(
+                result, sample=args.ordered_smdp_sample, rng=selector_rng,
+            )
+            info["selector_postprocess_ms"] = (time.perf_counter() - started) * 1000.0
+            info["smdp_sampled"] = bool(args.ordered_smdp_sample)
+            info["budget_limited"] = 0.0
+        elif mode == ORDERED_H10_HYSTERESIS_MODE:
             started = time.perf_counter()
             selected, info = ordered.select_h10_hysteresis(
                 result,
@@ -1132,7 +1161,7 @@ def _run_episode(
     task_suite,
     client: websocket_policy.WebsocketClientPolicy,
     args: argparse.Namespace,
-    selector: rl_selector.FrozenFeatureSelector | None = None,
+    selector: rl_selector.FrozenFeatureSelector | ordered_smdp.OrderedSMDPSelector | None = None,
     initial_state_bank: horizon_initial_states.InitialStateBank | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     episode_started = time.perf_counter()
@@ -1274,7 +1303,7 @@ def _run_episode(
                 selector_rng=np.random.default_rng(request_seed + 991),
                 previous_horizon=previous_horizon,
             )
-            if mode == ORDERED_H10_HYSTERESIS_MODE and len(action_chunk) < horizon:
+            if mode in {ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE} and len(action_chunk) < horizon:
                 raise ValueError(
                     f"{mode} selected H{horizon}, but the served chunk has only {len(action_chunk)} actions."
                 )
@@ -2062,6 +2091,7 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         and not (key == "interleave_modes" and value is False)
         and not (key == "record_ordered_diagnostics" and value is False)
         and not (key.startswith("ordered_h10_") and ORDERED_H10_HYSTERESIS_MODE not in args.modes)
+        and not (key.startswith("ordered_smdp_") and ORDERED_SMDP_MODE not in args.modes)
         and not (key in {"original_host", "original_port", "original_model_action_horizon"} and value is None)
     }
 
