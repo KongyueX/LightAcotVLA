@@ -10,7 +10,7 @@
 
 ## 模型与缓存
 
-- 从A原sidecar恢复并复制最后一个Transformer block、`summary_proj`和`raw_h_ordinal_head`，初始actor与A一致。
+- 从A原sidecar恢复并精确复制最后一个Transformer block、`summary_proj`和`raw_h_ordinal_head`的参数，保留原计算结构。
 - 冻结视觉/VLA、输入投影、视觉query池和第一个Transformer block。
 - critic为64维tanh双值头；其输入使用`stop_gradient(summary)`，value loss不更新actor表征。
 - 服务器在显式请求时导出最后block的输入29×256（4视觉token＋25动作token）及context256；不另跑VLA，不传完整1024×2048 prefix。
@@ -57,6 +57,19 @@
 
 `ROOT=/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19`。阶段状态、日志、退出码与全部数据保留，30分钟飞书进度及阶段/异常/最终结果汇报。
 
+## 启动记录
+
+2026-09-07 01:33（Asia/Shanghai）启动。实现提交`f5404a4`及NNX参数更新提交`4574577`均已通过本地代理推送GitHub main；运行快照为`/root/autodl-tmp/acotvla/code/LightAcotVLA_4574577`。
+
+- 阶段目录：`ROOT/last_block_smdp_4574577_20260907_v1`。外层保存`server.log/exit`和`controller.log/exit`；自动链输出位于其`experiment/`子目录。
+- 新服务：tmux `h25_last_block_server`、PID26134、port8040，成功恢复原H25 `/5000`和原A sidecar。旧空闲服务已被本次服务替换，未更改模型权重。
+- 自动链：tmux `h25_last_block_smdp`、controller PID26880；首轮collector PID27634。`step0/initialize.exit=0`，首轮真实动态H采集已开始。
+- 基本检查：真实A参数可恢复，部分模型共938694参数；服务器CPU测试覆盖MC critic预热冻结actor、实际连续Optax参数更新、缓存导出与最后层重算、eval接口和三轮接力。参数更新及缓存相关6项最终检查通过（26.45秒），其余相关接口检查此前已通过，不增加完整审计或额外性能pilot。
+- 截至首次启动检查，首轮已有10条关闭轨迹；这只是训练采集进度，不是新checkpoint性能。实际梯度更新在100条采集完成后自动进行。
+- 30分钟heartbeat `h25-transformer`已启用；启动说明已通过既有飞书脚本发送并确认`FEISHU_OK`。根据初期每局约13秒及上一批阶段耗时，首轮完整结果暂估40–60分钟，全批含条件final暂估2.5–3.5小时，后续按实测修正。
+
 ## Limitations
 
 本批依旧没有新的历史观测/执行反馈输入，也不直接约束action expert的跨chunk连续性。预热改善的critic误差不等于已校准成功概率；解冻最后层也不保证提高成功率。三轮、单seed、重复使用的开发验证状态不能构成独立最终泛化或统计非劣证明。服务代码升级与历史计时/复现差异均须在最终结果中说明，不把小幅差异当稳健增益。
+
+初始化的20个actor参数叶子与A逐元素一致且均为float32，首正式缓存CPU重算与实际client所记概率及log-prob误差为0。跨GPU服务与CPU客户端则存在小数值差异：首episode16次call最大概率差0.000875473，贪心H改变0/16；没有定位具体算子，不能承诺跨设备数值或整条轨迹一致。PPO使用实际client行为概率，不以原GPU概率替代。
