@@ -17,6 +17,7 @@ import numpy as np
 from openpi_client import websocket_client_policy as websocket_policy
 
 from openpi.execution_horizon import hierarchical
+from openpi.execution_horizon import initial_states as horizon_initial_states
 from openpi.execution_horizon import ordered
 from openpi.execution_horizon import rl_selector
 from openpi.execution_horizon import v2
@@ -53,7 +54,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional explicit episode/state IDs. Overrides --num-trials-per-task.",
     )
     parser.add_argument("--initial-state-offset", type=int, default=0)
+    parser.add_argument(
+        "--initial-state-bank",
+        default=None,
+        help="Frozen initial-state bank; offset + episode IDs are looked up exactly without modulo.",
+    )
     parser.add_argument("--modes", nargs="+", choices=MODES, default=list(LEGACY_MODES))
+    parser.add_argument(
+        "--interleave-modes",
+        action="store_true",
+        help="Run all modes for each task/episode pair, reversing mode order on alternate pairs.",
+    )
+    parser.add_argument(
+        "--record-ordered-diagnostics",
+        action="store_true",
+        help="Record existing ordered policy probabilities/logits and controller inputs in selector_json.",
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--num-steps-wait", type=int, default=10)
@@ -785,11 +801,17 @@ def _select_horizon(
             result,
             model_action_horizon=args.model_action_horizon,
         )
-        return selected, {
+        info = {
             "raw_horizon": selected,
             "budget_limited": 0.0,
             "selector_policy": ORDERED_MODE,
         }
+        if getattr(args, "record_ordered_diagnostics", False):
+            for name in ("ordered_horizon_probability", "ordered_continuation_logits", "candidate_horizons"):
+                value = result.get(f"execution_horizon_{name}")
+                if value is not None:
+                    info[name] = np.asarray(value).reshape(-1).tolist()
+        return selected, info
     if mode == HIERARCHICAL_MODE:
         calibration = getattr(args, "_hierarchical_calibration", None)
         aggregate_calibration = getattr(args, "_hierarchical_aggregate_calibration", None)
@@ -931,19 +953,77 @@ def _select_horizon(
     }
 
 
+def _prepare_initial_state_bank(
+    args: argparse.Namespace,
+    task_suite,
+    task_end: int,
+    episode_ids: list[int],
+) -> horizon_initial_states.InitialStateBank | None:
+    path = getattr(args, "initial_state_bank", None)
+    if path is None:
+        return None
+    bank = horizon_initial_states.InitialStateBank(path)
+    if bank.manifest["task_suite"] != args.task_suite_name:
+        raise ValueError("Initial-state bank uses a different task suite.")
+    for task_id in range(args.task_start, task_end):
+        if task_id not in bank.tasks:
+            raise ValueError(f"Initial-state bank has no task{task_id}.")
+        bank.validate_presets(task_id, task_suite.get_task_init_states(task_id))
+        for episode in episode_ids:
+            bank.state(task_id, args.initial_state_offset + episode)
+    for key, value in bank.metadata().items():
+        setattr(args, key, value)
+    return bank
+
+
+def _resolve_initial_state(
+    task_suite,
+    task_id: int,
+    episode: int,
+    args: argparse.Namespace,
+    initial_state_bank: horizon_initial_states.InitialStateBank | None = None,
+) -> tuple[int, np.ndarray]:
+    state_id = args.initial_state_offset + episode
+    if initial_state_bank is not None:
+        return state_id, initial_state_bank.state(task_id, state_id)
+    states = task_suite.get_task_init_states(task_id)
+    state_id %= len(states)
+    return state_id, states[state_id]
+
+
+def _episode_schedule(args: argparse.Namespace, task_end: int, episode_ids: list[int]):
+    if getattr(args, "interleave_modes", False):
+        pair_index = 0
+        for task_id in range(args.task_start, task_end):
+            for episode in episode_ids:
+                modes = args.modes if pair_index % 2 == 0 else list(reversed(args.modes))
+                for mode in modes:
+                    yield mode, task_id, episode
+                pair_index += 1
+    else:
+        for mode in args.modes:
+            for task_id in range(args.task_start, task_end):
+                for episode in episode_ids:
+                    yield mode, task_id, episode
+
+
 def _warmup(
     client: websocket_policy.WebsocketClientPolicy,
     task_suite,
     args: argparse.Namespace,
+    initial_state_bank: horizon_initial_states.InitialStateBank | None = None,
 ) -> None:
     if args.warmup_requests <= 0:
         return
     task = task_suite.get_task(args.task_start)
-    states = task_suite.get_task_init_states(args.task_start)
+    episode = 0
+    if initial_state_bank is not None and getattr(args, "episode_ids", None) is not None:
+        episode = args.episode_ids[0]
+    _, initial_state = _resolve_initial_state(task_suite, args.task_start, episode, args, initial_state_bank)
     env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
     try:
         env.reset()
-        observation = env.set_init_state(states[args.initial_state_offset % len(states)])
+        observation = env.set_init_state(initial_state)
         absolute_step = 0
         for _ in range(args.num_steps_wait):
             observation, _, done, _ = env.step(libero_eval.LIBERO_DUMMY_ACTION)
@@ -999,11 +1079,11 @@ def _run_episode(
     client: websocket_policy.WebsocketClientPolicy,
     args: argparse.Namespace,
     selector: rl_selector.FrozenFeatureSelector | None = None,
+    initial_state_bank: horizon_initial_states.InitialStateBank | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     episode_started = time.perf_counter()
     task = task_suite.get_task(task_id)
-    states = task_suite.get_task_init_states(task_id)
-    state_id = (args.initial_state_offset + episode) % len(states)
+    state_id, initial_state = _resolve_initial_state(task_suite, task_id, episode, args, initial_state_bank)
     env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
     timings: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
@@ -1026,7 +1106,7 @@ def _run_episode(
     max_steps = libero_eval._max_steps(args.task_suite_name)
     try:
         env.reset()
-        observation = env.set_init_state(states[state_id])
+        observation = env.set_init_state(initial_state)
         environment_horizon = libero_eval._env_horizon(env)
         episode_step_limit = max_steps + args.num_steps_wait
         if environment_horizon is not None:
@@ -1041,6 +1121,8 @@ def _run_episode(
         while not success and step < episode_step_limit:
             element = libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
             request_seed = args.seed + task_id * 1_000_000 + episode * 10_000 + step
+            budget_fraction = budget_state.balance / args.v2_budget_capacity
+            episode_progress = step / max(episode_step_limit, 1)
             result, timing = _request(
                 client,
                 element,
@@ -1048,8 +1130,8 @@ def _run_episode(
                 seed=request_seed,
                 previous_actions=previous_actions,
                 previous_horizon=previous_horizon,
-                budget_fraction=budget_state.balance / args.v2_budget_capacity,
-                episode_progress=step / max(episode_step_limit, 1),
+                budget_fraction=budget_fraction,
+                episode_progress=episode_progress,
                 absolute_decision_step=step,
                 args=args,
             )
@@ -1137,6 +1219,12 @@ def _run_episode(
                 selector=selector,
                 selector_rng=np.random.default_rng(request_seed + 991),
             )
+            if mode == ORDERED_MODE and getattr(args, "record_ordered_diagnostics", False):
+                selector_info.update(
+                    previous_horizon=int(previous_horizon),
+                    episode_progress=float(episode_progress),
+                    budget_fraction=float(budget_fraction),
+                )
             selected_horizon = horizon
             horizon = min(horizon, len(action_chunk), episode_step_limit - step)
             if horizon <= 0:
@@ -1908,6 +1996,9 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         # while an aggregate artifact path remains part of every new run's
         # immutable resume contract.
         and not (key == "hierarchical_aggregate_calibration_json" and value is None)
+        and not (key == "initial_state_bank" and value is None)
+        and not (key == "interleave_modes" and value is False)
+        and not (key == "record_ordered_diagnostics" and value is False)
     }
 
 
@@ -2401,13 +2492,21 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError(f"selector_sample_modes were not requested in --modes: {invalid_sample_modes}")
     if args.episode_ids is not None and (not args.episode_ids or len(set(args.episode_ids)) != len(args.episode_ids)):
         raise ValueError("episode_ids must be non-empty and unique when provided.")
+    episode_ids = args.episode_ids if args.episode_ids is not None else list(range(args.num_trials_per_task))
+    task_suite = None
+    initial_state_bank = None
+    if getattr(args, "initial_state_bank", None) is not None:
+        task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
+        task_end = min(task_suite.n_tasks, args.task_start + args.max_tasks)
+        initial_state_bank = _prepare_initial_state_bank(args, task_suite, task_end, episode_ids)
     output_dir = pathlib.Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     rows, completed = _prepare_journal(output_dir, args)
     if (output_dir / "summary.json").exists():
         return
     selectors = _load_selectors(args)
-    task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
+    if task_suite is None:
+        task_suite = libero_eval.benchmark.get_benchmark_dict()[args.task_suite_name]()
     client = websocket_policy.WebsocketClientPolicy(
         args.host,
         args.port,
@@ -2415,29 +2514,27 @@ def main(args: argparse.Namespace) -> None:
         ping_interval=None,
         ping_timeout=None,
     )
-    _warmup(client, task_suite, args)
+    _warmup(client, task_suite, args, initial_state_bank)
     task_end = min(task_suite.n_tasks, args.task_start + args.max_tasks)
-    episode_ids = args.episode_ids if args.episode_ids is not None else list(range(args.num_trials_per_task))
-    for mode in args.modes:
-        for task_id in range(args.task_start, task_end):
-            for episode in episode_ids:
-                episode_key = (mode, task_id, episode)
-                if episode_key in completed:
-                    continue
-                row, episode_decisions = _run_episode(
-                    mode=mode,
-                    task_id=task_id,
-                    episode=episode,
-                    task_suite=task_suite,
-                    client=client,
-                    args=args,
-                    selector=selectors.get(mode),
-                )
-                _append_csv(output_dir / "decisions.csv", episode_decisions)
-                _append_csv(output_dir / "rollout_rows.csv", [row])
-                rows.append(row)
-                completed.add(episode_key)
-                print(json.dumps(row, sort_keys=True), flush=True)
+    for mode, task_id, episode in _episode_schedule(args, task_end, episode_ids):
+        episode_key = (mode, task_id, episode)
+        if episode_key in completed:
+            continue
+        row, episode_decisions = _run_episode(
+            mode=mode,
+            task_id=task_id,
+            episode=episode,
+            task_suite=task_suite,
+            client=client,
+            args=args,
+            selector=selectors.get(mode),
+            initial_state_bank=initial_state_bank,
+        )
+        _append_csv(output_dir / "decisions.csv", episode_decisions)
+        _append_csv(output_dir / "rollout_rows.csv", [row])
+        rows.append(row)
+        completed.add(episode_key)
+        print(json.dumps(row, sort_keys=True), flush=True)
 
     per_task = [_aggregate(rows, mode, task_id) for mode in args.modes for task_id in range(args.task_start, task_end)]
     overall = {mode: _aggregate(rows, mode) for mode in args.modes}
@@ -2484,6 +2581,8 @@ def main(args: argparse.Namespace) -> None:
             "per_task_summary": str(output_dir / "per_task_summary.csv"),
         },
     }
+    if initial_state_bank is not None:
+        summary.update(initial_state_bank.metadata())
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n")
 
 
