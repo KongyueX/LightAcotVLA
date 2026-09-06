@@ -26,7 +26,7 @@ A sidecar：
 
 `/root/autodl-tmp/acotvla/execution_horizon_v2p/eval_formal_pure_base_c5c08fc_original_h5_fixed_h9_10tasks_100trials`
 
-只读取其中`mode=original`的1000行，忽略同目录的fixed_h9数据。原始结果为927/1000=92.7%，policy/RPC/整局均值5.687400/6.290472/16.091163秒；新模型结果尚待本次1000局完成。
+只读取其中`mode=original`的1000行，忽略同目录的fixed_h9数据。原始结果为927/1000=92.7%，policy/RPC/整局均值5.687400/6.290472/16.091163秒。本次新模型1000局已完成，成功913/1000=91.3%，policy/RPC/整局均值1.771632/1.961989/11.230149秒，详见[完整结果](execution_horizon_current_vs_original_10x100.md)。
 
 本轮输出根目录：
 

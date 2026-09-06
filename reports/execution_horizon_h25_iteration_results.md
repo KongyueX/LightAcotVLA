@@ -2,6 +2,8 @@
 
 2026-09-06。本批保留 **A：Round4 的两层 global ordered Transformer**，作为当前最佳动态版本。A 成功率为94.5%，相对 Fixed H5 的 RPC 时间减少68.593%、整局时间减少29.394%；本批后续改动均未超过A。
 
+本页为200局开发对照。后续同一A的[1000局完整评测](execution_horizon_current_vs_original_10x100.md)为913/1000=91.3%，对原始50999历史927/1000=92.7%；新旧完整系统的比较以该报告为准。
+
 ## 共同评测协议
 
 所有版本使用同一H25 policy checkpoint：
