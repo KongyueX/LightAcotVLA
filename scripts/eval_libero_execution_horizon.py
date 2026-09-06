@@ -33,8 +33,10 @@ LEGACY_MODES = (
 SELECTOR_MODES = ("q_guided_selector", "sft_selector", "ppo_selector")
 HIERARCHICAL_MODE = "hierarchical_transformer"
 ORDERED_MODE = "ordered_transformer"
+ORDERED_H10_HYSTERESIS_MODE = "ordered_h10_hysteresis"
+ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE)
 FIXED_H_MODE = "fixed_h"
-MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, ORDERED_MODE, *SELECTOR_MODES)
+MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,6 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--record-ordered-diagnostics",
         action="store_true",
         help="Record existing ordered policy probabilities/logits and controller inputs in selector_json.",
+    )
+    parser.add_argument(
+        "--ordered-h10-enter-margin", type=float, default=0.10,
+        help="Minimum top-two selection-probability gap to enter a long H in ordered_h10_hysteresis.",
+    )
+    parser.add_argument(
+        "--ordered-h10-hold-margin", type=float, default=0.05,
+        help="Minimum gap to retain the previous long H; weaker preferences use H10.",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--resize-size", type=int, default=224)
@@ -543,7 +553,7 @@ def _request(
         )
     if mode == "exact_batched_mc_v2":
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
-    if mode in {"v2_distilled", "v2_value_refined", HIERARCHICAL_MODE, ORDERED_MODE, *SELECTOR_MODES}:
+    if mode in {"v2_distilled", "v2_value_refined", HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES}:
         request.update(
             {
                 "run_execution_horizon_predictor": np.asarray(1, dtype=np.bool_),
@@ -804,21 +814,34 @@ def _select_horizon(
     budget_state: v2.EpisodeBudgetState,
     selector: rl_selector.FrozenFeatureSelector | None = None,
     selector_rng: np.random.Generator | None = None,
+    previous_horizon: int = 10,
 ) -> tuple[int, dict[str, Any]]:
     if mode == "original":
         return args.original_horizon, {"raw_horizon": args.original_horizon, "budget_limited": 0.0}
     if mode in {"fixed_h9", FIXED_H_MODE}:
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
-    if mode == ORDERED_MODE:
-        selected = ordered.selected_horizon(
-            result,
-            model_action_horizon=args.model_action_horizon,
-        )
-        info = {
-            "raw_horizon": selected,
-            "budget_limited": 0.0,
-            "selector_policy": ORDERED_MODE,
-        }
+    if mode in ORDERED_MODES:
+        if mode == ORDERED_H10_HYSTERESIS_MODE:
+            started = time.perf_counter()
+            selected, info = ordered.select_h10_hysteresis(
+                result,
+                model_action_horizon=args.model_action_horizon,
+                previous_horizon=previous_horizon,
+                enter_margin=args.ordered_h10_enter_margin,
+                hold_margin=args.ordered_h10_hold_margin,
+            )
+            info["selector_postprocess_ms"] = (time.perf_counter() - started) * 1000.0
+            info["budget_limited"] = 0.0
+        else:
+            selected = ordered.selected_horizon(
+                result,
+                model_action_horizon=args.model_action_horizon,
+            )
+            info = {
+                "raw_horizon": selected,
+                "budget_limited": 0.0,
+                "selector_policy": ORDERED_MODE,
+            }
         if getattr(args, "record_ordered_diagnostics", False):
             for name in ("ordered_horizon_probability", "ordered_continuation_logits", "candidate_horizons"):
                 value = result.get(f"execution_horizon_{name}")
@@ -1249,8 +1272,13 @@ def _run_episode(
                 budget_state=budget_state,
                 selector=selector,
                 selector_rng=np.random.default_rng(request_seed + 991),
+                previous_horizon=previous_horizon,
             )
-            if mode == ORDERED_MODE and getattr(args, "record_ordered_diagnostics", False):
+            if mode == ORDERED_H10_HYSTERESIS_MODE and len(action_chunk) < horizon:
+                raise ValueError(
+                    f"{mode} selected H{horizon}, but the served chunk has only {len(action_chunk)} actions."
+                )
+            if mode in ORDERED_MODES and getattr(args, "record_ordered_diagnostics", False):
                 selector_info.update(
                     previous_horizon=int(previous_horizon),
                     episode_progress=float(episode_progress),
@@ -2033,6 +2061,7 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         and not (key == "initial_state_bank" and value is None)
         and not (key == "interleave_modes" and value is False)
         and not (key == "record_ordered_diagnostics" and value is False)
+        and not (key.startswith("ordered_h10_") and ORDERED_H10_HYSTERESIS_MODE not in args.modes)
         and not (key in {"original_host", "original_port", "original_model_action_horizon"} and value is None)
     }
 

@@ -45,6 +45,53 @@ def test_disabled_aggregate_calibration_preserves_legacy_resume_signature() -> N
     assert "interleave_modes" not in signature
     assert "record_ordered_diagnostics" not in signature
     assert not {"original_host", "original_port", "original_model_action_horizon"}.intersection(signature)
+    assert not {"ordered_h10_enter_margin", "ordered_h10_hold_margin"}.intersection(signature)
+
+
+def test_h10_hysteresis_uses_previous_execution_and_preserves_raw_diagnostics() -> None:
+    args = evaluator.build_parser().parse_args([
+        "--output-dir", "/tmp/eval", "--modes", "ordered_h10_hysteresis",
+        "--model-action-horizon", "25", "--record-ordered-diagnostics",
+    ])
+    result = {
+        "execution_horizon_ordered_selected_h": np.asarray(20),
+        "execution_horizon_candidate_horizons": np.asarray([5, 10, 15, 20, 25]),
+        "execution_horizon_ordered_horizon_probability": np.asarray([.10, .10, .17, .35, .28]),
+    }
+    selected, info = evaluator._select_horizon(  # noqa: SLF001
+        evaluator.ORDERED_H10_HYSTERESIS_MODE, result, args=args,
+        budget_state=SimpleNamespace(), previous_horizon=25,
+    )
+    assert selected == 10
+    assert info["raw_horizon"] == 20
+    assert info["hysteresis_reason"] == "h10_anchor"
+    assert info["ordered_horizon_probability"] == [.10, .10, .17, .35, .28]
+    assert info["selector_postprocess_ms"] >= 0
+    held, _ = evaluator._select_horizon(  # noqa: SLF001
+        evaluator.ORDERED_H10_HYSTERESIS_MODE, result, args=args,
+        budget_state=SimpleNamespace(), previous_horizon=20,
+    )
+    assert held == 20
+    signature = evaluator._run_signature(args)  # noqa: SLF001
+    assert signature["ordered_h10_enter_margin"] == .10
+    assert signature["ordered_h10_hold_margin"] == .05
+
+
+def test_h10_hysteresis_requests_existing_predictor_with_previous_horizon() -> None:
+    args = evaluator.build_parser().parse_args([
+        "--output-dir", "/tmp/eval", "--model-action-horizon", "25",
+        "--modes", "ordered_h10_hysteresis",
+    ])
+    requests = []
+    client = SimpleNamespace(infer=lambda request: requests.append(request) or {})
+    evaluator._request(  # noqa: SLF001
+        client, {"state": np.zeros(7)}, mode=evaluator.ORDERED_H10_HYSTERESIS_MODE,
+        seed=7, previous_actions=np.zeros((25, 7)), previous_horizon=15,
+        budget_fraction=.5, episode_progress=.3, absolute_decision_step=300, args=args,
+    )
+    assert len(requests) == 1
+    assert bool(requests[0]["run_execution_horizon_predictor"])
+    assert int(requests[0]["execution_horizon_previous_h"]) == 15
 
 
 def test_two_endpoints_route_warmup_and_interleaved_episodes_with_their_horizons(tmp_path, monkeypatch) -> None:
