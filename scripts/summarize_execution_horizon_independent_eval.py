@@ -1,4 +1,4 @@
-"""Summarize a complete, paired H5/ordered-predictor evaluation without model calls."""
+"""Summarize a complete, paired original/new-system evaluation without model calls."""
 # ruff: noqa: SLF001
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _split_rollouts(
     if summary.get("status") != "complete":
         raise ValueError("Evaluation summary is not complete.")
     if int(summary["config"]["original_horizon"]) != 5:
-        raise ValueError("The original-mode reference must be Fixed H5.")
+        raise ValueError("The original-mode execution horizon must be 5.")
     runs: dict[str, dict[tuple[int, int], dict[str, str]]] = {mode: {} for mode in MODES}
     required = {"mode", "task_id", "episode", "initial_state_id", "success", "timeout", *paired._METRICS}
     for row in rows:
@@ -250,33 +250,60 @@ def _state_keys(rows: dict, keys: list[tuple[int, int]]) -> list[dict[str, int]]
     ]
 
 
+def _systems(summary: dict[str, Any]) -> dict[str, Any]:
+    config = summary["config"]
+    separate_original = config.get("original_port") is not None
+    return {
+        REFERENCE: {
+            "label": "Original ACoT-VLA" if separate_original else "Same-policy Fixed H5",
+            "host": config.get("host"),
+            "port": config.get("original_port") if separate_original else config.get("port"),
+            "model_action_horizon": (
+                config.get("original_model_action_horizon") if separate_original else config.get("model_action_horizon")
+            ),
+            "execution_horizon": config["original_horizon"],
+        },
+        CANDIDATE: {
+            "label": "New H25+predictor" if separate_original else "Ordered predictor",
+            "host": config.get("host"),
+            "port": config.get("port"),
+            "model_action_horizon": config.get("model_action_horizon"),
+            "execution_horizon": "dynamic",
+        },
+    }
+
+
 def _directions(analysis: dict[str, Any]) -> list[str]:
     directions = []
+    reference_label = analysis["systems"][REFERENCE]["label"]
     losses = sorted(analysis["paired"]["per_task"].items(), key=lambda item: item[1]["regressions"], reverse=True)
     if losses and losses[0][1]["regressions"]:
         task, values = losses[0]
         directions.append(
-            f"Task {task} 有 {values['regressions']} 个相对 H5 退化初始状态：优先查看已列出的轨迹，"
-            "区分接触、抓取与后期恢复，再决定针对性补采；不先增加层数。"
+            f"Task {task} 有 {values['regressions']} 个相对 {reference_label} 的新系统独有退化状态："
+            "优先查看已列出的完整轨迹，确认接触、抓取或后期恢复问题，再决定改进哪些系统能力。"
         )
     else:
         directions.append(
-            "本批没有相对 H5 的退化状态；保留当前模型，后续先验证跨种子的可重复性，不因 H 分布单一改架构。"
+            f"本批没有相对 {reference_label} 的新系统独有退化状态；保留当前系统，后续关注可重复性。"
         )
-    diagnostics = analysis["decisions"]
-    if "by_episode_outcome" in diagnostics:
-        success_long = diagnostics["by_episode_outcome"]["success"]["long_h_fraction"]
-        failure_long = diagnostics["by_episode_outcome"]["failure"]["long_h_fraction"]
-        if success_long is not None and failure_long is not None:
-            directions.append(
-                f"最终失败/成功 episode 的长 H（≥15）调用占比均值为 {failure_long:.1%}/{success_long:.1%}；"
-                "这是 episode 等权相关性，后续需对相同状态做反事实分支才能判断缩短 H 是否救回，不能直接调阈值。"
-            )
+    common = sorted(
+        analysis["per_task"].items(), key=lambda item: item[1]["paired"]["both_failure"], reverse=True
+    )
+    if analysis["paired"]["both_failure"]:
+        task, result = common[0]
+        directions.append(
+            f"双方共同失败 {analysis['paired']['both_failure']} 个状态，其中 Task {task} 有 "
+            f"{result['paired']['both_failure']} 个；这些是整个新系统后续质量提升的候选，"
+            "终局失败本身不能因果定位到某一次 H 选择。"
+        )
+    else:
+        directions.append("本批没有双方共同失败的状态；选择行为诊断仅作相关性描述，不据终局失败直接改变某个 H。")
     overhead = analysis["runs"][CANDIDATE]["predictor_overhead"]
     if overhead["mean_ms_per_call"] is not None:
         directions.append(
             f"Predictor 每次调用平均 {overhead['mean_ms_per_call']:.3f} ms；"
-            "将其与 RPC/整局时间差结合判断是否值得优化 sidecar 开销，不以 calls 单项代替实际提速。"
+            "结合整个系统的 RPC/整局耗时判断开销优化空间；两个系统的性能差值不能单独归因于 predictor。"
         )
     else:
         directions.append(
@@ -311,6 +338,7 @@ def analyze(eval_dir: pathlib.Path, *, samples: int, seed: int) -> dict[str, Any
         "status": "complete",
         "eval_dir": str(eval_dir.resolve()),
         "source_summary": summary,
+        "systems": _systems(summary),
         "paired_key": ["task_id", "episode"],
         "initial_state_id_verified": True,
         "bootstrap": {
@@ -343,11 +371,12 @@ def _number(value: float | None, *, scale: float = 1.0) -> str:
     return "missing" if value is None else f"{value / scale:.3f}"
 
 
-def _comparison_table(runs: dict[str, Any], audit: dict[str, Any]) -> list[str]:
+def _comparison_table(runs: dict[str, Any], audit: dict[str, Any], systems: dict[str, Any]) -> list[str]:
     reference, candidate = runs[REFERENCE], runs[CANDIDATE]
     success_ci = audit["success_delta_cluster_bootstrap"]["ci95"]
     lines = [
-        "| Metric | Fixed H5 | A ordered | A − H5 [paired 95% CI] |",
+        f"| Metric | {systems[REFERENCE]['label']} | {systems[CANDIDATE]['label']} "
+        "| New − reference [paired 95% CI] |",
         "| --- | ---: | ---: | ---: |",
         f"| Success | {reference['success_count']}/{reference['episodes']} ({reference['success_rate']:.1%}) "
         f"| {candidate['success_count']}/{candidate['episodes']} ({candidate['success_rate']:.1%}) "
@@ -366,21 +395,34 @@ def _comparison_table(runs: dict[str, Any], audit: dict[str, Any]) -> list[str]:
 
 def report_markdown(analysis: dict[str, Any]) -> str:
     summary, audit = analysis["source_summary"], analysis["paired"]
+    systems = analysis["systems"]
     lines = [
         "# Independent execution-horizon evaluation", "",
         f"{audit['paired_episodes']} paired states; {summary['num_tasks']} tasks. Only this bank/run is compared.", "",
     ]
     for key in ("initial_state_bank", "initial_state_bank_sha256", "initial_state_identity_mode", "timing_semantics"):
         lines.append(f"- {key}: {summary.get(key, 'missing')}")
+    lines += ["", "| System | Endpoint | Model action horizon | Execution horizon |", "| --- | --- | ---: | --- |"]
+    for mode in MODES:
+        system = systems[mode]
+        endpoint = f"{system['host']}:{system['port']}" if system["port"] is not None else "missing"
+        horizon = system["model_action_horizon"] if system["model_action_horizon"] is not None else "missing"
+        lines.append(f"| {system['label']} | {endpoint} | {horizon} | {system['execution_horizon']} |")
+    if summary["config"].get("original_port") is not None:
+        lines += [
+            "", "This compares Original ACoT-VLA with the complete New H25+predictor system. "
+            "Performance differences are attributable to the systems as a whole, not the predictor module alone.",
+        ]
     lines += [
-        "", "## All episodes", "", *_comparison_table(analysis["runs"], audit), "",
+        "", "## All episodes", "", *_comparison_table(analysis["runs"], audit, systems), "",
         f"Rescues: {audit['rescues']}; regressions: {audit['regressions']}; "
         f"exact paired McNemar two-sided p={audit['exact_mcnemar_two_sided_p']:.5g}.", "",
     ]
     for metric, (label, _) in METRIC_LABELS.items():
         reduction = audit["speedups"][metric]["candidate_reduction_fraction"]
         lines.append(
-            f"- {label} reduction vs H5: {reduction:.2%}." if reduction is not None else f"- {label} reduction: missing."
+            f"- {label} reduction vs {systems[REFERENCE]['label']}: {reduction:.2%}."
+            if reduction is not None else f"- {label} reduction: missing."
         )
     overhead = analysis["runs"][CANDIDATE]["predictor_overhead"]
     lines += [
@@ -390,7 +432,7 @@ def report_markdown(analysis: dict[str, Any]) -> str:
     ]
     for task, result in analysis["per_task"].items():
         lines += [
-            f"### Task {task}", "", *_comparison_table(result["runs"], result["paired"]), "",
+            f"### Task {task}", "", *_comparison_table(result["runs"], result["paired"], systems), "",
             f"Rescues/regressions: {result['paired']['rescues']}/{result['paired']['regressions']}.", "",
         ]
     both = analysis["both_success"]
@@ -399,8 +441,8 @@ def report_markdown(analysis: dict[str, Any]) -> str:
         f"{both['episodes']} paired states selected by both outcomes; not a substitute for all episodes.", "",
     ]
     if both["paired"] is not None:
-        lines += _comparison_table(both["runs"], both["paired"]) + [""]
-    lines += ["## Ordered decisions", ""]
+        lines += _comparison_table(both["runs"], both["paired"], systems) + [""]
+    lines += [f"## {systems[CANDIDATE]['label']} decisions", ""]
     diagnostics = analysis["decisions"]
     lines.append(f"Diagnostics status: {diagnostics['status']}.")
     if "selected_horizon_counts" in diagnostics:
@@ -440,6 +482,7 @@ def report_markdown(analysis: dict[str, Any]) -> str:
         "within each episode, then weight episodes equally; H counts are call counts. These associations with eventual "
         "episode success are not causal effects. Ordered probabilities describe H selection, not success; "
         "no ECE/Brier/false-long metric is inferred without counterfactual labels. "
+        "Comparisons between different base checkpoints describe whole-system performance, not isolated predictor effects. "
         "Complete experiment configuration and bank provenance are retained in analysis.json/source_summary.", "",
     ]
     return "\n".join(lines)

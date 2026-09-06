@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import copy
 import csv
 import dataclasses
 import json
@@ -40,6 +41,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--original-host", default=None)
+    parser.add_argument("--original-port", type=int, default=None)
+    parser.add_argument("--original-model-action-horizon", type=int, default=None)
     parser.add_argument("--policy-api-key", default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--task-suite-name", default="libero_10")
@@ -554,6 +558,15 @@ def _request(
                 "execution_horizon_previous_valid": np.asarray(previous_actions is not None),
             }
         )
+    if mode == "original" and getattr(args, "original_port", None) is not None:
+        # The original ACoT-VLA endpoint uses final NFE10 and its original
+        # request schema; controller diagnostics remain local to this evaluator.
+        request = {
+            **element,
+            "policy_seed": request["policy_seed"],
+            "profile_policy_timing": request["profile_policy_timing"],
+            "action_cot_denoising_steps": request["action_cot_denoising_steps"],
+        }
     started = time.perf_counter()
     result = client.infer(request)
     wall_ms = (time.perf_counter() - started) * 1000.0
@@ -1007,6 +1020,24 @@ def _episode_schedule(args: argparse.Namespace, task_end: int, episode_ids: list
                     yield mode, task_id, episode
 
 
+def _mode_runtime(
+    mode: str,
+    args: argparse.Namespace,
+    client: websocket_policy.WebsocketClientPolicy,
+    original_client: websocket_policy.WebsocketClientPolicy | None = None,
+) -> tuple[websocket_policy.WebsocketClientPolicy, argparse.Namespace]:
+    if mode != "original" or getattr(args, "original_port", None) is None:
+        return client, args
+    if original_client is None:
+        raise ValueError("A separate original endpoint was configured without its client.")
+    original_args = copy.copy(args)
+    original_args.host = getattr(args, "original_host", None) or args.host
+    original_args.port = args.original_port
+    original_args.model_action_horizon = getattr(args, "original_model_action_horizon", None) or 10
+    original_args.modes = ["original"]
+    return original_client, original_args
+
+
 def _warmup(
     client: websocket_policy.WebsocketClientPolicy,
     task_suite,
@@ -1449,6 +1480,8 @@ def _run_episode(
         "actual_harp_residual_total_ms": total("harp_residual_ms"),
         "actual_harp_gripper_event_total_ms": total("harp_gripper_event_ms"),
     }
+    if getattr(args, "original_port", None) is not None:
+        row["model_action_horizon"] = args.model_action_horizon
     if args.temporal_prefix_reuse_period > 0:
         row.update(
             {
@@ -1920,6 +1953,7 @@ def _read_csv(path: pathlib.Path) -> list[dict[str, str]]:
 
 def _coerce_rollout_row(row: dict[str, str]) -> dict[str, Any]:
     integers = {
+        "model_action_horizon",
         "task_id",
         "episode",
         "initial_state_id",
@@ -1999,6 +2033,7 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         and not (key == "initial_state_bank" and value is None)
         and not (key == "interleave_modes" and value is False)
         and not (key == "record_ordered_diagnostics" and value is False)
+        and not (key in {"original_host", "original_port", "original_model_action_horizon"} and value is None)
     }
 
 
@@ -2065,6 +2100,13 @@ def main(args: argparse.Namespace) -> None:
         raise ValueError("fixed_horizon must be positive.")
     if args.model_action_horizon <= 0:
         raise ValueError("model_action_horizon must be positive.")
+    if getattr(args, "original_port", None) is not None:
+        original_horizon = getattr(args, "original_model_action_horizon", None)
+        original_horizon = 10 if original_horizon is None else original_horizon
+        if "original" not in args.modes or original_horizon <= 0 or args.original_horizon > original_horizon:
+            raise ValueError("The original endpoint requires original mode and a valid model/execution horizon.")
+        if args.final_denoising_steps not in {None, 10}:
+            raise ValueError("The original ACoT-VLA endpoint uses final denoising steps=10.")
     if FIXED_H_MODE in args.modes and args.fixed_horizon > args.model_action_horizon:
         raise ValueError("fixed_horizon cannot exceed model_action_horizon in generic fixed_h mode.")
     if args.final_token_time_warp_alpha is not None and len(args.final_token_time_warp_alpha) != args.model_action_horizon:
@@ -2514,19 +2556,37 @@ def main(args: argparse.Namespace) -> None:
         ping_interval=None,
         ping_timeout=None,
     )
-    _warmup(client, task_suite, args, initial_state_bank)
+    original_client = None
+    if getattr(args, "original_port", None) is not None:
+        original_client = websocket_policy.WebsocketClientPolicy(
+            getattr(args, "original_host", None) or args.host,
+            args.original_port,
+            api_key=args.policy_api_key,
+            ping_interval=None,
+            ping_timeout=None,
+        )
+    mode_runtimes = {mode: _mode_runtime(mode, args, client, original_client) for mode in args.modes}
+    if original_client is None:
+        _warmup(client, task_suite, args, initial_state_bank)
+    else:
+        for mode in args.modes:
+            mode_client, mode_args = mode_runtimes[mode]
+            warmup_args = copy.copy(mode_args)
+            warmup_args.modes = [mode]
+            _warmup(mode_client, task_suite, warmup_args, initial_state_bank)
     task_end = min(task_suite.n_tasks, args.task_start + args.max_tasks)
     for mode, task_id, episode in _episode_schedule(args, task_end, episode_ids):
         episode_key = (mode, task_id, episode)
         if episode_key in completed:
             continue
+        mode_client, mode_args = mode_runtimes[mode]
         row, episode_decisions = _run_episode(
             mode=mode,
             task_id=task_id,
             episode=episode,
             task_suite=task_suite,
-            client=client,
-            args=args,
+            client=mode_client,
+            args=mode_args,
             selector=selectors.get(mode),
             initial_state_bank=initial_state_bank,
         )
@@ -2583,6 +2643,10 @@ def main(args: argparse.Namespace) -> None:
     }
     if initial_state_bank is not None:
         summary.update(initial_state_bank.metadata())
+    if original_client is not None:
+        summary["model_action_horizon_by_mode"] = {
+            mode: mode_args.model_action_horizon for mode, (_, mode_args) in mode_runtimes.items()
+        }
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True, allow_nan=True) + "\n")
 
 

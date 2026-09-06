@@ -17,7 +17,10 @@ def _synthetic() -> tuple[dict, list[dict], list[dict]]:
         "num_tasks": 2,
         "num_trials_per_task": 2,
         "episode_ids": [100, 101],
-        "config": {"task_start": 0, "original_horizon": 5},
+        "config": {
+            "task_start": 0, "original_horizon": 5, "host": "127.0.0.1", "port": 8040,
+            "model_action_horizon": 25,
+        },
         "overall": {mode: {"episodes": 4} for mode in summarizer.MODES},
         "initial_state_bank": "/synthetic/bank",
         "initial_state_identity_mode": "synthetic",
@@ -69,8 +72,13 @@ def _write_csv(path: pathlib.Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-def test_complete_paired_analysis_and_ordered_diagnostics(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("separate_original", [False, True])
+def test_complete_paired_analysis_and_ordered_diagnostics(
+    tmp_path: pathlib.Path, separate_original: bool
+) -> None:
     summary, rows, decisions = _synthetic()
+    if separate_original:
+        summary["config"].update(original_port=8041, original_model_action_horizon=10)
     (tmp_path / "summary.json").write_text(json.dumps(summary))
     _write_csv(tmp_path / "rollout_rows.csv", rows)
     _write_csv(tmp_path / "decisions.csv", decisions)
@@ -97,6 +105,20 @@ def test_complete_paired_analysis_and_ordered_diagnostics(tmp_path: pathlib.Path
     report = summarizer.report_markdown(analysis)
     assert "All episodes" in report and "paired 95% CI" in report and "Both-success" in report
     assert "Selected H:" in report and "Execution H" in report
+    systems = analysis["systems"]
+    assert systems[summarizer.CANDIDATE]["model_action_horizon"] == 25
+    if separate_original:
+        assert systems[summarizer.REFERENCE]["label"] == "Original ACoT-VLA"
+        assert systems[summarizer.REFERENCE]["port"] == 8041
+        assert systems[summarizer.REFERENCE]["model_action_horizon"] == 10
+        assert "New H25+predictor" in report
+        assert "Fixed H5" not in report
+        assert "systems as a whole" in report
+        assert "50999" not in report
+    else:
+        assert systems[summarizer.REFERENCE]["label"] == "Same-policy Fixed H5"
+        assert systems[summarizer.REFERENCE]["model_action_horizon"] == 25
+        assert "Same-policy Fixed H5" in report
 
 
 def test_pairing_and_complete_grid_must_match_summary() -> None:

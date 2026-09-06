@@ -26,6 +26,13 @@ def test_default_eval_modes_and_horizon_remain_legacy() -> None:
     assert args.initial_state_bank is None
     assert args.interleave_modes is False
     assert args.record_ordered_diagnostics is False
+    assert args.original_host is None
+    assert args.original_port is None
+    assert args.original_model_action_horizon is None
+    client = object()
+    routed_client, routed_args = evaluator._mode_runtime("original", args, client)  # noqa: SLF001
+    assert routed_client is client
+    assert routed_args is args
 
 
 def test_disabled_aggregate_calibration_preserves_legacy_resume_signature() -> None:
@@ -37,6 +44,77 @@ def test_disabled_aggregate_calibration_preserves_legacy_resume_signature() -> N
     assert "initial_state_bank" not in signature
     assert "interleave_modes" not in signature
     assert "record_ordered_diagnostics" not in signature
+    assert not {"original_host", "original_port", "original_model_action_horizon"}.intersection(signature)
+
+
+def test_two_endpoints_route_warmup_and_interleaved_episodes_with_their_horizons(tmp_path, monkeypatch) -> None:
+    args = evaluator.build_parser().parse_args([
+        "--output-dir", str(tmp_path), "--host", "main-host", "--port", "8040",
+        "--original-host", "original-host", "--original-port", "8041",
+        "--original-model-action-horizon", "10", "--model-action-horizon", "25",
+        "--modes", "original", "ordered_transformer", "--interleave-modes",
+        "--max-tasks", "1", "--num-trials-per-task", "2", "--final-denoising-steps", "10",
+    ])
+    suite = SimpleNamespace(n_tasks=1)
+    monkeypatch.setattr(
+        evaluator.libero_eval, "benchmark", SimpleNamespace(get_benchmark_dict=lambda: {"libero_10": lambda: suite})
+    )
+    monkeypatch.setattr(
+        evaluator.websocket_policy, "WebsocketClientPolicy",
+        lambda host, port, **kwargs: SimpleNamespace(host=host, port=port),
+    )
+    warmed = []
+    ran = []
+    monkeypatch.setattr(
+        evaluator, "_warmup",
+        lambda client, task_suite, mode_args, bank: warmed.append(
+            (client.host, client.port, mode_args.modes, mode_args.model_action_horizon)
+        ),
+    )
+
+    def run_episode(*, mode, task_id, episode, client, args, **kwargs):
+        ran.append((mode, episode, client.port, args.model_action_horizon))
+        assert args.host == client.host and args.port == client.port
+        return {
+            "mode": mode, "task_id": task_id, "episode": episode,
+            "model_action_horizon": args.model_action_horizon,
+        }, []
+
+    monkeypatch.setattr(evaluator, "_run_episode", run_episode)
+    monkeypatch.setattr(evaluator, "_aggregate", lambda rows, mode, task_id=None: {"mode": mode, "h_distribution": {}})
+    evaluator.main(args)
+
+    assert warmed == [("original-host", 8041, ["original"], 10), ("main-host", 8040, ["ordered_transformer"], 25)]
+    assert ran == [
+        ("original", 0, 8041, 10), ("ordered_transformer", 0, 8040, 25),
+        ("ordered_transformer", 1, 8040, 25), ("original", 1, 8041, 10),
+    ]
+    assert args.host == "main-host" and args.model_action_horizon == 25
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["model_action_horizon_by_mode"] == {"original": 10, "ordered_transformer": 25}
+    signature = json.loads((tmp_path / "run_config.json").read_text())
+    assert signature["original_host"] == "original-host"
+    assert signature["original_port"] == 8041
+    assert signature["original_model_action_horizon"] == 10
+
+
+def test_original_second_endpoint_receives_only_legacy_request_fields() -> None:
+    args = evaluator.build_parser().parse_args([
+        "--output-dir", "/tmp/eval", "--original-port", "8041",
+        "--model-action-horizon", "25", "--final-denoising-steps", "10",
+    ])
+    requests = []
+    original_client = SimpleNamespace(infer=lambda request: requests.append(request) or {})
+    _, original_args = evaluator._mode_runtime("original", args, object(), original_client)  # noqa: SLF001
+    assert original_args.model_action_horizon == 10
+    evaluator._request(  # noqa: SLF001
+        original_client, {"state": np.zeros(7)}, mode="original", seed=7,
+        previous_actions=None, previous_horizon=5, budget_fraction=0.5,
+        episode_progress=0.1, absolute_decision_step=10, args=original_args,
+    )
+
+    assert set(requests[0]) == {"state", "policy_seed", "profile_policy_timing", "action_cot_denoising_steps"}
+    assert int(requests[0]["action_cot_denoising_steps"]) == 10
 
 
 @pytest.fixture
