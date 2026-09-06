@@ -10,6 +10,7 @@ from flax import nnx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import optax
 
 from openpi.execution_horizon import last_block_smdp as core
 from openpi.models.execution_horizon_predictor import ExecutionHorizonPredictorConfig
@@ -112,3 +113,39 @@ def test_ppo_actor_gradient_is_separate_from_true_mc_critic_supervision():
     assert any(np.any(np.asarray(leaf) != 0) for leaf in jax.tree.leaves(gradients["last_block"]))
     assert all(np.all(np.isfinite(np.asarray(leaf))) for leaf in jax.tree.leaves(gradients))
     assert all(np.isfinite(float(value)) for value in metrics.values())
+
+
+def test_actual_ppo_step_updates_actor_and_critic_without_nested_state_values():
+    selector = _selector()
+    tokens = jax.random.normal(jax.random.key(3), (2, 29, 8))
+    context = jax.random.normal(jax.random.key(4), (2, 8))
+    initial = core.apply_last_block(selector.graphdef, selector.params, tokens, context)
+    actions = jnp.asarray([0, 4])
+    batch = {
+        "tokens": tokens, "context": context, "anchor_logits": initial["continuation_logits"],
+        "old_probabilities": initial["probabilities"],
+        "old_log_prob": initial["log_probabilities"][jnp.arange(2), actions], "action": actions,
+        "advantage": jnp.asarray([1.0, -1.0]), "success_mc": jnp.asarray([1.0, 0.0]),
+        "cost_mc": jnp.asarray([0.2, 0.5]),
+    }
+    args = trainer.Args("/unused", "/unused", "/unused")
+    actor_optimizer = optax.adam(args.learning_rate)
+    critic_optimizer = optax.adam(args.critic_learning_rate)
+    state = (
+        actor_optimizer.init(trainer._partition(selector.params, core.ACTOR_ROOTS)),  # noqa: SLF001
+        critic_optimizer.init(trainer._partition(selector.params, core.CRITIC_ROOTS)),  # noqa: SLF001
+    )
+    step = trainer._make_ppo_step(selector.graphdef, args, actor_optimizer, critic_optimizer)  # noqa: SLF001
+    updated, next_state, norm = step(selector.params, state, batch)
+    assert np.isfinite(float(norm))
+    assert trainer._actor_changed(selector.params, updated) is True  # noqa: SLF001
+    for roots in (core.ACTOR_ROOTS, core.CRITIC_ROOTS):
+        old = trainer._partition(selector.params, roots).flat_state()  # noqa: SLF001
+        new = trainer._partition(updated, roots).flat_state()  # noqa: SLF001
+        assert old.keys() == new.keys()
+        assert all(isinstance(value, nnx.VariableState) for value in new.values())
+        assert any(not np.array_equal(old[path].value, new[path].value) for path in old)
+    following, _, next_norm = step(updated, next_state, batch)
+    assert np.isfinite(float(next_norm))
+    outputs = core.apply_last_block(selector.graphdef, following, tokens, context)
+    assert np.all(np.isfinite(np.asarray(outputs["probabilities"])))

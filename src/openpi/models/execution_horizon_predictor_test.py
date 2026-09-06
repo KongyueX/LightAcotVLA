@@ -98,8 +98,19 @@ def test_last_block_cache_is_opt_in_and_replays_original_summary_and_logits() ->
 
     cfg = dataclasses.replace(_transformer_config(), ordered_continuation_head=True)
     model = predictor_lib.ExecutionHorizonPredictor(cfg, rngs=nnx.Rngs(7))
+
+    class CacheProbe(nnx.Module):
+        def __init__(self, predictor):
+            self.predictor = predictor
+
+        def predict(self, *, proprioception, return_training_cache=False, **kwargs):
+            return self.predictor(
+                state=proprioception, return_training_cache=return_training_cache, **kwargs
+            )
+
     inputs = _inputs(batch_size=1)
-    predict = nnx_utils.module_jit(model.__call__, static_argnames=("return_training_cache",))
+    inputs["proprioception"] = inputs.pop("state")
+    predict = nnx_utils.module_jit(CacheProbe(model).predict, static_argnames=("return_training_cache",))
     ordinary = predict(**inputs)
     cached = predict(**inputs, return_training_cache=True)
     assert "last_block_input" not in ordinary

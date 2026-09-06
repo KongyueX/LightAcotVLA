@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from flax import nnx
+from flax import traverse_util
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -29,11 +30,16 @@ class Args(base_trainer.Args):
 
 
 def _partition(params: nnx.State, roots: tuple[str, ...]) -> nnx.State:
-    return nnx.State({name: params[name] for name in roots})
+    flat = {path: value for path, value in params.flat_state().items() if path[0] in roots}
+    return nnx.State(traverse_util.unflatten_dict(flat))
 
 
 def _replace_roots(params: nnx.State, replacement: nnx.State) -> nnx.State:
-    return nnx.State({name: replacement[name] if name in replacement else value for name, value in params.items()})
+    replacement_flat = replacement.flat_state()
+    roots = {path[0] for path in replacement_flat}
+    flat = {path: value for path, value in params.flat_state().items() if path[0] not in roots}
+    flat.update(replacement_flat)
+    return nnx.State(traverse_util.unflatten_dict(flat))
 
 
 def _actor_changed(before: nnx.State, after: nnx.State) -> bool:
@@ -317,6 +323,25 @@ def _ppo_loss(graphdef, params, batch, args):
     }
 
 
+def _make_ppo_step(graphdef, args, actor_optimizer, critic_optimizer):
+    @jax.jit
+    def train_step(current_params, state, batch):
+        (_, _), gradients = jax.value_and_grad(
+            lambda p: _ppo_loss(graphdef, p, batch, args), has_aux=True
+        )(current_params)
+        norm = optax.global_norm(gradients)
+        gradients = jax.tree.map(lambda value: value * jnp.minimum(1.0, 1.0 / jnp.maximum(norm, 1e-12)), gradients)
+        actor = _partition(current_params, last_block.ACTOR_ROOTS)
+        critic = _partition(current_params, last_block.CRITIC_ROOTS)
+        actor_updates, actor_state = actor_optimizer.update(_partition(gradients, last_block.ACTOR_ROOTS), state[0], actor)
+        critic_updates, critic_state = critic_optimizer.update(_partition(gradients, last_block.CRITIC_ROOTS), state[1], critic)
+        updated = _replace_roots(current_params, optax.apply_updates(actor, actor_updates))
+        updated = _replace_roots(updated, optax.apply_updates(critic, critic_updates))
+        return updated, (actor_state, critic_state), norm
+
+    return train_step
+
+
 def main(args: Args) -> None:
     base_trainer._validate_args(args)  # noqa: SLF001
     if args.critic_warmup_epochs < 0:
@@ -350,21 +375,7 @@ def main(args: Args) -> None:
             critic_optimizer.init(_partition(params, last_block.CRITIC_ROOTS)),
         )
 
-        @jax.jit
-        def train_step(current_params, state, batch):
-            (_, _), gradients = jax.value_and_grad(
-                lambda p: _ppo_loss(graphdef, p, batch, args), has_aux=True
-            )(current_params)
-            norm = optax.global_norm(gradients)
-            gradients = jax.tree.map(lambda value: value * jnp.minimum(1.0, 1.0 / jnp.maximum(norm, 1e-12)), gradients)
-            actor = _partition(current_params, last_block.ACTOR_ROOTS)
-            critic = _partition(current_params, last_block.CRITIC_ROOTS)
-            actor_updates, actor_state = actor_optimizer.update(_partition(gradients, last_block.ACTOR_ROOTS), state[0], actor)
-            critic_updates, critic_state = critic_optimizer.update(_partition(gradients, last_block.CRITIC_ROOTS), state[1], critic)
-            updated = _replace_roots(current_params, optax.apply_updates(actor, actor_updates))
-            updated = _replace_roots(updated, optax.apply_updates(critic, critic_updates))
-            return updated, (actor_state, critic_state), norm
-
+        train_step = _make_ppo_step(graphdef, args, actor_optimizer, critic_optimizer)
         evaluate = jax.jit(lambda p, batch: _ppo_loss(graphdef, p, batch, args)[1])
 
         def read_metrics(current_params):
