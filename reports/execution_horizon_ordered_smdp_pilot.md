@@ -62,6 +62,14 @@
 
 `ROOT=/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19`。沿用现有Python3.11环境；CPU训练不与计时rollout并发，不重装环境。首批只做概率/GAE/更新/接口的基本检查，随后直接进行正式采集。阶段与最终结果按此前约定飞书汇报。
 
+## 启动记录
+
+代码提交`7da6e48`已通过代理推送main并同步服务器快照。39项相关CPU测试通过（5.60秒），包含概率初始化、采样记录、GAE实际duration、PPO更新/KL回退及两轮执行边界。
+
+2026-09-06 23:18启动tmux `h25_ordered_smdp`，controller初始PID18401、首collector PID18403；继续使用原A服务PID1937/8040，不重启或修改其权重。输出根目录为`ROOT/ordered_smdp_7da6e48_20260906_v1`，外层`controller.log/exit`，阶段状态为`experiment/status.json`；各轮在`experiment/round01`、`round02`，保存collect/train/validate日志与exit、collection/training/validation结果。
+
+初始化exit0；23:19已关闭首批2条训练轨迹。首个task0/episode100正式记录包含14 calls、256维特征、正确采样log probability；末段选择25但成功前实际执行1步，duration恢复正常。该检查复用正式数据，没有额外rollout。当前处于第一轮采集，参数更新将在100条完整轨迹后自动开始，尚无PPO候选成绩。
+
 ## Limitations
 
 这是head-only PPO小试，不是完整Transformer或VLA的RL微调；不能补足被冻结表示遗漏的实际执行反馈。仅两轮、单seed，验证/最终状态此前已用于模型开发，不能宣称独立最终泛化。随机采样训练与贪心评测存在策略差异，效果以实际贪心闭环为准。原版时间为历史参考，旧/当前A同200keys有9局未解释差异，不将小幅变化当稳健结论。若当前动作生成的跨chunk不连续是主要限制，需另立动作接续训练试验，本批不捆绑实施。
