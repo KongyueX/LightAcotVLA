@@ -369,7 +369,9 @@ class Policy(BasePolicy):
         if hasattr(model, "sample_actions_batched_mc"):
             self._sample_actions_batched_mc = nnx_utils.module_jit(model.sample_actions_batched_mc)
         if getattr(model, "execution_horizon_predictor_enabled", False):
-            self._predict_execution_horizon = nnx_utils.module_jit(model.predict_execution_horizon)
+            self._predict_execution_horizon = nnx_utils.module_jit(
+                model.predict_execution_horizon, static_argnames=("return_training_cache",)
+            )
         if all(
             hasattr(model, name)
             for name in (
@@ -758,6 +760,7 @@ class Policy(BasePolicy):
         export_execution_horizon_prefix_tokens = _as_bool(
             inputs.pop("export_execution_horizon_prefix_tokens", False)
         )
+        export_last_block_cache = _as_bool(inputs.pop("execution_horizon_export_last_block_cache", False))
         previous_actions = inputs.pop("execution_horizon_previous_actions", None)
         previous_h = inputs.pop("execution_horizon_previous_h", 1)
         budget_balance = inputs.pop("execution_horizon_budget_balance", 0.0)
@@ -810,6 +813,7 @@ class Policy(BasePolicy):
             override_inputs.pop("batched_mc_samples", None)
             override_inputs.pop("run_execution_horizon_predictor", None)
             override_inputs.pop("export_execution_horizon_prefix_tokens", None)
+            override_inputs.pop("execution_horizon_export_last_block_cache", None)
             override_inputs.pop("execution_horizon_previous_actions", None)
             override_inputs.pop("execution_horizon_previous_h", None)
             override_inputs.pop("execution_horizon_budget_balance", None)
@@ -1721,6 +1725,7 @@ class Policy(BasePolicy):
                 previous_valid=jnp.asarray(previous_valid, dtype=jnp.bool_).reshape((1,)),
                 prefix_tokens=result.get("execution_horizon_prefix_tokens"),
                 prefix_mask=result.get("execution_horizon_prefix_mask"),
+                **({"return_training_cache": True} if export_last_block_cache else {}),
             )
             _block_until_ready(predictor_outputs)
             detailed_timing["execution_horizon_predictor_ms"] = (time.monotonic() - predictor_start) * 1000

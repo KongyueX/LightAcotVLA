@@ -2972,6 +2972,7 @@ class ACOT_VLA(_model.BaseModel):
         previous_valid: jax.Array,
         prefix_tokens: jax.Array | None = None,
         prefix_mask: jax.Array | None = None,
+        return_training_cache: bool = False,
     ) -> dict[str, jax.Array]:
         if not self.execution_horizon_predictor_enabled:
             raise ValueError("This model was created without execution_horizon_predictor=True.")
@@ -2987,6 +2988,7 @@ class ACOT_VLA(_model.BaseModel):
             previous_valid=previous_valid,
             prefix_tokens=prefix_tokens,
             prefix_mask=prefix_mask,
+            return_training_cache=return_training_cache,
         )
 
     def sample_actions_profile_implicit(self, prefix_state: dict[str, Any]) -> dict[str, Any]:

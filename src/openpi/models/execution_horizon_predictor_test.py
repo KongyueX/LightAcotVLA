@@ -93,6 +93,25 @@ def _paired_labels() -> dict[str, jax.Array]:
     }
 
 
+def test_last_block_cache_is_opt_in_and_replays_original_summary_and_logits() -> None:
+    from openpi.shared import nnx_utils
+
+    cfg = dataclasses.replace(_transformer_config(), ordered_continuation_head=True)
+    model = predictor_lib.ExecutionHorizonPredictor(cfg, rngs=nnx.Rngs(7))
+    inputs = _inputs(batch_size=1)
+    predict = nnx_utils.module_jit(model.__call__, static_argnames=("return_training_cache",))
+    ordinary = predict(**inputs)
+    cached = predict(**inputs, return_training_cache=True)
+    assert "last_block_input" not in ordinary
+    assert cached["last_block_input"].shape == (1, 29, 32)
+    np.testing.assert_allclose(cached["ordered_continuation_logits"], ordinary["ordered_continuation_logits"], atol=1e-5)
+    sequence = model.temporal_layers[-1](cached["last_block_input"])
+    pooled = jnp.mean(sequence[:, -25:], axis=1)
+    summary = nnx.swish(model.summary_proj(jnp.concatenate([pooled, cached["last_block_context"]], axis=-1)))
+    np.testing.assert_allclose(summary, cached["temporal_feature"], rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(model.raw_h_ordinal_head(summary), cached["ordered_continuation_logits"], atol=1e-5)
+
+
 def test_predictor_config_rejects_unknown_backbone():
     with pytest.raises(ValueError, match="temporal_backbone"):
         predictor_lib.ExecutionHorizonPredictorConfig(temporal_backbone="unknown")

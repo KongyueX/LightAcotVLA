@@ -717,8 +717,11 @@ class ExecutionHorizonPredictor(nnx.Module):
         previous_valid: jax.Array,
         prefix_tokens: jax.Array | None = None,
         prefix_mask: jax.Array | None = None,
+        return_training_cache: bool = False,
     ) -> dict[str, jax.Array]:
         cfg = self.config
+        if return_training_cache and cfg.temporal_backbone != "transformer":
+            raise ValueError("Last-block training cache requires the transformer backbone.")
         prefix_feature = jnp.asarray(prefix_feature, dtype=jnp.float32)
         state = jnp.asarray(state, dtype=jnp.float32)[..., : cfg.state_dim]
         coarse_actions = jnp.asarray(coarse_actions, dtype=jnp.float32)[..., : cfg.coarse_horizon, : cfg.action_dim]
@@ -780,7 +783,9 @@ class ExecutionHorizonPredictor(nnx.Module):
                     )
                 visual_tokens = self.visual_pool(prefix_tokens, prefix_mask) + context[:, None, :]
                 sequence = jnp.concatenate([visual_tokens, sequence], axis=1)
-            for layer in self.temporal_layers:
+            for index, layer in enumerate(self.temporal_layers):
+                if return_training_cache and index == len(self.temporal_layers) - 1:
+                    last_block_input = sequence
                 sequence = layer(sequence)
             tokens = sequence[:, -cfg.action_horizon :]
 
@@ -803,6 +808,9 @@ class ExecutionHorizonPredictor(nnx.Module):
             "temporal_feature": summary,
             "overlap_consistency": consistency[..., 0],
         }
+        if return_training_cache:
+            result["last_block_input"] = last_block_input
+            result["last_block_context"] = context
         if cfg.ordered_continuation_head:
             continuation_logits = raw_h_ordinal_logits
             if cfg.ordered_readout == "candidate":

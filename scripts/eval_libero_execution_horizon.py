@@ -36,7 +36,8 @@ HIERARCHICAL_MODE = "hierarchical_transformer"
 ORDERED_MODE = "ordered_transformer"
 ORDERED_H10_HYSTERESIS_MODE = "ordered_h10_hysteresis"
 ORDERED_SMDP_MODE = "ordered_smdp"
-ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE)
+LAST_BLOCK_SMDP_MODE = "ordered_smdp_last_block"
+ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE)
 FIXED_H_MODE = "fixed_h"
 MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES)
 
@@ -93,6 +94,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--ordered-smdp-sample", action="store_true",
         help="Sample the ordered SMDP policy for on-policy training; greedy by default.",
+    )
+    parser.add_argument(
+        "--last-block-smdp-params", default=None,
+        help="Last-block actor/critic checkpoint directory for ordered_smdp_last_block.",
+    )
+    parser.add_argument(
+        "--last-block-smdp-sample", action="store_true",
+        help="Sample the last-block policy during on-policy collection; greedy by default.",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--resize-size", type=int, default=224)
@@ -563,6 +572,8 @@ def _request(
         )
     if mode == "exact_batched_mc_v2":
         request["batched_mc_samples"] = np.asarray(args.teacher_samples, dtype=np.int32)
+    if mode == LAST_BLOCK_SMDP_MODE:
+        request["execution_horizon_export_last_block_cache"] = np.asarray(True, dtype=np.bool_)
     if mode in {"v2_distilled", "v2_value_refined", HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES}:
         request.update(
             {
@@ -802,8 +813,8 @@ def _risk_config(args: argparse.Namespace) -> v2.V2RiskConfig:
 
 def _load_selectors(
     args: argparse.Namespace,
-) -> dict[str, rl_selector.FrozenFeatureSelector | ordered_smdp.OrderedSMDPSelector]:
-    selectors: dict[str, rl_selector.FrozenFeatureSelector | ordered_smdp.OrderedSMDPSelector] = {}
+) -> dict[str, Any]:
+    selectors: dict[str, Any] = {}
     needs_q_selector = any(mode in {"q_guided_selector", "sft_selector"} for mode in args.modes)
     if needs_q_selector:
         if args.q_guided_selector_params is None:
@@ -822,6 +833,15 @@ def _load_selectors(
         if max(model.candidates) > args.model_action_horizon:
             raise ValueError("Ordered SMDP candidates cannot exceed the served action horizon.")
         selectors[ORDERED_SMDP_MODE] = model
+    if LAST_BLOCK_SMDP_MODE in args.modes:
+        from openpi.execution_horizon import last_block_smdp
+
+        if args.last_block_smdp_params is None:
+            raise ValueError("ordered_smdp_last_block requires --last-block-smdp-params.")
+        model = last_block_smdp.LastBlockHorizonSelector.load(args.last_block_smdp_params)
+        if max(model.candidates) > args.model_action_horizon:
+            raise ValueError("Last-block candidates cannot exceed the served action horizon.")
+        selectors[LAST_BLOCK_SMDP_MODE] = model
     return selectors
 
 
@@ -831,7 +851,7 @@ def _select_horizon(
     *,
     args: argparse.Namespace,
     budget_state: v2.EpisodeBudgetState,
-    selector: rl_selector.FrozenFeatureSelector | ordered_smdp.OrderedSMDPSelector | None = None,
+    selector: Any | None = None,
     selector_rng: np.random.Generator | None = None,
     previous_horizon: int = 10,
 ) -> tuple[int, dict[str, Any]]:
@@ -840,7 +860,17 @@ def _select_horizon(
     if mode in {"fixed_h9", FIXED_H_MODE}:
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
     if mode in ORDERED_MODES:
-        if mode == ORDERED_SMDP_MODE:
+        if mode == LAST_BLOCK_SMDP_MODE:
+            if selector is None:
+                raise ValueError("ordered_smdp_last_block requires an actor/critic checkpoint.")
+            started = time.perf_counter()
+            selected, info = selector.decide(
+                result, sample=args.last_block_smdp_sample, rng=selector_rng,
+            )
+            info["selector_postprocess_ms"] = (time.perf_counter() - started) * 1000.0
+            info["smdp_sampled"] = bool(args.last_block_smdp_sample)
+            info["budget_limited"] = 0.0
+        elif mode == ORDERED_SMDP_MODE:
             if selector is None:
                 raise ValueError("ordered_smdp requires an actor/critic checkpoint.")
             started = time.perf_counter()
@@ -1095,6 +1125,7 @@ def _warmup(
     task_suite,
     args: argparse.Namespace,
     initial_state_bank: horizon_initial_states.InitialStateBank | None = None,
+    last_block_selector: Any | None = None,
 ) -> None:
     if args.warmup_requests <= 0:
         return
@@ -1137,7 +1168,7 @@ def _warmup(
                         args.contextual_fusion_switch_step,
                     ]
                 for warmup_step in warmup_steps:
-                    _request(
+                    warmup_result = _request(
                         client,
                         element,
                         mode=mode,
@@ -1149,6 +1180,8 @@ def _warmup(
                         absolute_decision_step=warmup_step,
                         args=args,
                     )
+                    if mode == LAST_BLOCK_SMDP_MODE and last_block_selector is not None:
+                        last_block_selector.decide(warmup_result[0], sample=False)
     finally:
         libero_eval._safe_close_env(env)
 
@@ -1161,7 +1194,7 @@ def _run_episode(
     task_suite,
     client: websocket_policy.WebsocketClientPolicy,
     args: argparse.Namespace,
-    selector: rl_selector.FrozenFeatureSelector | ordered_smdp.OrderedSMDPSelector | None = None,
+    selector: Any | None = None,
     initial_state_bank: horizon_initial_states.InitialStateBank | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     episode_started = time.perf_counter()
@@ -1303,7 +1336,7 @@ def _run_episode(
                 selector_rng=np.random.default_rng(request_seed + 991),
                 previous_horizon=previous_horizon,
             )
-            if mode in {ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE} and len(action_chunk) < horizon:
+            if mode in {ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE} and len(action_chunk) < horizon:
                 raise ValueError(
                     f"{mode} selected H{horizon}, but the served chunk has only {len(action_chunk)} actions."
                 )
@@ -2092,6 +2125,7 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         and not (key == "record_ordered_diagnostics" and value is False)
         and not (key.startswith("ordered_h10_") and ORDERED_H10_HYSTERESIS_MODE not in args.modes)
         and not (key.startswith("ordered_smdp_") and ORDERED_SMDP_MODE not in args.modes)
+        and not (key.startswith("last_block_smdp_") and LAST_BLOCK_SMDP_MODE not in args.modes)
         and not (key in {"original_host", "original_port", "original_model_action_horizon"} and value is None)
     }
 
@@ -2626,13 +2660,19 @@ def main(args: argparse.Namespace) -> None:
         )
     mode_runtimes = {mode: _mode_runtime(mode, args, client, original_client) for mode in args.modes}
     if original_client is None:
-        _warmup(client, task_suite, args, initial_state_bank)
+        if LAST_BLOCK_SMDP_MODE in args.modes:
+            _warmup(client, task_suite, args, initial_state_bank, selectors[LAST_BLOCK_SMDP_MODE])
+        else:
+            _warmup(client, task_suite, args, initial_state_bank)
     else:
         for mode in args.modes:
             mode_client, mode_args = mode_runtimes[mode]
             warmup_args = copy.copy(mode_args)
             warmup_args.modes = [mode]
-            _warmup(mode_client, task_suite, warmup_args, initial_state_bank)
+            if mode == LAST_BLOCK_SMDP_MODE:
+                _warmup(mode_client, task_suite, warmup_args, initial_state_bank, selectors[LAST_BLOCK_SMDP_MODE])
+            else:
+                _warmup(mode_client, task_suite, warmup_args, initial_state_bank)
     task_end = min(task_suite.n_tasks, args.task_start + args.max_tasks)
     for mode, task_id, episode in _episode_schedule(args, task_end, episode_ids):
         episode_key = (mode, task_id, episode)

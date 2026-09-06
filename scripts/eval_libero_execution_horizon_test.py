@@ -31,6 +31,8 @@ def test_default_eval_modes_and_horizon_remain_legacy() -> None:
     assert args.original_model_action_horizon is None
     assert args.ordered_smdp_params is None
     assert args.ordered_smdp_sample is False
+    assert args.last_block_smdp_params is None
+    assert args.last_block_smdp_sample is False
     client = object()
     routed_client, routed_args = evaluator._mode_runtime("original", args, client)  # noqa: SLF001
     assert routed_client is client
@@ -49,6 +51,36 @@ def test_disabled_aggregate_calibration_preserves_legacy_resume_signature() -> N
     assert not {"original_host", "original_port", "original_model_action_horizon"}.intersection(signature)
     assert not {"ordered_h10_enter_margin", "ordered_h10_hold_margin"}.intersection(signature)
     assert not {"ordered_smdp_params", "ordered_smdp_sample"}.intersection(signature)
+    assert not {"last_block_smdp_params", "last_block_smdp_sample"}.intersection(signature)
+
+
+def test_last_block_mode_requests_opt_in_cache_and_preserves_sampling_metadata() -> None:
+    args = evaluator.build_parser().parse_args([
+        "--output-dir", "/tmp/eval", "--model-action-horizon", "25",
+        "--modes", "ordered_smdp_last_block", "--last-block-smdp-params", "/tmp/checkpoint",
+        "--last-block-smdp-sample",
+    ])
+    requests = []
+    client = SimpleNamespace(infer=lambda request: requests.append(request) or {})
+    evaluator._request(  # noqa: SLF001
+        client, {"state": np.zeros(7)}, mode=evaluator.LAST_BLOCK_SMDP_MODE,
+        seed=7, previous_actions=None, previous_horizon=10, budget_fraction=.5,
+        episode_progress=.1, absolute_decision_step=10, args=args,
+    )
+    assert len(requests) == 1
+    assert bool(requests[0]["execution_horizon_export_last_block_cache"])
+    calls = []
+    selector = SimpleNamespace(decide=lambda outputs, **kwargs: calls.append(kwargs) or (
+        5, {"raw_horizon": 25, "selector_policy": "ordered_smdp_last_block", "smdp_action_index": 0},
+    ))
+    h, info = evaluator._select_horizon(  # noqa: SLF001
+        evaluator.LAST_BLOCK_SMDP_MODE, {}, args=args, selector=selector,
+        budget_state=SimpleNamespace(), selector_rng=np.random.default_rng(7),
+    )
+    assert h == 5 and calls[0]["sample"] is True
+    assert info["smdp_sampled"] is True
+    assert info["selector_postprocess_ms"] >= 0
+    assert evaluator._run_signature(args)["last_block_smdp_params"] == "/tmp/checkpoint"  # noqa: SLF001
 
 
 def test_ordered_smdp_loads_checkpoint_and_logs_actual_sampling_policy(tmp_path) -> None:
