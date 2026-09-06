@@ -56,8 +56,14 @@ def _validate_args(args: Args) -> None:
 
 
 def _read_csv(path: pathlib.Path) -> list[dict[str, str]]:
-    with path.open(newline="") as handle:
-        return list(csv.DictReader(handle))
+    previous_limit = csv.field_size_limit()
+    try:
+        # A serialized 29x256 token cache exceeds the CSV default of 128 KiB.
+        csv.field_size_limit(max(previous_limit, 1024 * 1024))
+        with path.open(newline="") as handle:
+            return list(csv.DictReader(handle))
+    finally:
+        csv.field_size_limit(previous_limit)
 
 
 def _episode_targets(

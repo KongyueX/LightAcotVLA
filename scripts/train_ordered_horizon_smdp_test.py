@@ -17,6 +17,28 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent))
 trainer = importlib.import_module("train_ordered_horizon_smdp")
 
 
+def test_production_csv_reader_accepts_real_last_block_cache_and_restores_limit(tmp_path):
+    tokens = np.full((29, 256), 0.12345679, dtype=np.float32)
+    context = np.full(256, 0.12345679, dtype=np.float32)
+    payload = json.dumps({
+        "smdp_last_block_input": tokens.tolist(), "smdp_last_block_context": context.tolist(),
+    })
+    assert len(payload) > 131072
+    path = tmp_path / "decisions.csv"
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["mode", "selector_json"])
+        writer.writeheader()
+        writer.writerow({"mode": "ordered_smdp_last_block", "selector_json": payload})
+        writer.writerow({"mode": "ordered_smdp", "selector_json": "{}"})
+    previous_limit = csv.field_size_limit()
+
+    rows = trainer._read_csv(path)  # noqa: SLF001
+
+    np.testing.assert_array_equal(json.loads(rows[0]["selector_json"])["smdp_last_block_input"], tokens)
+    assert rows[1] == {"mode": "ordered_smdp", "selector_json": "{}"}
+    assert csv.field_size_limit() == previous_limit
+
+
 def test_ordered_ppo_initial_ratio_clipping_and_anchor_kl():
     selector = OrderedSMDPSelector.initialize(feature_dim=3)
     args = trainer.Args("/unused/rollout", "/unused/input.npz", "/unused/output")
