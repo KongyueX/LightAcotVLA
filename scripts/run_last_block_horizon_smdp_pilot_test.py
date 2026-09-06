@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import pathlib
 import sys
@@ -76,13 +77,22 @@ def test_new_bank_ids_commands_and_client_cpu_environment(
 
 
 @pytest.mark.parametrize("updates", [(False, False, False), (True, False, True)])
+@pytest.mark.parametrize("reuse_first", [False, True])
 def test_three_round_bound_and_unchanged_actor_validation_reuse(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, updates: tuple[bool, bool, bool],
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, updates: tuple[bool, bool, bool], reuse_first: bool,
 ) -> None:
     args = _args(tmp_path)
     args.output_dir.mkdir()
     calls = []
     monkeypatch.setattr(pilot, "validate_train_bank", lambda _path: {"status": "complete"})
+    old_checkpoint = tmp_path / "old/step0/checkpoint"
+    old_collection = tmp_path / "old/round01/collection"
+    if reuse_first:
+        args.reuse_first_round_dir = old_collection.parent
+        monkeypatch.setattr(pilot, "_reuse_first_round", lambda _args: (
+            old_checkpoint, old_collection, _rows(pilot.TRAIN_EPISODES[0], 87, 2.0),
+            {"status": "complete", "config": {"last_block_smdp_params": str(old_checkpoint)}},
+        ))
 
     def read_eval(directory, *, mode, episodes, seed):
         if directory == args.reference_eval_dir:
@@ -118,7 +128,8 @@ def test_three_round_bound_and_unchanged_actor_validation_reuse(
     monkeypatch.setattr(pilot, "_run_stage", run_stage)
     result = pilot._run(args)
     assert len(result["rounds"]) == 3
-    assert sum(name == "collect" for _, name, _, _ in calls) == 3
+    assert sum(name == "initialize" for _, name, _, _ in calls) == int(not reuse_first)
+    assert sum(name == "collect" for _, name, _, _ in calls) == 3 - int(reuse_first)
     assert sum(name == "train" for _, name, _, _ in calls) == 3
     assert sum(name == "validate" for _, name, _, _ in calls) == sum(updates)
     assert sum(name == "final_eval" for _, name, _, _ in calls) == int(any(updates))
@@ -126,6 +137,14 @@ def test_three_round_bound_and_unchanged_actor_validation_reuse(
     assert result["rounds"][2]["input_checkpoint"] == result["rounds"][1]["selector_checkpoint"]
     assert (args.output_dir / "round02/validation_reused.json").is_file()
     assert not (args.output_dir / "round02/validation").exists()
+    if reuse_first:
+        assert result["rounds"][0]["input_checkpoint"] == str(old_checkpoint)
+        assert result["rounds"][0]["collection_dir"] == str(old_collection)
+        assert result["rounds"][0]["collection_reused"]
+        assert not (args.output_dir / "round01/collection").exists()
+        first_train = next(command for parent, name, command, _ in calls if parent.name == "round01" and name == "train")
+        assert first_train[first_train.index("--rollout-dir") + 1] == str(old_collection)
+        assert first_train[first_train.index("--input-checkpoint") + 1] == str(old_checkpoint)
     if any(updates):
         assert result["selected_round"] == 1
         assert result["rounds"][1]["validation_source"] == result["rounds"][0]["validation_source"]
@@ -146,3 +165,48 @@ def test_existing_output_is_preserved(tmp_path: pathlib.Path) -> None:
     with pytest.raises(FileExistsError):
         pilot.main(args)
     assert marker.read_text() == "keep"
+
+
+def test_reuse_requires_complete_sampled_first_round_bound_to_A(tmp_path: pathlib.Path) -> None:
+    args = _args(tmp_path)
+    old_dir = tmp_path / "old"
+    old_round = old_dir / "round01"
+    collection = old_round / "collection"
+    collection.mkdir(parents=True)
+    checkpoint = old_dir / "step0/checkpoint"
+    (checkpoint / "params").mkdir(parents=True)
+    (checkpoint / "metadata.json").write_text(json.dumps({
+        "anchor_predictor_dir": str(args.anchor_predictor_dir), "seed": args.seed,
+    }))
+    (old_round / "collect.exit").write_text("0\n")
+    failed_log = old_round / "train.log"
+    failed_log.write_text("existing failed training log\n")
+    (old_dir / "run_config.json").write_text(json.dumps({
+        "anchor_predictor_dir": str(args.anchor_predictor_dir), "reference_eval_dir": str(args.reference_eval_dir),
+        "seed": args.seed, "maximum_rounds": 3,
+        "training_bank": {"round_episode_ids": [list(ids) for ids in pilot.TRAIN_EPISODES]},
+        "validation_episode_ids": list(pilot.VALIDATION_EPISODES), "final_episode_ids": list(pilot.FINAL_EPISODES),
+    }))
+    config = {
+        "modes": [pilot.MODE], "last_block_smdp_sample": True, "episode_ids": list(pilot.TRAIN_EPISODES[0]),
+        "num_trials_per_task": 10, "task_start": 0, "max_tasks": 10, "seed": args.seed,
+        "model_action_horizon": 25, "action_cot_denoising_steps": 10, "final_denoising_steps": 10,
+        "num_steps_wait": 10, "resize_size": 224, "warmup_requests": 1, "initial_state_offset": 0,
+        "last_block_smdp_params": str(checkpoint), "initial_state_bank": str(args.train_state_bank),
+    }
+    (collection / "run_config.json").write_text(json.dumps(config))
+    (collection / "summary.json").write_text(json.dumps({"status": "complete", "task_suite": "libero_10", "config": config}))
+    rows = [{**row, "mode": pilot.MODE} for row in _rows(pilot.TRAIN_EPISODES[0], 87, 2.0).values()]
+    with (collection / "rollout_rows.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    args.reuse_first_round_dir = old_round
+    saved_checkpoint, saved_collection, saved_rows, _ = pilot._reuse_first_round(args)
+    assert saved_checkpoint == checkpoint and saved_collection == collection
+    assert len(saved_rows) == 100
+    assert failed_log.read_text() == "existing failed training log\n"
+    config["last_block_smdp_sample"] = False
+    (collection / "run_config.json").write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="incompatible last_block_smdp_sample"):
+        pilot._reuse_first_round(args)
