@@ -75,3 +75,18 @@ def test_failure_updates_visible_stage_status(tmp_path, monkeypatch):
     status = runner.json.loads((tmp_path / "status.json").read_text())
     assert status["status"] == "failed"
     assert status["stage"] == "development"
+
+
+def test_active_first_eval_is_not_relaunched_as_resume(tmp_path, monkeypatch):
+    original = ["python", "eval.py", "--output-dir", str(tmp_path / "development")]
+    runner.write_json(tmp_path / "status.json", {
+        "status": "running", "stage": "development", "child_pid": 99999999, "command": original,
+    })
+    proc = pathlib.Path("/proc/99999999/cmdline")
+    original_exists = pathlib.Path.exists
+    original_read_bytes = pathlib.Path.read_bytes
+    monkeypatch.setattr(pathlib.Path, "exists", lambda path: True if path == proc else original_exists(path))
+    monkeypatch.setattr(pathlib.Path, "read_bytes", lambda path: b"\0".join(x.encode() for x in original) + b"\0" if path == proc else original_read_bytes(path))
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *a, **k: pytest.fail("active stage must not duplicate"))
+    with pytest.raises(RuntimeError, match="still running"):
+        runner.run_stage(SimpleNamespace(output_dir=tmp_path, code_dir=tmp_path), "development", [*original, "--resume"])

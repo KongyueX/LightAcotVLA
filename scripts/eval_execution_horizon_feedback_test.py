@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import eval_libero_execution_horizon as evaluator
 import numpy as np
+import pytest
+import run_execution_horizon_feedback_experiment as runner
 
 from openpi.execution_horizon import v2
 
@@ -60,3 +62,21 @@ def test_unused_feedback_options_preserve_old_resume_signature():
     assert "feedback_current_params" not in signature
     assert "feedback_history_params" not in signature
     assert args.modes == list(evaluator.LEGACY_MODES)
+
+
+@pytest.mark.parametrize("phase", ["development", "final"])
+def test_feedback_runner_creates_first_journal_then_resumes_it(tmp_path, phase):
+    runner_args = SimpleNamespace(
+        python="python", code_dir=tmp_path, output_dir=tmp_path, host="localhost", port=8040,
+    )
+    output = tmp_path / phase
+    output.mkdir()
+    command = runner.eval_command(runner_args, phase, (336,), ["history"])
+    args = evaluator.build_parser().parse_args(command[2:])
+    assert args.resume is False
+    assert evaluator._prepare_journal(output, args) == ([], set())
+    assert (output / "run_config.json").exists()
+    resumed_command = runner.eval_command(runner_args, phase, (336,), ["history"])
+    resumed = evaluator.build_parser().parse_args(resumed_command[2:])
+    assert resumed.resume is True
+    assert evaluator._prepare_journal(output, resumed) == ([], set())

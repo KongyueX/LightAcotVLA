@@ -80,7 +80,7 @@ def run_stage(args: argparse.Namespace, name: str, command: list[str]) -> None:
         proc = pathlib.Path(f"/proc/{pid}/cmdline")
         if previous.get("stage") == name and pid and proc.exists():
             actual_command = proc.read_bytes().rstrip(b"\0").split(b"\0")
-            if actual_command == [value.encode() for value in command]:
+            if actual_command == [value.encode() for value in previous["command"]]:
                 raise RuntimeError(f"Stage {name} is still running in PID {pid}; do not start a duplicate.")
     if name in ("train_current", "train_history", "generate_bank"):
         destination = pathlib.Path(command[command.index("--output-dir") + 1])
@@ -122,13 +122,15 @@ def eval_command(args: argparse.Namespace, phase: str, episodes: tuple[int, ...]
         "--initial-state-bank", str(args.output_dir / "initial_state_bank_0_365"),
         "--episode-ids", *map(str, episodes), "--modes", ANCHOR,
         *(f"ordered_feedback_{variant}" for variant in variants),
-        "--interleave-modes", "--record-ordered-diagnostics", "--resume",
+        "--interleave-modes", "--record-ordered-diagnostics",
         "--model-action-horizon", "25", "--seed", "7", "--max-tasks", "10",
         "--action-cot-denoising-steps", "10", "--final-denoising-steps", "10",
         "--num-steps-wait", "10", "--resize-size", "224",
     ]
     for variant in variants:
         command += [f"--feedback-{variant}-params", str(args.output_dir / f"training_{variant}/checkpoint.npz")]
+    if (args.output_dir / phase / "run_config.json").exists():
+        command.append("--resume")
     return command
 
 
