@@ -124,7 +124,8 @@ def test_loader_reads_root_files_and_rejects_duplicate_observations(tmp_path) ->
         trainer.load_roots(tmp_path, _selector())
 
 
-def test_training_keeps_step_zero_and_fits_normalization_only_on_training(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("selection_metric", ["expected_loss", "greedy"])
+def test_training_keeps_step_zero_and_fits_normalization_only_on_training(tmp_path, monkeypatch, selection_metric) -> None:
     training = tmp_path / "train"
     validation = tmp_path / "validation"
     training.mkdir()
@@ -139,12 +140,100 @@ def test_training_keeps_step_zero_and_fits_normalization_only_on_training(tmp_pa
     monkeypatch.setattr(FeedbackSelector, "initialize_from_predictor", lambda *args, **kwargs: _selector())
     args = trainer.Args(
         str(training), str(validation), "/unused/A", str(tmp_path / "trained"),
-        max_updates=1, log_every=1, patience=1,
+        max_updates=1, log_every=1, patience=1, selection_metric=selection_metric,
     )
     summary = trainer.train(args)
     assert summary["best_step"] == 0
     assert summary["residual_changed"] is False
+    assert summary["selection_metric"] == selection_metric
+    if selection_metric == "greedy":
+        assert summary["best_greedy_validation"]["greedy_success_delta"] == 0.0
+        assert summary["best_greedy_validation"]["greedy_rpc_delta_seconds"] == 0.0
+        assert summary["selected_h_changes_from_step0"] == 0
     loaded = FeedbackSelector.load(summary["checkpoint"])
     np.testing.assert_array_equal(loaded.feature_mean[:256], np.ones(256))
     np.testing.assert_array_equal(loaded.feature_std, np.ones(FEATURE_DIM))
     np.testing.assert_array_equal(loaded.params["output_w"], np.zeros((64, 4)))
+
+
+def _greedy_score(numerator: int, denominator: int, rpc_delta: float) -> dict[str, object]:
+    return {
+        "greedy_success_delta_fraction": {"numerator": numerator, "denominator": denominator},
+        "greedy_rpc_delta_seconds": rpc_delta,
+    }
+
+
+def test_expected_loss_improvement_does_not_replace_a_with_worse_greedy_success() -> None:
+    args = trainer.Args("/train", "/validation", "/A", "/output")
+    assert args.selection_metric == "expected_loss"
+    candidate, baseline = {"loss": -0.02}, {"loss": -0.01}
+    assert trainer.checkpoint_improves(args.selection_metric, candidate, baseline)
+    assert not trainer.checkpoint_improves(
+        "greedy", candidate, baseline,
+        candidate_greedy=_greedy_score(-1, 300, -0.01), best_greedy=_greedy_score(0, 1, 0.0),
+    )
+    assert not trainer.checkpoint_improves("expected_loss", baseline, baseline)
+
+
+def test_greedy_success_has_priority_and_exact_ties_use_rpc_seconds() -> None:
+    candidate, baseline = {"loss": 1.0}, {"loss": 0.0}
+    assert trainer.checkpoint_improves(
+        "greedy", candidate, baseline,
+        candidate_greedy=_greedy_score(1, 300, 0.001), best_greedy=_greedy_score(0, 1, 0.0),
+    )
+    assert trainer.checkpoint_improves(
+        "greedy", candidate, baseline,
+        candidate_greedy=_greedy_score(2, 10, -0.001), best_greedy=_greedy_score(1, 5, 0.0),
+    )
+    assert not trainer.checkpoint_improves(
+        "greedy", candidate, baseline,
+        candidate_greedy=_greedy_score(2, 10, 0.001), best_greedy=_greedy_score(1, 5, 0.0),
+    )
+
+
+def test_greedy_scoring_uses_deployment_numpy_forward_with_raw_features(monkeypatch) -> None:
+    selector = _selector()
+    selector.feature_mean[:] = 4.0
+    selector.feature_std[:] = 2.0
+    params = {name: value.copy() for name, value in selector.params.items()}
+    params["output_b"][:] = [0, 20, -10, 0]
+    record = _record()
+    labels = trainer.paired_advantages(record)
+    validation = {name: np.stack([value, value]) for name, value in labels.items()}
+    validation["anchor_logits"] = np.stack([record["continuation_logits"]] * 2)
+    validation["history_valid"] = np.asarray([True, False])
+    raw_features = np.stack([np.arange(FEATURE_DIM), np.arange(FEATURE_DIM) + 8]).astype(np.float32)
+    original_forward = FeedbackSelector.forward
+    calls = []
+
+    def recording_forward(self, feature, logits, *, history_valid):
+        calls.append(feature.copy())
+        return original_forward(self, feature, logits, history_valid=history_valid)
+
+    monkeypatch.setattr(FeedbackSelector, "forward", recording_forward)
+    metrics = trainer.greedy_validation_metrics(selector, params, raw_features, validation)
+    np.testing.assert_array_equal(np.stack(calls), raw_features)
+    np.testing.assert_array_equal(selector.params["output_b"], np.zeros(4))
+    assert metrics["greedy_selected_h"] == [15, 10]
+    assert metrics["changed_h_roots_vs_A"] == 1
+    assert metrics["greedy_success_delta"] == 0.0
+    assert metrics["greedy_rpc_delta_seconds"] == 0.5
+
+
+def test_greedy_success_tie_recovers_integer_paired_counts() -> None:
+    selector = _selector()
+    params = {name: value.copy() for name, value in selector.params.items()}
+    params["output_b"][:] = [0, 20, -10, 0]
+    validation = {
+        "anchor_logits": np.stack([_record()["continuation_logits"]] * 3),
+        "history_valid": np.ones(3), "paired_count": np.full((3, 5), 5),
+        "success_delta": np.zeros((3, 5), dtype=np.float32),
+        "rpc_delta_seconds": np.zeros((3, 5), dtype=np.float32),
+    }
+    validation["success_delta"][:, 2] = [0.6, -0.2, -0.4]
+    metrics = trainer.greedy_validation_metrics(selector, params, np.zeros((3, FEATURE_DIM), dtype=np.float32), validation)
+    assert metrics["greedy_selected_h"] == [15, 15, 15]
+    assert metrics["paired_net_success_count"] == 0
+    assert metrics["selected_paired_trial_count"] == 15
+    assert metrics["greedy_success_delta"] == 0.0
+    assert metrics["greedy_success_delta_fraction"] == {"numerator": 0, "denominator": 1}

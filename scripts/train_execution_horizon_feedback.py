@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from fractions import Fraction
 import json
 import pathlib
 import time
@@ -35,6 +36,7 @@ class Args:
     max_updates: int = 2000
     log_every: int = 25
     patience: int = 8
+    selection_metric: Literal["expected_loss", "greedy"] = "expected_loss"
 
 
 def paired_advantages(record: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
@@ -162,11 +164,81 @@ def _metrics_to_python(metrics: dict[str, jax.Array]) -> dict[str, float]:
     return result
 
 
+def greedy_validation_metrics(
+    selector: FeedbackSelector,
+    params: dict[str, Any],
+    raw_features: np.ndarray,
+    validation: dict[str, np.ndarray],
+) -> dict[str, Any]:
+    """Score deployment NumPy argmax choices against root-equal paired labels."""
+    deployed = dataclasses.replace(selector, params={name: np.asarray(value) for name, value in params.items()})
+    selected_indices = []
+    anchor_indices = []
+    for feature, logits, valid in zip(
+        raw_features, validation["anchor_logits"], validation["history_valid"], strict=True
+    ):
+        prediction = deployed.forward(feature, logits, history_valid=bool(valid))
+        selected_indices.append(int(np.argmax(prediction["probabilities"])))
+        anchor_indices.append(int(np.argmax(ordered_log_probabilities(logits))))
+    selected_indices = np.asarray(selected_indices, dtype=np.int32)
+    rows = np.arange(len(selected_indices))
+    paired_counts = np.asarray(validation["paired_count"])[rows, selected_indices].astype(np.int64)
+    success_deltas = np.asarray(validation["success_delta"], dtype=np.float64)[rows, selected_indices]
+    # These labels are ratios of integer paired binary outcomes. Restore their
+    # numerators so equal successes do not become unequal through float32 sums.
+    net_successes = np.rint(success_deltas * paired_counts).astype(np.int64)
+    success_fraction = sum(
+        (Fraction(int(net), int(count)) for net, count in zip(net_successes, paired_counts, strict=True)),
+        Fraction(0),
+    ) / len(rows)
+    rpc_delta = float(np.mean(
+        np.asarray(validation["rpc_delta_seconds"], dtype=np.float64)[rows, selected_indices]
+    ))
+    selected_h = [selector.candidates[index] for index in selected_indices]
+    return {
+        "roots": len(rows),
+        "greedy_success_delta": float(success_fraction),
+        "greedy_success_delta_fraction": {
+            "numerator": success_fraction.numerator, "denominator": success_fraction.denominator,
+        },
+        "greedy_rpc_delta_seconds": rpc_delta,
+        "greedy_paired_advantage": float(success_fraction) - RPC_WEIGHT * rpc_delta,
+        "paired_net_success_count": int(net_successes.sum()),
+        "selected_paired_trial_count": int(paired_counts.sum()),
+        "changed_h_roots_vs_A": int(np.sum(selected_indices != np.asarray(anchor_indices))),
+        "greedy_selected_h": selected_h,
+        "greedy_selected_h_counts": {str(h): selected_h.count(h) for h in selector.candidates},
+        "semantics": "Deployment NumPy argmax; mean paired success difference per root, then mean RPC difference in seconds.",
+    }
+
+
+def checkpoint_improves(
+    selection_metric: Literal["expected_loss", "greedy"],
+    candidate_validation: dict[str, float],
+    best_validation: dict[str, float],
+    *,
+    candidate_greedy: dict[str, Any] | None = None,
+    best_greedy: dict[str, Any] | None = None,
+) -> bool:
+    if selection_metric == "expected_loss":
+        return candidate_validation["loss"] < best_validation["loss"]
+    if selection_metric != "greedy" or candidate_greedy is None or best_greedy is None:
+        raise ValueError("Greedy checkpoint selection requires candidate and incumbent greedy validation metrics.")
+
+    def score(metrics: dict[str, Any]) -> tuple[Fraction, float]:
+        fraction = metrics["greedy_success_delta_fraction"]
+        return Fraction(fraction["numerator"], fraction["denominator"]), -metrics["greedy_rpc_delta_seconds"]
+
+    return score(candidate_greedy) > score(best_greedy)
+
+
 def train(args: Args) -> dict[str, Any]:
     if any(value <= 0 for value in (args.batch_size, args.max_updates, args.log_every, args.patience)):
         raise ValueError("Batch size, update budget, logging period and patience must be positive.")
     if not np.isfinite(args.learning_rate) or args.learning_rate <= 0:
         raise ValueError("learning_rate must be finite and positive.")
+    if args.selection_metric not in {"expected_loss", "greedy"}:
+        raise ValueError("selection_metric must be expected_loss or greedy.")
     output = pathlib.Path(args.output_dir).resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Feedback output directory must be empty.")
@@ -177,6 +249,7 @@ def train(args: Args) -> dict[str, Any]:
     validation_groups = {tuple(group) for group in validation_summary["episode_groups"]}
     if training_groups & validation_groups:
         raise ValueError("Training and validation task/episode groups must be disjoint.")
+    validation_raw_features = validation["feature"].copy() if args.selection_metric == "greedy" else None
     selector.fit_normalization(training["feature"])
     for data in (training, validation):
         data["feature"] = ((data["feature"] - selector.feature_mean) / selector.feature_std).astype(np.float32)
@@ -197,8 +270,14 @@ def train(args: Args) -> dict[str, Any]:
         evaluate = jax.jit(lambda current_params, batch: loss(current_params, batch)[1])
         initial_validation = _metrics_to_python(evaluate(params, validation_batch))
         initial_training = _metrics_to_python(evaluate(params, training_batch))
+        initial_greedy = (
+            greedy_validation_metrics(selector, params, validation_raw_features, validation)
+            if validation_raw_features is not None else None
+        )
         best_params = jax.tree.map(lambda value: np.asarray(value).copy(), params)
         best_validation = initial_validation
+        best_greedy = initial_greedy
+        last_greedy = initial_greedy
         best_step = 0
         stale = 0
         final_step = 0
@@ -207,6 +286,8 @@ def train(args: Args) -> dict[str, Any]:
         output.mkdir(parents=True, exist_ok=True)
         with (output / "training_log.jsonl").open("w") as log_handle:
             initial_row = {"step": 0, "train": initial_training, "validation": initial_validation, "best_step": 0}
+            if initial_greedy is not None:
+                initial_row["validation_greedy"] = initial_greedy
             log_handle.write(json.dumps(initial_row, sort_keys=True) + "\n")
             log_handle.flush()
             print(json.dumps(initial_row, sort_keys=True), flush=True)
@@ -223,14 +304,24 @@ def train(args: Args) -> dict[str, Any]:
                     continue
                 train_metrics = _metrics_to_python(evaluate(params, training_batch))
                 validation_metrics = _metrics_to_python(evaluate(params, validation_batch))
-                if validation_metrics["loss"] < best_validation["loss"]:
+                last_greedy = (
+                    greedy_validation_metrics(selector, params, validation_raw_features, validation)
+                    if validation_raw_features is not None else None
+                )
+                if checkpoint_improves(
+                    args.selection_metric, validation_metrics, best_validation,
+                    candidate_greedy=last_greedy, best_greedy=best_greedy,
+                ):
                     best_step = step
                     best_validation = validation_metrics
+                    best_greedy = last_greedy
                     best_params = jax.tree.map(lambda value: np.asarray(value).copy(), params)
                     stale = 0
                 else:
                     stale += 1
                 row = {"step": step, "train": train_metrics, "validation": validation_metrics, "best_step": best_step}
+                if last_greedy is not None:
+                    row["validation_greedy"] = last_greedy
                 log_handle.write(json.dumps(row, sort_keys=True) + "\n")
                 log_handle.flush()
                 print(json.dumps(row, sort_keys=True), flush=True)
@@ -241,6 +332,7 @@ def train(args: Args) -> dict[str, Any]:
         "training_objective": "paired_monte_carlo_advantage_with_anchor_forward_kl",
         "rpc_weight_per_second": RPC_WEIGHT, "anchor_kl_weight": ANCHOR_KL_WEIGHT,
         "normalization_fit": "train_only", "best_step": best_step,
+        "selection_metric": args.selection_metric,
         "train_dir": str(pathlib.Path(args.train_dir).resolve()),
         "validation_dir": str(pathlib.Path(args.validation_dir).resolve()),
     })
@@ -257,7 +349,20 @@ def train(args: Args) -> dict[str, Any]:
         "cost_signal": "paired remaining RPC difference in seconds",
         "a_frozen": True, "critic": False,
         "residual_changed": bool(np.any(best_params["output_w"] != 0) or np.any(best_params["output_b"] != 0)),
+        "selection_metric": args.selection_metric,
     }
+    if best_greedy is not None:
+        summary.update({
+            "checkpoint_selection": "Maximize root-equal greedy paired success delta; equal success chooses lower RPC delta seconds; step0 included.",
+            "initial_greedy_validation": initial_greedy,
+            "best_greedy_validation": best_greedy,
+            "last_greedy_validation": last_greedy,
+            "selected_h_changes_from_step0": sum(
+                before != after for before, after in zip(
+                    initial_greedy["greedy_selected_h"], best_greedy["greedy_selected_h"], strict=True,
+                )
+            ),
+        })
     (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     return summary
 
