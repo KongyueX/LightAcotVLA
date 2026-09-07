@@ -1,0 +1,544 @@
+{
+  "data_recollected": false,
+  "default_service": "A",
+  "development": {
+    "feedback_selector_ms_per_call": {
+      "ordered_feedback_current": 0.2328006254710018,
+      "ordered_transformer": 0.0
+    },
+    "pairwise": {
+      "ordered_feedback_current": {
+        "both_failure": 5,
+        "both_success": 90,
+        "exact_mcnemar_two_sided_p": 1.0,
+        "gates": {
+          "full_elapsed_reduced_ucb95": false,
+          "policy_time_reduced_ucb95": false,
+          "rpc_time_reduced_ucb95": false,
+          "strict_engineering_go": false,
+          "success_noninferior_lcb95": false
+        },
+        "metric_delta_candidate_minus_reference": {
+          "actual_episode_elapsed_total_ms": {
+            "ci95": [
+              -403.6899157665903,
+              1635.2454313813942
+            ],
+            "lcb95": -303.6034779709298,
+            "mean": 441.2568672327325,
+            "num_clusters": 100,
+            "num_rows": 100,
+            "num_tasks": 10,
+            "ucb95": 1414.7827307162813
+          },
+          "actual_policy_total_ms": {
+            "ci95": [
+              -109.16500050248578,
+              403.4303349861872
+            ],
+            "lcb95": -79.61025427374989,
+            "mean": 108.30930267460644,
+            "num_clusters": 100,
+            "num_rows": 100,
+            "num_tasks": 10,
+            "ucb95": 351.61780126043595
+          },
+          "policy_calls": {
+            "ci95": [
+              -1.0302499999999999,
+              4.02
+            ],
+            "lcb95": -0.7499999999999999,
+            "mean": 1.06,
+            "num_clusters": 100,
+            "num_rows": 100,
+            "num_tasks": 10,
+            "ucb95": 3.4
+          },
+          "policy_rpc_wall_total_ms": {
+            "ci95": [
+              -129.20711122255307,
+              454.9661307622443
+            ],
+            "lcb95": -89.67781009967439,
+            "mean": 119.71345038618892,
+            "num_clusters": 100,
+            "num_rows": 100,
+            "num_tasks": 10,
+            "ucb95": 394.1751043482218
+          }
+        },
+        "net_rescues": -1,
+        "paired_episodes": 100,
+        "per_task": {
+          "0": {
+            "elapsed_ms_delta": 390.31546344049275,
+            "episodes": 10,
+            "policy_calls_delta": 0.6,
+            "policy_ms_delta": 54.1062300093472,
+            "regressions": 0,
+            "rescues": 1,
+            "rpc_ms_delta": 57.19768111594021,
+            "success_delta": 0.1
+          },
+          "1": {
+            "elapsed_ms_delta": -491.38865787535906,
+            "episodes": 10,
+            "policy_calls_delta": -2.0,
+            "policy_ms_delta": -210.6110570486635,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": -233.00136998295784,
+            "success_delta": 0.0
+          },
+          "2": {
+            "elapsed_ms_delta": -44.687223667278886,
+            "episodes": 10,
+            "policy_calls_delta": 0.0,
+            "policy_ms_delta": -19.74868713878095,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": -25.720675010234118,
+            "success_delta": 0.0
+          },
+          "3": {
+            "elapsed_ms_delta": 4350.323620438576,
+            "episodes": 10,
+            "policy_calls_delta": 10.4,
+            "policy_ms_delta": 1095.3569165896624,
+            "regressions": 2,
+            "rescues": 0,
+            "rpc_ms_delta": 1210.6487742625177,
+            "success_delta": -0.2
+          },
+          "4": {
+            "elapsed_ms_delta": 155.38587924093008,
+            "episodes": 10,
+            "policy_calls_delta": 0.4,
+            "policy_ms_delta": 49.42420441657305,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": 58.35410892032087,
+            "success_delta": 0.0
+          },
+          "5": {
+            "elapsed_ms_delta": -68.98161205463111,
+            "episodes": 10,
+            "policy_calls_delta": 0.3,
+            "policy_ms_delta": 20.160413812845945,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": 22.581025352701545,
+            "success_delta": 0.0
+          },
+          "6": {
+            "elapsed_ms_delta": 78.7280110642314,
+            "episodes": 10,
+            "policy_calls_delta": 0.3,
+            "policy_ms_delta": 19.10476884804666,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": 20.141017390415072,
+            "success_delta": 0.0
+          },
+          "7": {
+            "elapsed_ms_delta": -998.7693623639643,
+            "episodes": 10,
+            "policy_calls_delta": -1.8,
+            "policy_ms_delta": -199.1965375840664,
+            "regressions": 0,
+            "rescues": 1,
+            "rpc_ms_delta": -221.3273894507438,
+            "success_delta": 0.1
+          },
+          "8": {
+            "elapsed_ms_delta": 177.14597270824015,
+            "episodes": 10,
+            "policy_calls_delta": 0.0,
+            "policy_ms_delta": 14.78797267191112,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": 21.429909439757466,
+            "success_delta": 0.0
+          },
+          "9": {
+            "elapsed_ms_delta": 864.496581396088,
+            "episodes": 10,
+            "policy_calls_delta": 2.4,
+            "policy_ms_delta": 259.70880216918886,
+            "regressions": 1,
+            "rescues": 0,
+            "rpc_ms_delta": 286.83142182417214,
+            "success_delta": -0.1
+          }
+        },
+        "regressions": 3,
+        "rescues": 2,
+        "speedups": {
+          "actual_episode_elapsed_total_ms": {
+            "candidate_mean": 11305.573863903992,
+            "candidate_reduction_fraction": -0.04061524229898024,
+            "reference_mean": 10864.31699667126,
+            "reference_over_candidate": 0.9609699717551216
+          },
+          "actual_policy_total_ms": {
+            "candidate_mean": 1853.3590756263584,
+            "candidate_reduction_fraction": -0.06206659795806353,
+            "reference_mean": 1745.049772951752,
+            "reference_over_candidate": 0.9415605404808011
+          },
+          "policy_calls": {
+            "candidate_mean": 17.15,
+            "candidate_reduction_fraction": -0.06587942821628333,
+            "reference_mean": 16.09,
+            "reference_over_candidate": 0.938192419825073
+          },
+          "policy_rpc_wall_total_ms": {
+            "candidate_mean": 2059.8420796589926,
+            "candidate_reduction_fraction": -0.06170387291849807,
+            "reference_mean": 1940.1286292728037,
+            "reference_over_candidate": 0.9418822192398324
+          }
+        },
+        "success_delta_cluster_bootstrap": {
+          "ci95": [
+            -0.08,
+            0.05
+          ],
+          "lcb95": -0.06999999999999999,
+          "mean": -0.01,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 0.04
+        },
+        "success_rate_delta": -0.01
+      }
+    },
+    "runs": {
+      "ordered_feedback_current": {
+        "episodes": 100,
+        "means": {
+          "actual_episode_elapsed_total_ms": 11305.573863903992,
+          "actual_policy_total_ms": 1853.3590756263584,
+          "policy_calls": 17.15,
+          "policy_rpc_wall_total_ms": 2059.8420796589926
+        },
+        "per_task_success": {
+          "0": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "1": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "2": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "3": {
+            "episodes": 10,
+            "success_count": 8,
+            "success_rate": 0.8
+          },
+          "4": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "5": {
+            "episodes": 10,
+            "success_count": 7,
+            "success_rate": 0.7
+          },
+          "6": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "7": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "8": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "9": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          }
+        },
+        "success_count": 92,
+        "success_rate": 0.92,
+        "timeout_count": 8,
+        "timeout_rate": 0.08
+      },
+      "ordered_transformer": {
+        "episodes": 100,
+        "means": {
+          "actual_episode_elapsed_total_ms": 10864.31699667126,
+          "actual_policy_total_ms": 1745.049772951752,
+          "policy_calls": 16.09,
+          "policy_rpc_wall_total_ms": 1940.1286292728037
+        },
+        "per_task_success": {
+          "0": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "1": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "2": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "3": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "4": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "5": {
+            "episodes": 10,
+            "success_count": 7,
+            "success_rate": 0.7
+          },
+          "6": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "7": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "8": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "9": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          }
+        },
+        "success_count": 93,
+        "success_rate": 0.93,
+        "timeout_count": 7,
+        "timeout_rate": 0.07
+      }
+    },
+    "semantics": "Same H25/A service and new bank states; modes interleaved per episode. Feedback time is outside RPC and inside full episode.",
+    "status": "complete"
+  },
+  "final": null,
+  "selection": {
+    "criterion": "Highest root-equal greedy validation success delta, then lower RPC delta; no development look-ahead.",
+    "models": {
+      "current": {
+        "best_greedy_validation": {
+          "changed_h_roots_vs_A": 2,
+          "greedy_paired_advantage": 0.014434329926967622,
+          "greedy_rpc_delta_seconds": -0.055049829681714374,
+          "greedy_selected_h": [
+            20,
+            20,
+            25,
+            25,
+            20,
+            20,
+            5,
+            20,
+            5,
+            25,
+            20,
+            25,
+            25,
+            20,
+            25,
+            20,
+            25,
+            25,
+            20,
+            25,
+            25,
+            25,
+            25,
+            20,
+            25,
+            20,
+            25,
+            25,
+            25,
+            25,
+            20,
+            25,
+            25,
+            25,
+            25,
+            25,
+            15,
+            20,
+            20,
+            15,
+            20,
+            20,
+            20,
+            5,
+            20,
+            25,
+            15,
+            15,
+            25,
+            25,
+            25,
+            25,
+            25,
+            25,
+            20,
+            5,
+            25,
+            20,
+            5,
+            25
+          ],
+          "greedy_selected_h_counts": {
+            "10": 0,
+            "15": 4,
+            "20": 20,
+            "25": 31,
+            "5": 5
+          },
+          "greedy_success_delta": 0.013333333333333334,
+          "greedy_success_delta_fraction": {
+            "denominator": 75,
+            "numerator": 1
+          },
+          "paired_net_success_count": 4,
+          "roots": 60,
+          "selected_paired_trial_count": 300,
+          "semantics": "Deployment NumPy argmax; mean paired success difference per root, then mean RPC difference in seconds."
+        },
+        "best_step": 200,
+        "residual_changed": true,
+        "selection_metric": "greedy",
+        "updates": 650
+      },
+      "history": {
+        "best_greedy_validation": {
+          "changed_h_roots_vs_A": 7,
+          "greedy_paired_advantage": 0.00693614633284354,
+          "greedy_rpc_delta_seconds": -0.013473983308843647,
+          "greedy_selected_h": [
+            20,
+            25,
+            25,
+            25,
+            20,
+            20,
+            5,
+            20,
+            5,
+            25,
+            20,
+            25,
+            25,
+            20,
+            20,
+            20,
+            25,
+            25,
+            20,
+            25,
+            25,
+            25,
+            25,
+            20,
+            25,
+            20,
+            25,
+            25,
+            25,
+            25,
+            20,
+            20,
+            25,
+            25,
+            25,
+            20,
+            15,
+            20,
+            20,
+            15,
+            20,
+            20,
+            20,
+            5,
+            20,
+            20,
+            15,
+            15,
+            25,
+            25,
+            25,
+            25,
+            25,
+            25,
+            20,
+            5,
+            25,
+            20,
+            5,
+            25
+          ],
+          "greedy_selected_h_counts": {
+            "10": 0,
+            "15": 4,
+            "20": 23,
+            "25": 28,
+            "5": 5
+          },
+          "greedy_success_delta": 0.006666666666666667,
+          "greedy_success_delta_fraction": {
+            "denominator": 150,
+            "numerator": 1
+          },
+          "paired_net_success_count": 2,
+          "roots": 60,
+          "selected_paired_trial_count": 300,
+          "semantics": "Deployment NumPy argmax; mean paired success difference per root, then mean RPC difference in seconds."
+        },
+        "best_step": 200,
+        "residual_changed": true,
+        "selection_metric": "greedy",
+        "updates": 650
+      }
+    },
+    "reason": "Greedy-selected candidate did not beat A in development; keep A.",
+    "same_as_previously_evaluated": false,
+    "validation_better_than_A": true,
+    "variant": "current"
+  },
+  "source_dir": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1",
+  "status": "complete",
+  "training_change": "Same original updates, loss, data, architecture and optimizer; checkpoint selected by greedy validation."
+}

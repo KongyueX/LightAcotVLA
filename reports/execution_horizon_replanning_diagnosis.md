@@ -1,6 +1,6 @@
 # A与历史小头：重规划差异诊断
 
-2026-09-08。先判断已完成开发对照中的成败差异，再据证据选择一个改进方向。诊断使用原A、H25和已训练历史小头；后续测试按部署决策重新选择的current小头，原A服务和全部权重保留。
+2026-09-08。诊断及据此推进的测试均已完成：有效单H介入未支持统一恢复A的首H；后续按部署决策重新选择的current step200成功92/100，同批A为93/100，未晋级。原A服务和全部权重保留，详见[完整结果](execution_horizon_replanning_results.md)。
 
 ## 第一阶段：相同初态被动回放
 
@@ -72,6 +72,6 @@
 
 这不支持把首次H统一退回A，也不足以把原退化统一归因为提前观察或动作不连续。被动轨迹中，Task6/339、Task8/343退化时history边界命令变化反而较小，Task0/344、Task4/337救回时更大；命令变化与实际机械运动、成败之间不能直接等同。
 
-独立审计发现更直接的问题：原history step450虽期望loss改善，部署argmax在60个早停root的缓存分支上仍为245/300，与A相同且RPC更高。于是优先推进[按实际部署决策选checkpoint](execution_horizon_greedy_selection.md)，不先改动作专家。复用数据及原650次训练轨迹后，current/history均选step200；current早停净多4次成功、只改2个root的H，优于history净多2次，因此只将current step200与A做同协议开发测试。此时尚无完整新闭环结果。
+独立审计发现更直接的问题：原history step450虽期望loss改善，部署argmax在60个早停root的缓存分支上仍为245/300，与A相同且RPC更高。于是优先推进[按实际部署决策选checkpoint](execution_horizon_greedy_selection.md)，不先改动作专家。复用数据及原650次训练轨迹后，current/history均选step200；current早停净多4次成功、只改2个root的H，优于history净多2次，因此只将current step200与A做同协议开发测试。完整200局评测中候选92/100、A93/100，候选RPC增加6.17%、整局增加4.06%，仅调整选模准则未超过A；本批结束，预留200初态未运行。
 
 原始被动分析、有效单H试验、greedy早停审计及选模记录位于`results/execution_horizon_replanning/diagnosis_20260908/`。被动回放代码57b6293，有效介入代码32e9c1e，选模与测试代码9dca506；原A和全部模型/数据保留。

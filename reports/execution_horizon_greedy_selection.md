@@ -1,6 +1,6 @@
 # Predictor checkpoint按部署决策选择
 
-2026-09-08。被动回放未支持“命令接续变化普遍导致失败”的统一解释：已复现8例中同样提前重规划既救回也退化，部分失败轨迹的边界命令变化反而较小。先推进证据更直接的选模口径问题。
+2026-09-08。本批已结束：部署argmax选出的current step200在100开发初态上成功92/100，同批A为93/100，RPC增加6.17%。未达到晋级条件，保留A，未运行预留测试；详见[完整结果](execution_horizon_replanning_results.md)。被动回放未支持“命令接续变化普遍导致失败”的统一解释，本项检验选模口径能否改善闭环表现。
 
 ## 判断依据
 
@@ -32,8 +32,8 @@
 
 Q^A只评价当前H改变后由A继续的局部回报，与候选全程部署存在差异；300次分支计数来自60个root，不是300个独立闭环episode。有限早停集与单训练seed可能选中偶然较好的checkpoint，最终判断必须依据实际闭环，不能把选模目标改善当作成功率提升。开发初态已用于前批评测及9组差异诊断，本轮复用它们作为开发门槛；只有预留IDs346–365尚未用于评测或选模。
 
-## 已完成选模与测试进度
+## 已完成选模与测试
 
 两套小头均重放原650次更新，greedy准则均选step200。current在早停缓存标签上相对A净多4/300次成功、RPC差-0.055050秒，只改2/60个root的H；history净多2/300、RPC差-0.013474秒、改7/60个root。按早停准则选定current，参数与旧step450不同，仅该候选进入闭环。
 
-有效单H试验已完整结束，随后自动串行启动A/current step200的100开发初态配对测试；04:34快照完成82/200局，双方各41局，尚无完整成绩。运行代码9dca506，服务器目录为`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/greedy_selection_9dca506`；tmux为`h25_greedy_selection`，30分钟监控为`greedy`。未重新采集训练数据或修改VLA。
+有效单H试验结束后，串行完成A/current step200的100开发初态配对测试，共200局；两者成功数分别93和92，RPC分别1.940129和2.059842秒/局，整局分别10.864317和11.305574秒。候选救回2局、退化3局，未晋级，预留200初态未运行。评测及控制器均exit0。运行代码9dca506，服务器目录为`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/greedy_selection_9dca506`；未重新采集训练数据或修改VLA，原A与全部材料保留。

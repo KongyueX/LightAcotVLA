@@ -1,0 +1,9 @@
+{
+  "code_dir": "/root/autodl-tmp/acotvla/code/LightAcotVLA_9dca506",
+  "host": "localhost",
+  "output_dir": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/greedy_selection_9dca506",
+  "port": 8040,
+  "python": "/root/autodl-tmp/acotvla/envs/acotvla-py311/bin/python",
+  "source_dir": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1",
+  "wait_for_exit": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/first_h_probe_v3.exit"
+}
