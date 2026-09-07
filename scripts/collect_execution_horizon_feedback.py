@@ -17,6 +17,16 @@ CANDIDATE_HORIZONS = (5, 10, 15, 20, 25)
 TASK_SEED_STRIDE = 250_000_000
 REPEAT_SEED_STRIDE = 20_000_000
 SCHEMA_VERSION = 1
+ARCHITECTURE_INPUT_KEYS = {
+    "prefix_feature": "execution_horizon_prefix_feature", "state": "execution_horizon_state_normalized",
+    "coarse_actions": "execution_horizon_coarse_actions_normalized",
+    "final_actions": "execution_horizon_final_actions_normalized",
+    "previous_actions": "execution_horizon_previous_actions_normalized",
+    "previous_h": "execution_horizon_previous_h", "previous_valid": "execution_horizon_previous_valid",
+    "budget_balance": "execution_horizon_budget_balance", "episode_progress": "execution_horizon_episode_progress",
+    "prefix_tokens": "execution_horizon_prefix_tokens", "prefix_mask": "execution_horizon_prefix_mask",
+    "expert_hidden": "execution_horizon_expert_hidden",
+}
 
 
 def _collector():
@@ -40,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
     parser.add_argument("--final-denoising-steps", type=int, default=10)
     parser.add_argument("--warmup-requests", type=int, default=1)
+    parser.add_argument("--architecture-cache", action="store_true")
     parser.set_defaults(
         task_suite_name="libero_10", model_action_horizon=25, prefix_token_count=0,
         student_mode="ordered_transformer",
@@ -71,11 +82,14 @@ def _selected_h(result: dict[str, Any]) -> int:
 def _request(
     client: Any, observation: dict[str, Any], task_description: str, *, args: argparse.Namespace,
     seed: int, step: int, step_limit: int, previous_actions: np.ndarray | None, previous_h: int,
+    export_architecture_cache: bool = False,
 ) -> dict[str, Any]:
     base = _collector()
     policy_input = base.libero_eval._observation_to_policy_input(observation, task_description, args.resize_size)
     policy_input["action_cot_final_denoising_steps"] = np.asarray(args.final_denoising_steps, dtype=np.int32)
     policy_input["action_cot_absolute_decision_step"] = np.asarray(step, dtype=np.int32)
+    if export_architecture_cache:
+        policy_input["execution_horizon_export_architecture_cache"] = np.asarray(1, dtype=np.bool_)
     return base._policy_request(
         client, policy_input, seed=seed, args=args, teacher=False, profile=True, run_student=True,
         previous_actions=previous_actions, previous_h=previous_h, budget_balance=0.5,
@@ -134,9 +148,12 @@ def collect_source_root(
     success = False
     while step < step_limit and not success:
         seed = base._root_seed(args.seed, task_id, episode_id, step, task_stride=TASK_SEED_STRIDE)
+        retain_root = int(sampler.integers(decision_index + 1)) == 0
+        capture_architecture = bool(getattr(args, "architecture_cache", False) and retain_root)
         result = _request(
             client, observation, task_description, args=args, seed=seed, step=step, step_limit=step_limit,
             previous_actions=previous_actions, previous_h=previous_h,
+            **({"export_architecture_cache": True} if capture_architecture else {}),
         )
         actions = np.asarray(result["actions"], dtype=np.float32)
         selected_h = _selected_h(result)
@@ -144,7 +161,7 @@ def collect_source_root(
             raise ValueError(f"Expected raw H25 actions[25,7], got {actions.shape}.")
         current_prefix = _vector(result, "execution_horizon_prefix_feature", 2048)
         current_state = _vector(result, "execution_horizon_state_normalized", 32)
-        if int(sampler.integers(decision_index + 1)) == 0:
+        if retain_root:
             root = FeedbackRoot(
                 snapshot=base._capture_snapshot(env),
                 result={key: np.asarray(value).copy() for key, value in result.items() if key in {
@@ -152,7 +169,7 @@ def collect_source_root(
                     "execution_horizon_state_normalized", "execution_horizon_ordered_continuation_logits",
                     "execution_horizon_ordered_horizon_probability", "execution_horizon_ordered_selected_h",
                     "execution_horizon_candidate_horizons", "collector_wall_ms",
-                }},
+                } or (capture_architecture and key in ARCHITECTURE_INPUT_KEYS.values())},
                 primary_actions=actions.copy(), previous_prefix_feature=previous_prefix.copy(),
                 previous_state=previous_state.copy(), previous_h=previous_h,
                 elapsed_steps=step - previous_step if previous_actions is not None else 0,
@@ -239,7 +256,7 @@ def collect_branches(
             steps[candidate_index, repeat] = outcome["steps"]
             if progress_callback is not None:
                 progress_callback(phase="branches", repeat_index=repeat, horizon=horizon)
-    return {
+    record = {
         "schema_version": np.asarray(SCHEMA_VERSION, dtype=np.int32),
         "temporal_feature": _vector(root.result, "execution_horizon_temporal_feature", 256),
         "prefix_feature": _vector(root.result, "execution_horizon_prefix_feature", 2048),
@@ -265,6 +282,10 @@ def collect_branches(
         "primary_actions": root.primary_actions.copy(),
         "root_rpc_seconds": np.asarray(root.result["collector_wall_ms"], dtype=np.float64).reshape(()) / 1000.0,
     }
+    if getattr(args, "architecture_cache", False):
+        record.update({"input_" + name: np.asarray(root.result[key]).copy() for name, key in ARCHITECTURE_INPUT_KEYS.items()})
+        record["architecture_cache_schema"] = np.asarray(1, dtype=np.int32)
+    return record
 
 
 def root_diagnostics(record: dict[str, np.ndarray]) -> dict[str, Any]:
@@ -416,7 +437,17 @@ def main(args: argparse.Namespace) -> None:
         ),
         **bank.metadata(),
     }
-    config = {key: value for key, value in vars(args).items() if key not in {"policy_api_key", "output_dir"}}
+    if getattr(args, "architecture_cache", False):
+        metadata["architecture_cache"] = True
+        metadata["timing_semantics"] = (
+            "Paired branches execute the action chunk captured with its architecture features at the same root call. "
+            "Source-root RPC includes feature export and is shared by all candidate branches; it cancels in paired "
+            "differences. Continuation calls use A without feature export."
+        )
+    config = {
+        key: value for key, value in vars(args).items() if key not in {"policy_api_key", "output_dir"}
+        and not (key == "architecture_cache" and not value)
+    }
     config["initial_state_bank"] = str(pathlib.Path(args.initial_state_bank).resolve())
     config.update(metadata)
     config_path = output / "run_config.json"

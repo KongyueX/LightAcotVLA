@@ -75,7 +75,7 @@ def initialize_model(anchor_dir: str, variant: str, seed: int = 7):
 
 
 def read_roots(directory: str) -> tuple[list[dict[str, np.ndarray]], dict[str, Any]]:
-    paths = sorted(pathlib.Path(directory).resolve().glob("task*_ep*.npz"))
+    paths = sorted(pathlib.Path(directory).resolve().rglob("task*_ep*.npz"))
     if not paths:
         raise ValueError(f"No architecture roots in {directory}.")
     records, identities = [], []

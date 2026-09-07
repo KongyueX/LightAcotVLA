@@ -34,7 +34,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=8040)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--fresh-paired", action="store_true")
     return parser
+
+
+def collect_fresh(args: argparse.Namespace) -> None:
+    output = args.output_dir.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    groups = {}
+    for path in sorted(args.source_dir.resolve().rglob("*.npz")):
+        with np.load(path, allow_pickle=False) as data:
+            task, episode = int(data["task_id"]), int(data["episode_id"])
+        groups.setdefault(task, {})[episode] = path
+    if not groups:
+        raise ValueError("Source split has no task/episode identities.")
+    total, completed = sum(len(group) for group in groups.values()), 0
+    for task, group in sorted(groups.items()):
+        original = json.loads((next(iter(group.values())).parent / "run_config.json").read_text())
+        command = [
+            "--initial-state-bank", original["initial_state_bank"], "--episodes", *map(str, sorted(group)),
+            "--task-start", str(task), "--max-tasks", "1", "--output-dir", str(output / f"task{task:02d}"),
+            "--host", args.host, "--port", str(args.port), "--seed", str(original["seed"]),
+            "--branch-repeats", "5", "--architecture-cache",
+        ]
+        feedback._write_json(output / "status.json", {
+            "status": "running", "task_id": task, "completed_roots": completed, "expected_roots": total,
+            "task_status": str(output / f"task{task:02d}/status.json"), "labels_reused": False,
+        })
+        feedback.main(feedback.build_parser().parse_args(command))
+        completed += len(group)
+    summary = {
+        "status": "complete", "completed_roots": completed, "expected_roots": total,
+        "labels_reused": False, "counterfactual_branches_run": completed * 25,
+        "source_split": str(args.source_dir.resolve()), "feature_label_alignment": "same real source call",
+    }
+    feedback._write_json(output / "summary.json", summary)
+    feedback._write_json(output / "status.json", summary)
 
 
 def check_replay(
@@ -166,6 +201,9 @@ def replay_root(path: pathlib.Path, *, client: Any, suite: Any, output: pathlib.
 
 
 def main(args: argparse.Namespace) -> None:
+    if args.fresh_paired:
+        collect_fresh(args)
+        return
     source, output = args.source_dir.resolve(), args.output_dir.resolve()
     paths = sorted(source.rglob("*.npz"))
     if not paths or len({path.name for path in paths}) != len(paths):

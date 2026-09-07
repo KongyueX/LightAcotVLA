@@ -189,14 +189,15 @@ def execute(args):
     try:
         feedback.write_json(args.output_dir / "status.json", {"status": "preparing", "stage": "server_A"})
         ensure_server(args, "A", args.port)
-        feedback.notify(args.output_dir, "started", "三组架构实验开始：A、状态/任务条件视觉query、动作专家hidden。冻结VLA与A原参数，先同状态补录360个root特征，核对后复用原9000分支标签；所有三组完整开发闭环都会测试。")
+        feedback.notify(args.output_dir, "started", "三组架构实验开始：A、状态/任务条件视觉query、动作专家hidden。冻结VLA与A原参数，在同一真实调用采集特征及配对分支标签；所有三组完整开发闭环都会测试。")
         for split in ("train", "early_stop"):
             run_stage(args, f"features_{split}", [
                 args.python, str(args.code_dir / "scripts/collect_execution_horizon_architecture_features.py"),
                 "--source-dir", str(args.source_dir / split), "--output-dir", str(args.output_dir / f"features_{split}"),
                 "--host", args.host, "--port", str(args.port),
+                "--fresh-paired",
             ])
-        feedback.notify(args.output_dir, "features_complete", "360个架构root特征补录完成，旧root状态/动作/A输出核对通过，原配对标签保留，未重采9000分支。开始两个独立零增量模块训练，各固定650次更新，step0参与部署greedy选模。")
+        feedback.notify(args.output_dir, "features_complete", "360个root的特征与9000条配对分支结果采集完成，输入和标签来自相同真实调用。开始两个独立零增量模块训练，各固定650次更新，step0参与部署greedy选模。")
         for variant in ("visual_query", "expert_hidden"):
             run_stage(args, f"train_{variant}", [
                 args.python, str(args.code_dir / "scripts/train_execution_horizon_architecture.py"),
@@ -221,7 +222,7 @@ def execute(args):
         result = {
             "status": "complete", "development": development, "development_winner": selected, "final": final,
             "training": {name: json.loads((args.output_dir / f"training_{name}/summary.json").read_text()) for name in variants},
-            "source_dir": str(args.source_dir), "default_service": "A", "counterfactual_branches_recollected": 0,
+            "source_dir": str(args.source_dir), "default_service": "A", "counterfactual_branches_recollected": 9000,
         }
         feedback.write_json(args.output_dir / "summary.json", result)
         feedback.write_json(args.output_dir / "status.json", {"status": "complete", "stage": "complete"})
