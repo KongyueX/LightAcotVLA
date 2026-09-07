@@ -9,20 +9,19 @@ import json
 import pathlib
 from typing import Any
 
-import collect_execution_horizon_counterfactuals as collector
 import eval_libero_action_cot_pruning as libero_eval
 import eval_libero_execution_horizon as evaluator
 import numpy as np
 from openpi_client import websocket_client_policy as websocket_policy
-import replay_execution_horizon_branches as replay
 
 from openpi.execution_horizon.feedback import FeedbackSelector
 from openpi.execution_horizon.initial_states import InitialStateBank
+from openpi.execution_horizon.trace import _physics_state
 
 BASE_MODE = "ordered_transformer"
 HISTORY_MODE = "ordered_feedback_history"
 COMPARISON_ATOL = 1e-5
-RESTORE_ATOL = 1e-8
+ROOT_PHYSICS_ATOL = 1e-8
 REPEAT_SEED_STRIDE = 20_000_000
 CONTINUATION_SEED_OFFSET = 100_000_000
 
@@ -110,6 +109,7 @@ def _trace_root(case: dict[str, Any], directory: pathlib.Path) -> dict[str, Any]
             traces[mode] = {name: archive[name] for name in (
                 "decision_steps", "selected_h", "generated_action_chunks", "decision_physics_state",
                 "previous_h", "episode_progress", "request_seeds",
+                "state_steps", "executed_actions",
             )}
         metadata = json.loads(path.with_suffix(".json").read_text())
         if metadata["task_id"] != task or metadata["episode_id"] != episode or metadata["mode"] != mode:
@@ -128,6 +128,17 @@ def _trace_root(case: dict[str, Any], directory: pathlib.Path) -> dict[str, Any]
     if saved_actions.shape != (25, 7):
         raise ValueError("A saved root action chunk must have shape (25, 7).")
     first = case["alignment"]["first_shared_decision_with_h_difference"]
+    prefixes = {}
+    for mode, arrays in traces.items():
+        mask = np.asarray(arrays["state_steps"]) <= step
+        prefix_steps = np.asarray(arrays["state_steps"])[mask]
+        if not np.array_equal(prefix_steps, np.arange(1, step + 1)):
+            raise ValueError(
+                "Recorded prefix must cover every environment step from 1 through the root, including waits."
+            )
+        prefixes[mode] = np.asarray(arrays["executed_actions"], dtype=np.float32)[mask].copy()
+        if prefixes[mode].shape != (step, 7) or not np.all(np.isfinite(prefixes[mode])):
+            raise ValueError("Recorded prefix actions must be finite with shape (root_step, 7).")
     if (
         int(a["selected_h"][ai]) != int(first["a_selected_h"])
         or int(history["selected_h"][hi]) != int(first["history_selected_h"])
@@ -136,12 +147,14 @@ def _trace_root(case: dict[str, Any], directory: pathlib.Path) -> dict[str, Any]
         or not np.allclose(
             a["decision_physics_state"][ai], history["decision_physics_state"][hi], rtol=0, atol=COMPARISON_ATOL
         )
+        or not np.allclose(prefixes[BASE_MODE], prefixes[HISTORY_MODE], rtol=0, atol=COMPARISON_ATOL)
     ):
         raise ValueError("The saved traces do not retain the agreed shared root/action/seed/H values.")
     return {
         "task_id": task, "episode_id": episode, "step": step,
         "physics_state": np.asarray(history["decision_physics_state"][hi], dtype=np.float64).copy(),
         "saved_actions": saved_actions.copy(),
+        "prefix_actions": prefixes[HISTORY_MODE],
         "previous_actions": None if hi == 0 else np.asarray(history["generated_action_chunks"][hi - 1]).copy(),
         "previous_h": int(history["previous_h"][hi]), "episode_progress": float(history["episode_progress"][hi]),
         "root_request_seed": int(history["request_seeds"][hi]),
@@ -160,28 +173,50 @@ def _budget_fraction(args: argparse.Namespace) -> float:
     return min(args.v2_initial_budget, args.v2_budget_capacity) / args.v2_budget_capacity
 
 
-def _restore_fresh_snapshot(env: Any, snapshot: collector.SimulatorSnapshot) -> dict[str, Any]:
-    collector._restore_snapshot(env, snapshot)
-    for candidate in collector._walk_env(env):
-        getter = getattr(candidate, "_get_observations", None)
-        updater = getattr(candidate, "_update_observables", None)
-        if callable(getter) and callable(updater):
-            # Robosuite force_update refreshes observable.obs from the restored
-            # simulator via _update_observables(force=True), without env.step.
-            observation = getter(force_update=True)
-            if not isinstance(observation, dict) or "agentview_image" not in observation:
-                raise RuntimeError("Forced root observation refresh did not return the LIBERO camera observation.")
-            return observation
-    raise RuntimeError("Could not find the Robosuite observable refresh API in the LIBERO environment.")
+def _prepare_live_root(
+    task_suite: Any, bank: InitialStateBank, root: dict[str, Any], args: argparse.Namespace,
+) -> tuple[Any, str, dict[str, Any], int, dict[str, Any]]:
+    prefix = np.asarray(root["prefix_actions"], dtype=np.float32)
+    if prefix.shape != (root["step"], 7) or root["step"] <= 0:
+        raise ValueError("Root reconstruction requires every recorded action from step 1 through the root.")
+    task = task_suite.get_task(root["task_id"])
+    env, description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
+    try:
+        env.reset()
+        observation = env.set_init_state(bank.state(root["task_id"], root["episode_id"]))
+        limit = libero_eval._max_steps(args.task_suite_name) + args.num_steps_wait
+        environment_horizon = libero_eval._env_horizon(env)
+        if environment_horizon is not None:
+            limit = min(limit, environment_horizon)
+        diagnostics: dict[str, Any] = {
+            "root_reconstruction": "recorded_action_prefix", "prefix_steps": root["step"],
+            "prefix_executed_steps": 0, "prefix_policy_calls": 0,
+            "root_physics_max_abs_difference": None, "root_valid": False,
+        }
+        for step, action in enumerate(prefix, start=1):
+            observation, _, done, _ = env.step(action.tolist())
+            diagnostics["prefix_executed_steps"] = step
+            if done or libero_eval._env_success(env):
+                diagnostics["skip_reason"] = "recorded_prefix_terminated_before_root_decision"
+                return env, description, observation, limit, diagnostics
+        live_physics, _ = _physics_state(env)
+        difference = float(np.max(np.abs(live_physics - root["physics_state"])))
+        diagnostics["root_physics_max_abs_difference"] = difference
+        diagnostics["root_valid"] = bool(np.isfinite(difference) and difference <= ROOT_PHYSICS_ATOL)
+        if not diagnostics["root_valid"]:
+            diagnostics["skip_reason"] = "recorded_prefix_physics_differs_from_saved_root"
+        return env, description, observation, limit, diagnostics
+    except Exception:
+        libero_eval._safe_close_env(env)
+        raise
 
 
 def _run_forced_branch(
-    *, env: Any, snapshot: collector.SimulatorSnapshot, root: dict[str, Any],
+    *, env: Any, observation: dict[str, Any], root: dict[str, Any],
     forced_h: int, repeat: int, episode_step_limit: int, task_description: str,
     root_observation_cache: dict[str, Any], client: Any, selector: FeedbackSelector,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    observation = _restore_fresh_snapshot(env, snapshot)
     step = root["step"]
     initial_step = step
     previous_cache = copy.deepcopy(root_observation_cache)
@@ -247,30 +282,17 @@ def probe_case(
         "task_id": root["task_id"], "episode_id": root["episode_id"], "root_step": root["step"],
         "old_relation": case["old_relation"], "history_h": root["history_h"], "a_h": root["a_h"],
         "root_request_seed": root["root_request_seed"], "status": "preparing", "branches": [],
+        "root_reconstruction": "recorded_action_prefix", "prefix_steps": root["step"],
+        "root_regeneration_policy_calls": 0,
     }
-    task = task_suite.get_task(root["task_id"])
     bank.validate_presets(root["task_id"], task_suite.get_task_init_states(root["task_id"]))
-    env, task_description = libero_eval._get_libero_env(task, libero_eval.LIBERO_ENV_RESOLUTION, args.seed)
+    env = None
     try:
-        env.reset()
-        env.set_init_state(bank.state(root["task_id"], root["episode_id"]))
-        for _ in range(args.num_steps_wait):
-            _, _, done, _ = env.step(libero_eval.LIBERO_DUMMY_ACTION)
-            if done:
-                break
-        snapshot = replay._saved_snapshot(env, root["physics_state"], root["step"])
-        observation = _restore_fresh_snapshot(env, snapshot)
-        result["root_observation_refresh"] = "_get_observations(force_update=True)"
-        restored = np.asarray(collector._simulator(env).get_state().flatten(), dtype=np.float64)
-        restore_difference = float(np.max(np.abs(restored - root["physics_state"])))
-        result["restored_physics_max_abs_difference"] = restore_difference
-        if not np.isfinite(restore_difference) or restore_difference > RESTORE_ATOL:
-            result.update(status="skipped", skip_reason="restored_physics_differs_from_saved_root")
+        env, task_description, observation, limit, reconstruction = _prepare_live_root(task_suite, bank, root, args)
+        result["initial_root_reconstruction"] = reconstruction
+        if not reconstruction["root_valid"]:
+            result.update(status="skipped", skip_reason=reconstruction["skip_reason"])
             return result
-        limit = libero_eval._max_steps(args.task_suite_name) + args.num_steps_wait
-        environment_horizon = libero_eval._env_horizon(env)
-        if environment_horizon is not None:
-            limit = min(limit, environment_horizon)
         if min(root["history_h"], limit - root["step"]) == min(root["a_h"], limit - root["step"]):
             result.update(status="skipped", skip_reason="forced_horizons_have_identical_executable_prefix")
             return result
@@ -297,12 +319,24 @@ def probe_case(
         for repeat in range(repeats):
             order = ("history_h", "a_h") if repeat % 2 == 0 else ("a_h", "history_h")
             for name in order:
+                if env is None:
+                    env, task_description, observation, limit, reconstruction = _prepare_live_root(
+                        task_suite, bank, root, args
+                    )
+                    if not reconstruction["root_valid"]:
+                        result.update(
+                            status="skipped", skip_reason="branch_root_reconstruction_failed",
+                            branch_reconstruction_failure={"repeat": repeat, "first_h_source": name, **reconstruction},
+                        )
+                        return result
                 outcome = _run_forced_branch(
-                    env=env, snapshot=snapshot, root=root, forced_h=root[name], repeat=repeat,
+                    env=env, observation=observation, root=root, forced_h=root[name], repeat=repeat,
                     episode_step_limit=limit, task_description=task_description,
                     root_observation_cache=cache, client=client, selector=selector, args=args,
                 )
-                result["branches"].append({"first_h_source": name, **outcome})
+                result["branches"].append({"first_h_source": name, **reconstruction, **outcome})
+                libero_eval._safe_close_env(env)
+                env = None
                 _write_json(output, result)
         result["paired"] = []
         for repeat in range(repeats):
@@ -317,7 +351,8 @@ def probe_case(
         result["status"] = "complete"
         return result
     finally:
-        libero_eval._safe_close_env(env)
+        if env is not None:
+            libero_eval._safe_close_env(env)
 
 
 def main(args: argparse.Namespace) -> None:
@@ -367,11 +402,13 @@ def main(args: argparse.Namespace) -> None:
         "completed_cases": sum(result["status"] == "complete" for result in results),
         "skipped_cases": sum(result["status"] == "skipped" for result in results),
         "executed_branches": sum(len(result.get("branches", [])) for result in results),
+        "root_regeneration_policy_calls": sum(result.get("root_regeneration_policy_calls", 0) for result in results),
         "paired_repeats": len(pairs),
         "success_delta_a_h_minus_history_h": sum(pair["success_delta_a_h_minus_history_h"] for pair in pairs),
         "first_h_swap_rescues": sum(pair["success_delta_a_h_minus_history_h"] == 1 for pair in pairs),
         "first_h_swap_regressions": sum(pair["success_delta_a_h_minus_history_h"] == -1 for pair in pairs),
-        "comparison_absolute_tolerance": COMPARISON_ATOL, "restored_physics_absolute_tolerance": RESTORE_ATOL,
+        "comparison_absolute_tolerance": COMPARISON_ATOL, "root_physics_absolute_tolerance": ROOT_PHYSICS_ATOL,
+        "root_reconstruction": "recorded_action_prefix",
         "continuation_seed_formula": "root_request_seed + 100000000 + repeat * 20000000 + continuation_call_index",
         "scope": (
             "Change only the first differing H; both branches execute the saved history chunk and then use history."
@@ -381,7 +418,8 @@ def main(args: argparse.Namespace) -> None:
             "Root regeneration is one shared feature RPC per case and is not a speed measurement.",
             "Branch calls count the fixed root chunk once plus actual history continuation RPCs.",
             "Paired seeds align by continuation call index after H changes, not by absolute environment time.",
-            "Both branches restore bank-initialization RNG; passive traces did not save the original root RNG.",
+            "Each branch uses a new same-seed environment and replays every saved action from the exact bank state.",
+            "Root observations are the last replayed env.step result; no direct state restore or sensor refresh is used.",
             "No critic, training, weight update, or action-chunk replacement is performed.",
         ],
     }

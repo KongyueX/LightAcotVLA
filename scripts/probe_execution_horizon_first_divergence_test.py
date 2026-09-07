@@ -67,6 +67,7 @@ def test_trace_root_uses_saved_history_chunk_and_the_actual_previous_plan(tmp_pa
             generated_action_chunks=np.stack([np.full((25, 7), 2), np.full((25, 7), 3)]),
             decision_physics_state=[[10, 1, 2], [35, 3, 4]], previous_h=[10, 25],
             episode_progress=[0.01, 0.035], request_seeds=[10010, 10035],
+            state_steps=np.arange(1, 36), executed_actions=np.full((35, 7), 0.5),
         )
         path.with_suffix(".json").write_text(json.dumps({
             "mode": mode, "task_id": 3, "episode_id": 338,
@@ -78,6 +79,15 @@ def test_trace_root_uses_saved_history_chunk_and_the_actual_previous_plan(tmp_pa
     assert root["previous_h"] == 25
     np.testing.assert_array_equal(root["saved_actions"], np.full((25, 7), 3))
     np.testing.assert_array_equal(root["previous_actions"], np.full((25, 7), 2))
+    np.testing.assert_array_equal(root["prefix_actions"], np.full((35, 7), 0.5))
+    path = tmp_path / probe.HISTORY_MODE / "task03_ep000338.npz"
+    with np.load(path) as archive:
+        incomplete = {name: archive[name] for name in archive.files}
+    incomplete["state_steps"] = incomplete["state_steps"][:-1]
+    incomplete["executed_actions"] = incomplete["executed_actions"][:-1]
+    np.savez_compressed(path, **incomplete)
+    with pytest.raises(ValueError, match="cover every environment step"):
+        probe._trace_root(case, tmp_path)
 
 
 def test_forced_branches_share_continuation_seeds_and_use_root_feedback_after_actual_h(monkeypatch):
@@ -85,28 +95,12 @@ def test_forced_branches_share_continuation_seeds_and_use_root_feedback_after_ac
         def __init__(self):
             self.steps = 100
             self.actions = []
-            self.refreshes = []
-
-        def _update_observables(self, *, force=False):
-            self.refreshes.append(force)
-
-        def _get_observations(self, *, force_update=False):
-            if force_update:
-                self._update_observables(force=True)
-            return {"step": self.steps, "agentview_image": np.zeros((2, 2, 3), dtype=np.uint8)}
 
         def step(self, action):
             self.actions.append(np.asarray(action).copy())
             self.steps += 1
             return {"step": self.steps}, 0.0, self.steps == 118, {}
 
-    def restore(env, snapshot):
-        del snapshot
-        env.steps = 100
-        env.actions = []
-        return {"step": 100}
-
-    monkeypatch.setattr(probe.collector, "_restore_snapshot", restore)
     monkeypatch.setattr(probe.libero_eval, "_env_success", lambda env: env.steps == 118)
     monkeypatch.setattr(probe.libero_eval, "_observation_to_policy_input", lambda observation, *args: observation)
     requests = []
@@ -128,12 +122,11 @@ def test_forced_branches_share_continuation_seeds_and_use_root_feedback_after_ac
         env = Env()
         start = len(features)
         results.append(probe._run_forced_branch(
-            env=env, snapshot=None, root=root, forced_h=forced_h, repeat=2,
+            env=env, observation={"step": 100}, root=root, forced_h=forced_h, repeat=2,
             episode_step_limit=200, task_description="task", root_observation_cache=cache,
             client=None, selector=selector, args=args,
         ))
         first_feedback.append(features[start])
-        assert env.refreshes == [True]
         np.testing.assert_array_equal(env.actions[:forced_h], np.ones((forced_h, 7)))
         np.testing.assert_array_equal(env.actions[forced_h:], np.full((18 - forced_h, 7), 9))
     assert results[0]["continuation_seeds"][0] == results[1]["continuation_seeds"][0]
@@ -148,73 +141,155 @@ def test_forced_branches_share_continuation_seeds_and_use_root_feedback_after_ac
         np.testing.assert_array_equal(inputs["previous_prefix_feature"], np.ones(2048))
 
 
-def test_root_rpc_refreshes_stale_observation_and_keeps_action_consistency_gate(tmp_path, monkeypatch):
+def _live_root_setup(monkeypatch):
     root = {
-        "task_id": 3, "episode_id": 338, "step": 35, "physics_state": np.asarray([35, 3, 4]),
+        "task_id": 3, "episode_id": 338, "step": 3, "physics_state": np.asarray([3, 3, 4]),
         "saved_actions": np.ones((25, 7), dtype=np.float32), "previous_actions": np.zeros((25, 7)),
-        "previous_h": 25, "episode_progress": 0.035, "root_request_seed": 10035,
+        "prefix_actions": np.full((3, 7), 0.1, dtype=np.float32),
+        "previous_h": 25, "episode_progress": 0.03, "root_request_seed": 10035,
         "history_h": 10, "a_h": 5,
     }
     monkeypatch.setattr(probe, "_trace_root", lambda *args: root)
-    restored_steps = []
     initial_ids = []
-    cache = {"observed_step": -100}
-    refreshes = []
-    sim = SimpleNamespace(get_state=lambda: SimpleNamespace(flatten=lambda: root["physics_state"]))
+    environments = []
 
-    def update_observables(*, force=False):
-        refreshes.append(force)
-        if force:
-            cache["observed_step"] = float(sim.get_state().flatten()[0])
+    class Env:
+        def __init__(self, seed):
+            self.steps = 0
+            self.seed = seed
+            self.closed = False
+            self.actions = []
+            self.sim = SimpleNamespace(
+                get_state=lambda: SimpleNamespace(flatten=lambda: np.asarray([self.steps, 3, 4]))
+            )
 
-    def get_observations(*, force_update=False):
-        if force_update:
-            update_observables(force=True)
-        return {"observed_step": cache["observed_step"], "agentview_image": np.zeros((2, 2, 3), dtype=np.uint8)}
+        def reset(self):
+            self.steps = 0
 
-    env = SimpleNamespace(
-        sim=sim, reset=lambda: None, set_init_state=lambda state: None, closed=False,
-        _get_observations=get_observations, _update_observables=update_observables,
-    )
-    monkeypatch.setattr(probe.libero_eval, "_get_libero_env", lambda *args: (env, "task"))
+        def set_init_state(self, state):
+            np.testing.assert_array_equal(state, [0, 0, 338])
+            return {"observed_step": 0, "source": "initial"}
+
+        def step(self, action):
+            self.steps += 1
+            self.actions.append(np.asarray(action))
+            return {"observed_step": self.steps, "source": "env.step"}, 0.0, False, {}
+
+        def _get_observations(self, **kwargs):
+            del kwargs
+            pytest.fail("The root observation must come from the last recorded env.step.")
+
+        def _update_observables(self, **kwargs):
+            del kwargs
+            pytest.fail("A live prefix must not force-refresh sensor state.")
+
+    def create_env(task, resolution, seed):
+        del task, resolution
+        env = Env(seed)
+        environments.append(env)
+        return env, "task"
+
+    monkeypatch.setattr(probe.libero_eval, "_get_libero_env", create_env)
     monkeypatch.setattr(probe.libero_eval, "_safe_close_env", lambda value: setattr(value, "closed", True))
     monkeypatch.setattr(probe.libero_eval, "_env_horizon", lambda value: 100)
+    monkeypatch.setattr(probe.libero_eval, "_env_success", lambda value: False)
     monkeypatch.setattr(probe.libero_eval, "_max_steps", lambda name: 100)
     monkeypatch.setattr(probe.libero_eval, "_observation_to_policy_input", lambda observation, *args: observation)
-    monkeypatch.setattr(probe.replay, "_saved_snapshot", lambda env, physics, step: restored_steps.append(step) or None)
-    monkeypatch.setattr(probe.collector, "_restore_snapshot", lambda *args: get_observations())
+    bank = SimpleNamespace(
+        validate_presets=lambda *args: None,
+        state=lambda task, episode: initial_ids.append((task, episode)) or np.asarray([0, 0, episode]),
+    )
+    suite = SimpleNamespace(get_task=lambda task: None, get_task_init_states=lambda task: [])
+    args = SimpleNamespace(
+        seed=7, num_steps_wait=10, task_suite_name="libero_10", resize_size=224,
+        v2_initial_budget=6, v2_budget_capacity=12,
+    )
+    return root, bank, suite, args, environments, initial_ids
+
+
+def test_prefix_replay_uses_control_cycle_observation_and_keeps_action_gate(tmp_path, monkeypatch):
+    root, bank, suite, args, environments, initial_ids = _live_root_setup(monkeypatch)
+    requests = []
 
     def request(client, policy_input, **kwargs):
-        del client, kwargs
-        assert policy_input["observed_step"] == root["step"]
-        assert refreshes == [True]
+        del client
+        assert policy_input == {"observed_step": 3, "source": "env.step"}
+        assert len(environments[0].actions) == 3
+        requests.append(kwargs)
         return _response(1.1), {"wall_ms": 123.0}
 
     monkeypatch.setattr(probe.evaluator, "_request", request)
     monkeypatch.setattr(probe, "_run_forced_branch", lambda **kwargs: pytest.fail("mismatched root cannot be probed"))
-    bank = SimpleNamespace(
-        validate_presets=lambda *args: None,
-        state=lambda task, episode: initial_ids.append((task, episode)) or np.zeros(3),
-    )
-    suite = SimpleNamespace(get_task=lambda task: None, get_task_init_states=lambda task: [])
-    args = SimpleNamespace(
-        seed=7, num_steps_wait=0, task_suite_name="libero_10", resize_size=224,
-        v2_initial_budget=6, v2_budget_capacity=12,
-    )
     result = probe.probe_case(
         _case(), trace_dir=tmp_path, task_suite=suite, bank=bank, selector=None, client=None,
         args=args, repeats=3, output=tmp_path / "case.json",
     )
     assert initial_ids == [(3, 338)]
-    assert restored_steps == [35]
-    assert refreshes == [True]
-    assert env.closed
+    assert len(environments) == 1
+    assert environments[0].closed
+    np.testing.assert_array_equal(environments[0].actions, root["prefix_actions"])
+    assert len(requests) == 1
+    assert requests[0]["seed"] == root["root_request_seed"]
     assert result["status"] == "skipped"
     assert result["skip_reason"] == "regenerated_root_actions_differ_from_saved_actions"
     assert result["root_regeneration_policy_calls"] == 1
-    assert result["root_observation_refresh"] == "_get_observations(force_update=True)"
+    assert result["root_reconstruction"] == "recorded_action_prefix"
+    assert result["initial_root_reconstruction"]["root_physics_max_abs_difference"] == 0
+    assert result["initial_root_reconstruction"]["prefix_policy_calls"] == 0
     assert probe.COMPARISON_ATOL == 1e-5
     assert result["branches"] == []
+    incomplete = {**root, "prefix_actions": root["prefix_actions"][:-1]}
+    with pytest.raises(ValueError, match="every recorded action"):
+        probe._prepare_live_root(suite, bank, incomplete, args)
+    assert len(environments) == 1
+    wrong_target = {**root, "physics_state": root["physics_state"] + [1, 0, 0]}
+    env, _, observation, _, diagnostics = probe._prepare_live_root(suite, bank, wrong_target, args)
+    assert observation["observed_step"] == 3
+    assert diagnostics["prefix_executed_steps"] == 3
+    assert diagnostics["root_valid"] is False
+    assert diagnostics["root_physics_max_abs_difference"] == 1
+    assert diagnostics["skip_reason"] == "recorded_prefix_physics_differs_from_saved_root"
+    probe.libero_eval._safe_close_env(env)
+
+
+def test_every_branch_replays_prefix_in_new_environment_and_shares_one_root_rpc(tmp_path, monkeypatch):
+    root, bank, suite, args, environments, initial_ids = _live_root_setup(monkeypatch)
+    requests = []
+
+    def request(client, policy_input, **kwargs):
+        del client, kwargs
+        requests.append(policy_input)
+        return _response(), {"wall_ms": 123.0}
+
+    monkeypatch.setattr(probe.evaluator, "_request", request)
+
+    def branch(**kwargs):
+        env = kwargs["env"]
+        assert env.steps == root["step"]
+        assert kwargs["observation"] == {"observed_step": root["step"], "source": "env.step"}
+        np.testing.assert_array_equal(kwargs["root_observation_cache"]["prefix"], np.ones(2048))
+        env.steps = 99
+        return {"repeat": kwargs["repeat"], "forced_h": kwargs["forced_h"], "success": True, "steps": 1, "calls": 1}
+
+    monkeypatch.setattr(probe, "_run_forced_branch", branch)
+    result = probe.probe_case(
+        _case(), trace_dir=tmp_path, task_suite=suite, bank=bank, selector=None, client=None,
+        args=args, repeats=3, output=tmp_path / "case.json",
+    )
+    assert len(environments) == 6
+    assert initial_ids == [(3, 338)] * 6
+    assert len(requests) == 1
+    assert result["status"] == "complete"
+    assert result["root_regeneration_policy_calls"] == 1
+    for env in environments:
+        assert env.closed
+        assert env.seed == 7
+        np.testing.assert_array_equal(env.actions, root["prefix_actions"])
+    assert all(row["root_physics_max_abs_difference"] == 0 for row in result["branches"])
+    assert all(row["prefix_steps"] == 3 for row in result["branches"])
+    assert [row["first_h_source"] for row in result["branches"]] == [
+        "history_h", "a_h", "a_h", "history_h", "history_h", "a_h",
+    ]
 
 
 def test_baseline_protocol_and_analysis_directory_are_explicit(tmp_path):
