@@ -37,7 +37,10 @@ ORDERED_MODE = "ordered_transformer"
 ORDERED_H10_HYSTERESIS_MODE = "ordered_h10_hysteresis"
 ORDERED_SMDP_MODE = "ordered_smdp"
 LAST_BLOCK_SMDP_MODE = "ordered_smdp_last_block"
-ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE)
+FEEDBACK_CURRENT_MODE = "ordered_feedback_current"
+FEEDBACK_HISTORY_MODE = "ordered_feedback_history"
+FEEDBACK_MODES = (FEEDBACK_CURRENT_MODE, FEEDBACK_HISTORY_MODE)
+ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE, *FEEDBACK_MODES)
 FIXED_H_MODE = "fixed_h"
 MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES)
 
@@ -104,6 +107,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sample the last-block policy during on-policy collection; greedy by default.",
     )
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--feedback-current-params", default=None)
+    parser.add_argument("--feedback-history-params", default=None)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
@@ -842,6 +847,17 @@ def _load_selectors(
         if max(model.candidates) > args.model_action_horizon:
             raise ValueError("Last-block candidates cannot exceed the served action horizon.")
         selectors[LAST_BLOCK_SMDP_MODE] = model
+    for mode, variant in ((FEEDBACK_CURRENT_MODE, "current"), (FEEDBACK_HISTORY_MODE, "history")):
+        if mode in args.modes:
+            from openpi.execution_horizon.feedback import FeedbackSelector
+
+            params = getattr(args, f"feedback_{variant}_params")
+            if params is None:
+                raise ValueError(f"{mode} requires --feedback-{variant}-params.")
+            model = FeedbackSelector.load(params)
+            if model.variant != variant or max(model.candidates) > args.model_action_horizon:
+                raise ValueError("Feedback checkpoint variant or action horizon does not match the evaluation.")
+            selectors[mode] = model
     return selectors
 
 
@@ -854,13 +870,21 @@ def _select_horizon(
     selector: Any | None = None,
     selector_rng: np.random.Generator | None = None,
     previous_horizon: int = 10,
+    feedback_inputs: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     if mode == "original":
         return args.original_horizon, {"raw_horizon": args.original_horizon, "budget_limited": 0.0}
     if mode in {"fixed_h9", FIXED_H_MODE}:
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
     if mode in ORDERED_MODES:
-        if mode == LAST_BLOCK_SMDP_MODE:
+        if mode in FEEDBACK_MODES:
+            if selector is None or feedback_inputs is None:
+                raise ValueError("Feedback evaluation requires a selector and continuous observation history.")
+            started = time.perf_counter()
+            selected, info = selector.decide(feedback_inputs)
+            info["selector_postprocess_ms"] = (time.perf_counter() - started) * 1000.0
+            info["budget_limited"] = 0.0
+        elif mode == LAST_BLOCK_SMDP_MODE:
             if selector is None:
                 raise ValueError("ordered_smdp_last_block requires an actor/critic checkpoint.")
             started = time.perf_counter()
@@ -905,7 +929,8 @@ def _select_horizon(
             for name in ("ordered_horizon_probability", "ordered_continuation_logits", "candidate_horizons"):
                 value = result.get(f"execution_horizon_{name}")
                 if value is not None:
-                    info[name] = np.asarray(value).reshape(-1).tolist()
+                    key = f"anchor_{name}" if mode in FEEDBACK_MODES else name
+                    info[key] = np.asarray(value).reshape(-1).tolist()
         return selected, info
     if mode == HIERARCHICAL_MODE:
         calibration = getattr(args, "_hierarchical_calibration", None)
@@ -1186,6 +1211,26 @@ def _warmup(
         libero_eval._safe_close_env(env)
 
 
+def _feedback_inputs(
+    result: dict[str, Any], previous: dict[str, Any] | None, *, step: int, previous_h: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    prefix = np.asarray(result["execution_horizon_prefix_feature"], dtype=np.float32).reshape(-1)
+    state = np.asarray(result["execution_horizon_state_normalized"], dtype=np.float32).reshape(-1)
+    valid = previous is not None
+    inputs = {
+        "temporal_feature": np.asarray(result["execution_horizon_temporal_feature"]).reshape(-1),
+        "prefix_feature": prefix,
+        "state": state,
+        "previous_prefix_feature": previous["prefix"] if valid else np.zeros_like(prefix),
+        "previous_state": previous["state"] if valid else np.zeros_like(state),
+        "previous_h": previous_h,
+        "elapsed_steps": step - previous["step"] if valid else 0,
+        "history_valid": valid,
+        "continuation_logits": np.asarray(result["execution_horizon_ordered_continuation_logits"]).reshape(-1),
+    }
+    return inputs, {"prefix": prefix.copy(), "state": state.copy(), "step": step}
+
+
 def _run_episode(
     *,
     mode: str,
@@ -1218,6 +1263,7 @@ def _run_episode(
     success = False
     previous_actions: np.ndarray | None = None
     previous_horizon = 10
+    previous_observation: dict[str, Any] | None = None
     budget_state = v2.EpisodeBudgetState(balance=min(args.v2_initial_budget, args.v2_budget_capacity))
     max_steps = libero_eval._max_steps(args.task_suite_name)
     try:
@@ -1327,6 +1373,11 @@ def _run_episode(
                     f"required H{required_horizon}, chunk shape={action_chunk.shape}. "
                     "Serve a checkpoint whose action_horizon is at least the requested execution horizon."
                 )
+            feedback_inputs = None
+            if mode in FEEDBACK_MODES:
+                feedback_inputs, previous_observation = _feedback_inputs(
+                    result, previous_observation, step=step, previous_h=previous_horizon,
+                )
             horizon, selector_info = _select_horizon(
                 mode,
                 result,
@@ -1335,8 +1386,9 @@ def _run_episode(
                 selector=selector,
                 selector_rng=np.random.default_rng(request_seed + 991),
                 previous_horizon=previous_horizon,
+                feedback_inputs=feedback_inputs,
             )
-            if mode in {ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE} and len(action_chunk) < horizon:
+            if mode in {ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE, *FEEDBACK_MODES} and len(action_chunk) < horizon:
                 raise ValueError(
                     f"{mode} selected H{horizon}, but the served chunk has only {len(action_chunk)} actions."
                 )
@@ -2126,6 +2178,8 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         and not (key.startswith("ordered_h10_") and ORDERED_H10_HYSTERESIS_MODE not in args.modes)
         and not (key.startswith("ordered_smdp_") and ORDERED_SMDP_MODE not in args.modes)
         and not (key.startswith("last_block_smdp_") and LAST_BLOCK_SMDP_MODE not in args.modes)
+        and not (key.startswith("feedback_current_") and FEEDBACK_CURRENT_MODE not in args.modes)
+        and not (key.startswith("feedback_history_") and FEEDBACK_HISTORY_MODE not in args.modes)
         and not (key in {"original_host", "original_port", "original_model_action_horizon"} and value is None)
     }
 
