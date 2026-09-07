@@ -421,6 +421,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--warmup-requests", type=int, default=1)
     parser.add_argument(
+        "--trace-output-dir", default=None,
+        help="Write passive simulator/decision traces; traced episodes are diagnostic, not timing results.",
+    )
+    parser.add_argument(
+        "--trace-video-stride", type=int, default=5,
+        help="Save every Nth existing agentview frame when diagnostic tracing is enabled.",
+    )
+    parser.add_argument(
         "--resume",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1264,11 +1272,22 @@ def _run_episode(
     previous_actions: np.ndarray | None = None
     previous_horizon = 10
     previous_observation: dict[str, Any] | None = None
+    episode_trace = None
+    trace_error = None
     budget_state = v2.EpisodeBudgetState(balance=min(args.v2_initial_budget, args.v2_budget_capacity))
     max_steps = libero_eval._max_steps(args.task_suite_name)
     try:
         env.reset()
         observation = env.set_init_state(initial_state)
+        if getattr(args, "trace_output_dir", None) is not None:
+            from openpi.execution_horizon.trace import EpisodeTrace
+
+            episode_trace = EpisodeTrace(
+                args.trace_output_dir, mode=mode, task_id=task_id, episode=episode,
+                seed=args.seed, video_stride=args.trace_video_stride,
+            )
+            episode_trace.metadata.update(initial_state_id=int(state_id), task_name=str(task.name))
+            episode_trace.record_initial(observation, step=step)
         environment_horizon = libero_eval._env_horizon(env)
         episode_step_limit = max_steps + args.num_steps_wait
         if environment_horizon is not None:
@@ -1276,6 +1295,8 @@ def _run_episode(
         for _ in range(args.num_steps_wait):
             observation, _, done, _ = env.step(libero_eval.LIBERO_DUMMY_ACTION)
             step += 1
+            if episode_trace is not None:
+                episode_trace.record_step(observation, libero_eval.LIBERO_DUMMY_ACTION, step=step, is_wait=True)
             if done:
                 success = True
                 break
@@ -1402,6 +1423,13 @@ def _run_episode(
             horizon = min(horizon, len(action_chunk), episode_step_limit - step)
             if horizon <= 0:
                 break
+            if episode_trace is not None:
+                episode_trace.record_decision(
+                    env=env, observation=observation, policy_input=element, result=result,
+                    selector_info=selector_info, step=step, selected_h=selected_horizon,
+                    execution_h=horizon, previous_h=previous_horizon,
+                    episode_progress=episode_progress, request_seed=request_seed,
+                )
             horizons.append(horizon)
             compact_router_info: dict[str, Any] = {}
             if args.compact_alpha_router:
@@ -1552,15 +1580,27 @@ def _run_episode(
                 try:
                     observation, _, done, _ = env.step(np.asarray(action).tolist())
                 except Exception as exc:
+                    if episode_trace is not None:
+                        episode_trace.record_step_error(step=step + 1, error=exc)
                     if not libero_eval._is_terminated_episode_error(exc):
                         raise
                     done = libero_eval._env_success(env)
+                else:
+                    if episode_trace is not None:
+                        episode_trace.record_step(observation, action, step=step + 1)
                 step += 1
                 if done or libero_eval._env_success(env):
                     success = True
                     break
+    except Exception as exc:
+        trace_error = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
-        libero_eval._safe_close_env(env)
+        try:
+            if episode_trace is not None:
+                episode_trace.close(success=success, steps=step, error=trace_error)
+        finally:
+            libero_eval._safe_close_env(env)
     episode_elapsed_ms = (time.perf_counter() - episode_started) * 1000.0
 
     def total(field: str) -> float:
@@ -1753,6 +1793,8 @@ def _run_episode(
                 ),
             }
         )
+    if episode_trace is not None:
+        row.update(diagnostic_only=True, diagnostic_trace=str(episode_trace.path.with_suffix(".npz")))
     return row, decisions
 
 
@@ -2180,6 +2222,7 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         and not (key.startswith("last_block_smdp_") and LAST_BLOCK_SMDP_MODE not in args.modes)
         and not (key.startswith("feedback_current_") and FEEDBACK_CURRENT_MODE not in args.modes)
         and not (key.startswith("feedback_history_") and FEEDBACK_HISTORY_MODE not in args.modes)
+        and not (key.startswith("trace_") and getattr(args, "trace_output_dir", None) is None)
         and not (key in {"original_host", "original_port", "original_model_action_horizon"} and value is None)
     }
 
@@ -2241,6 +2284,8 @@ def _prepare_journal(
 
 
 def main(args: argparse.Namespace) -> None:
+    if getattr(args, "trace_output_dir", None) is not None and args.trace_video_stride <= 0:
+        raise ValueError("trace_video_stride must be positive when diagnostic tracing is enabled.")
     if args.action_cot_denoising_steps <= 0:
         raise ValueError("action_cot_denoising_steps must be positive.")
     if args.fixed_horizon <= 0:
