@@ -85,6 +85,15 @@ def test_forced_branches_share_continuation_seeds_and_use_root_feedback_after_ac
         def __init__(self):
             self.steps = 100
             self.actions = []
+            self.refreshes = []
+
+        def _update_observables(self, *, force=False):
+            self.refreshes.append(force)
+
+        def _get_observations(self, *, force_update=False):
+            if force_update:
+                self._update_observables(force=True)
+            return {"step": self.steps, "agentview_image": np.zeros((2, 2, 3), dtype=np.uint8)}
 
         def step(self, action):
             self.actions.append(np.asarray(action).copy())
@@ -124,6 +133,7 @@ def test_forced_branches_share_continuation_seeds_and_use_root_feedback_after_ac
             client=None, selector=selector, args=args,
         ))
         first_feedback.append(features[start])
+        assert env.refreshes == [True]
         np.testing.assert_array_equal(env.actions[:forced_h], np.ones((forced_h, 7)))
         np.testing.assert_array_equal(env.actions[forced_h:], np.full((18 - forced_h, 7), 9))
     assert results[0]["continuation_seeds"][0] == results[1]["continuation_seeds"][0]
@@ -138,7 +148,7 @@ def test_forced_branches_share_continuation_seeds_and_use_root_feedback_after_ac
         np.testing.assert_array_equal(inputs["previous_prefix_feature"], np.ones(2048))
 
 
-def test_root_regeneration_mismatch_skips_branches_and_exact_bank_episode_is_used(tmp_path, monkeypatch):
+def test_root_rpc_refreshes_stale_observation_and_keeps_action_consistency_gate(tmp_path, monkeypatch):
     root = {
         "task_id": 3, "episode_id": 338, "step": 35, "physics_state": np.asarray([35, 3, 4]),
         "saved_actions": np.ones((25, 7), dtype=np.float32), "previous_actions": np.zeros((25, 7)),
@@ -148,18 +158,39 @@ def test_root_regeneration_mismatch_skips_branches_and_exact_bank_episode_is_use
     monkeypatch.setattr(probe, "_trace_root", lambda *args: root)
     restored_steps = []
     initial_ids = []
+    cache = {"observed_step": -100}
+    refreshes = []
     sim = SimpleNamespace(get_state=lambda: SimpleNamespace(flatten=lambda: root["physics_state"]))
+
+    def update_observables(*, force=False):
+        refreshes.append(force)
+        if force:
+            cache["observed_step"] = float(sim.get_state().flatten()[0])
+
+    def get_observations(*, force_update=False):
+        if force_update:
+            update_observables(force=True)
+        return {"observed_step": cache["observed_step"], "agentview_image": np.zeros((2, 2, 3), dtype=np.uint8)}
+
     env = SimpleNamespace(
         sim=sim, reset=lambda: None, set_init_state=lambda state: None, closed=False,
+        _get_observations=get_observations, _update_observables=update_observables,
     )
     monkeypatch.setattr(probe.libero_eval, "_get_libero_env", lambda *args: (env, "task"))
     monkeypatch.setattr(probe.libero_eval, "_safe_close_env", lambda value: setattr(value, "closed", True))
     monkeypatch.setattr(probe.libero_eval, "_env_horizon", lambda value: 100)
     monkeypatch.setattr(probe.libero_eval, "_max_steps", lambda name: 100)
-    monkeypatch.setattr(probe.libero_eval, "_observation_to_policy_input", lambda *args: {})
+    monkeypatch.setattr(probe.libero_eval, "_observation_to_policy_input", lambda observation, *args: observation)
     monkeypatch.setattr(probe.replay, "_saved_snapshot", lambda env, physics, step: restored_steps.append(step) or None)
-    monkeypatch.setattr(probe.collector, "_restore_snapshot", lambda *args: {})
-    monkeypatch.setattr(probe.evaluator, "_request", lambda *args, **kwargs: (_response(1.1), {"wall_ms": 123.0}))
+    monkeypatch.setattr(probe.collector, "_restore_snapshot", lambda *args: get_observations())
+
+    def request(client, policy_input, **kwargs):
+        del client, kwargs
+        assert policy_input["observed_step"] == root["step"]
+        assert refreshes == [True]
+        return _response(1.1), {"wall_ms": 123.0}
+
+    monkeypatch.setattr(probe.evaluator, "_request", request)
     monkeypatch.setattr(probe, "_run_forced_branch", lambda **kwargs: pytest.fail("mismatched root cannot be probed"))
     bank = SimpleNamespace(
         validate_presets=lambda *args: None,
@@ -176,10 +207,13 @@ def test_root_regeneration_mismatch_skips_branches_and_exact_bank_episode_is_use
     )
     assert initial_ids == [(3, 338)]
     assert restored_steps == [35]
+    assert refreshes == [True]
     assert env.closed
     assert result["status"] == "skipped"
     assert result["skip_reason"] == "regenerated_root_actions_differ_from_saved_actions"
     assert result["root_regeneration_policy_calls"] == 1
+    assert result["root_observation_refresh"] == "_get_observations(force_update=True)"
+    assert probe.COMPARISON_ATOL == 1e-5
     assert result["branches"] == []
 
 

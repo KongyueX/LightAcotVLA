@@ -160,13 +160,28 @@ def _budget_fraction(args: argparse.Namespace) -> float:
     return min(args.v2_initial_budget, args.v2_budget_capacity) / args.v2_budget_capacity
 
 
+def _restore_fresh_snapshot(env: Any, snapshot: collector.SimulatorSnapshot) -> dict[str, Any]:
+    collector._restore_snapshot(env, snapshot)
+    for candidate in collector._walk_env(env):
+        getter = getattr(candidate, "_get_observations", None)
+        updater = getattr(candidate, "_update_observables", None)
+        if callable(getter) and callable(updater):
+            # Robosuite force_update refreshes observable.obs from the restored
+            # simulator via _update_observables(force=True), without env.step.
+            observation = getter(force_update=True)
+            if not isinstance(observation, dict) or "agentview_image" not in observation:
+                raise RuntimeError("Forced root observation refresh did not return the LIBERO camera observation.")
+            return observation
+    raise RuntimeError("Could not find the Robosuite observable refresh API in the LIBERO environment.")
+
+
 def _run_forced_branch(
     *, env: Any, snapshot: collector.SimulatorSnapshot, root: dict[str, Any],
     forced_h: int, repeat: int, episode_step_limit: int, task_description: str,
     root_observation_cache: dict[str, Any], client: Any, selector: FeedbackSelector,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    observation = collector._restore_snapshot(env, snapshot)
+    observation = _restore_fresh_snapshot(env, snapshot)
     step = root["step"]
     initial_step = step
     previous_cache = copy.deepcopy(root_observation_cache)
@@ -244,7 +259,8 @@ def probe_case(
             if done:
                 break
         snapshot = replay._saved_snapshot(env, root["physics_state"], root["step"])
-        observation = collector._restore_snapshot(env, snapshot)
+        observation = _restore_fresh_snapshot(env, snapshot)
+        result["root_observation_refresh"] = "_get_observations(force_update=True)"
         restored = np.asarray(collector._simulator(env).get_state().flatten(), dtype=np.float64)
         restore_difference = float(np.max(np.abs(restored - root["physics_state"])))
         result["restored_physics_max_abs_difference"] = restore_difference
