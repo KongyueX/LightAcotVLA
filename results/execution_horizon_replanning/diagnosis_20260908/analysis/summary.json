@@ -1,0 +1,447 @@
+{
+  "aggregation": "Each episode contributes one mean per metric; episodes with no applicable boundary contribute no value.",
+  "baseline_rows": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1/development/rollout_rows.csv",
+  "episode_count": 9,
+  "limitations": [
+    "Cases were selected for earlier A/history outcome disagreement, so these traces are not a new success-rate evaluation.",
+    "Raw action differences describe command changes, not measured physical velocity or safety.",
+    "No unexecuted suffix after H25 means no overlap evidence, not perfect plan consistency.",
+    "Boundary changes and outcome associations are diagnostic clues; passive traces do not identify a causal failure mechanism."
+  ],
+  "minimal_causal_followup": "Only after a case reproduces and its pre-divergence traces agree: restore the first differing-decision snapshot, reuse the already generated action chunk, and change only history's H at that decision to A's H; then resume history unchanged. Compare against unmodified history with paired continuation seeds. Not run by this analyzer.",
+  "original_discordance_groups": {
+    "regression": {
+      "episodes": 5,
+      "metrics": {
+        "ordered_feedback_history": {
+          "boundary_eef_displacement_mean_m": {
+            "count": 5,
+            "max": 0.0040674483399235194,
+            "mean": 0.002550565292301971,
+            "median": 0.002904282481551656,
+            "min": 0.0012639863368793588,
+            "p95": 0.0038503999846503643
+          },
+          "boundary_gripper_sign_flip_fraction": {
+            "count": 5,
+            "max": 0.017857142857142856,
+            "mean": 0.0035714285714285713,
+            "median": 0.0,
+            "min": 0.0,
+            "p95": 0.014285714285714282
+          },
+          "boundary_translation_command_delta_mean": {
+            "count": 5,
+            "max": 0.494846024749668,
+            "mean": 0.29284598389978056,
+            "median": 0.227935067558679,
+            "min": 0.15038908422170832,
+            "p95": 0.4836992839572889
+          },
+          "overlap_translation_command_rmse_mean": {
+            "count": 5,
+            "max": 0.2901795390011837,
+            "mean": 0.15355559076446407,
+            "median": 0.11629556247328104,
+            "min": 0.053585797192055605,
+            "p95": 0.27844787655017617
+          },
+          "within_eef_displacement_mean_m": {
+            "count": 5,
+            "max": 0.0034560964306631866,
+            "mean": 0.0025594047740197644,
+            "median": 0.002748155463665675,
+            "min": 0.0014331806379429377,
+            "p95": 0.00337557742185708
+          },
+          "within_translation_command_delta_mean": {
+            "count": 5,
+            "max": 0.04895880093211268,
+            "mean": 0.030968007570264237,
+            "median": 0.023758798800837037,
+            "min": 0.019152497141586466,
+            "p95": 0.04737955307444242
+          }
+        },
+        "ordered_transformer": {
+          "boundary_eef_displacement_mean_m": {
+            "count": 5,
+            "max": 0.006471668763667697,
+            "mean": 0.005598500742261391,
+            "median": 0.005812201581660799,
+            "min": 0.0048285676844848245,
+            "p95": 0.006377024265208164
+          },
+          "boundary_gripper_sign_flip_fraction": {
+            "count": 5,
+            "max": 0.08695652173913043,
+            "mean": 0.017391304347826087,
+            "median": 0.0,
+            "min": 0.0,
+            "p95": 0.06956521739130433
+          },
+          "boundary_translation_command_delta_mean": {
+            "count": 5,
+            "max": 0.31900105214656577,
+            "mean": 0.2068778079770571,
+            "median": 0.18443629786688284,
+            "min": 0.1362606431072161,
+            "p95": 0.30185177674136804
+          },
+          "overlap_translation_command_rmse_mean": {
+            "count": 5,
+            "max": 0.12347076169471456,
+            "mean": 0.07901965055842904,
+            "median": 0.07152446628268397,
+            "min": 0.05525673890473117,
+            "p95": 0.11371066217163732
+          },
+          "within_eef_displacement_mean_m": {
+            "count": 5,
+            "max": 0.005970580736866283,
+            "mean": 0.005692368667983888,
+            "median": 0.005814880129207104,
+            "min": 0.005129276395963095,
+            "p95": 0.005952168998952405
+          },
+          "within_translation_command_delta_mean": {
+            "count": 5,
+            "max": 0.0471225668677456,
+            "mean": 0.042535672531365296,
+            "median": 0.04687757120018228,
+            "min": 0.033812778969781354,
+            "p95": 0.04710666251939102
+          }
+        }
+      },
+      "original_pairs_reproduced": 4
+    },
+    "rescue": {
+      "episodes": 4,
+      "metrics": {
+        "ordered_feedback_history": {
+          "boundary_eef_displacement_mean_m": {
+            "count": 4,
+            "max": 0.008011163782388949,
+            "mean": 0.006765429217641507,
+            "median": 0.007218701113750527,
+            "min": 0.004613150860676027,
+            "p95": 0.007908309969226259
+          },
+          "boundary_gripper_sign_flip_fraction": {
+            "count": 4,
+            "max": 0.08333333333333333,
+            "mean": 0.03869047619047619,
+            "median": 0.03571428571428571,
+            "min": 0.0,
+            "p95": 0.08154761904761904
+          },
+          "boundary_translation_command_delta_mean": {
+            "count": 4,
+            "max": 0.26034543820155015,
+            "mean": 0.19549659415144688,
+            "median": 0.1815115191815106,
+            "min": 0.1586179000412161,
+            "p95": 0.24941173718289855
+          },
+          "overlap_translation_command_rmse_mean": {
+            "count": 4,
+            "max": 0.12776358885807995,
+            "mean": 0.10657411373945704,
+            "median": 0.10669818943348477,
+            "min": 0.08513648723277861,
+            "p95": 0.12575999776844402
+          },
+          "within_eef_displacement_mean_m": {
+            "count": 4,
+            "max": 0.007294817233566772,
+            "mean": 0.006608685261797478,
+            "median": 0.006899239532382593,
+            "min": 0.005341444748857954,
+            "p95": 0.007255377475641759
+          },
+          "within_translation_command_delta_mean": {
+            "count": 4,
+            "max": 0.06635266560698637,
+            "mean": 0.05588480794461799,
+            "median": 0.05778512089439217,
+            "min": 0.041616324382701214,
+            "p95": 0.06539641669101345
+          }
+        },
+        "ordered_transformer": {
+          "boundary_eef_displacement_mean_m": {
+            "count": 4,
+            "max": 0.004176871493739361,
+            "mean": 0.0033279508142544318,
+            "median": 0.003364542342538062,
+            "min": 0.002405847078202242,
+            "p95": 0.004151305503884868
+          },
+          "boundary_gripper_sign_flip_fraction": {
+            "count": 4,
+            "max": 0.21153846153846154,
+            "mean": 0.06330580513711212,
+            "median": 0.020842379504993486,
+            "min": 0.0,
+            "p95": 0.18299918166939436
+          },
+          "boundary_translation_command_delta_mean": {
+            "count": 4,
+            "max": 0.370910057227538,
+            "mean": 0.23471866954168982,
+            "median": 0.22799922282436502,
+            "min": 0.1119661752904913,
+            "p95": 0.3587469678635254
+          },
+          "overlap_translation_command_rmse_mean": {
+            "count": 4,
+            "max": 0.22561953435325588,
+            "mean": 0.128125862974134,
+            "median": 0.1149639499974574,
+            "min": 0.05695601754836535,
+            "p95": 0.21362499486677736
+          },
+          "within_eef_displacement_mean_m": {
+            "count": 4,
+            "max": 0.004489036326421716,
+            "mean": 0.003286398826266364,
+            "median": 0.0032456864313044377,
+            "min": 0.0021651861160348644,
+            "p95": 0.004361963798062151
+          },
+          "within_translation_command_delta_mean": {
+            "count": 4,
+            "max": 0.05662022750689132,
+            "mean": 0.03147703487475482,
+            "median": 0.02474906566145222,
+            "min": 0.01978978066922352,
+            "p95": 0.05245734982518336
+          }
+        }
+      },
+      "original_pairs_reproduced": 4
+    }
+  },
+  "original_pairs_reproduced": 8,
+  "status": "complete",
+  "trace_dir": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/traces",
+  "trace_outcome_groups": {
+    "ordered_feedback_history": {
+      "trace_failure": {
+        "episodes": 4,
+        "metrics": {
+          "boundary_eef_displacement_mean_m": {
+            "count": 4,
+            "max": 0.002982206563557744,
+            "mean": 0.002171344530396584,
+            "median": 0.0022195926105746163,
+            "min": 0.0012639863368793588,
+            "p95": 0.002970517951256831
+          },
+          "boundary_gripper_sign_flip_fraction": {
+            "count": 4,
+            "max": 0.017857142857142856,
+            "mean": 0.004464285714285714,
+            "median": 0.0,
+            "min": 0.0,
+            "p95": 0.015178571428571421
+          },
+          "boundary_translation_command_delta_mean": {
+            "count": 4,
+            "max": 0.494846024749668,
+            "mean": 0.25627939967778257,
+            "median": 0.18994124486987699,
+            "min": 0.15038908422170832,
+            "p95": 0.45480938117101954
+          },
+          "overlap_translation_command_rmse_mean": {
+            "count": 4,
+            "max": 0.2901795390011837,
+            "mean": 0.1340641817690436,
+            "median": 0.09624569544146758,
+            "min": 0.053585797192055605,
+            "p95": 0.2640969425219982
+          },
+          "within_eef_displacement_mean_m": {
+            "count": 4,
+            "max": 0.003053501386632653,
+            "mean": 0.002335231859858909,
+            "median": 0.0024271227074300224,
+            "min": 0.0014331806379429377,
+            "p95": 0.003007699498187606
+          },
+          "within_translation_command_delta_mean": {
+            "count": 4,
+            "max": 0.041062561643761396,
+            "mean": 0.026470309229802126,
+            "median": 0.022833089066930316,
+            "min": 0.019152497141586466,
+            "p95": 0.03846699721732274
+          }
+        }
+      },
+      "trace_success": {
+        "episodes": 5,
+        "metrics": {
+          "boundary_eef_displacement_mean_m": {
+            "count": 5,
+            "max": 0.008011163782388949,
+            "mean": 0.00622583304209791,
+            "median": 0.007111930532863371,
+            "min": 0.0040674483399235194,
+            "p95": 0.007874025364838695
+          },
+          "boundary_gripper_sign_flip_fraction": {
+            "count": 5,
+            "max": 0.08333333333333333,
+            "mean": 0.030952380952380953,
+            "median": 0.0,
+            "min": 0.0,
+            "p95": 0.08095238095238094
+          },
+          "boundary_translation_command_delta_mean": {
+            "count": 5,
+            "max": 0.43911232078777246,
+            "mean": 0.244219739478712,
+            "median": 0.18745409807720634,
+            "min": 0.1586179000412161,
+            "p95": 0.403358944270528
+          },
+          "overlap_translation_command_rmse_mean": {
+            "count": 5,
+            "max": 0.23152122674614597,
+            "mean": 0.13156353634079482,
+            "median": 0.11440631492717375,
+            "min": 0.08513648723277861,
+            "p95": 0.21076969916853275
+          },
+          "within_eef_displacement_mean_m": {
+            "count": 5,
+            "max": 0.007294817233566772,
+            "mean": 0.0059781674955706205,
+            "median": 0.006766593550698502,
+            "min": 0.0034560964306631866,
+            "p95": 0.007242230889666754
+          },
+          "within_translation_command_delta_mean": {
+            "count": 5,
+            "max": 0.06635266560698637,
+            "mean": 0.05449960654211693,
+            "median": 0.05559256895495076,
+            "min": 0.041616324382701214,
+            "p95": 0.0650776670523558
+          }
+        }
+      }
+    },
+    "ordered_transformer": {
+      "trace_failure": {
+        "episodes": 4,
+        "metrics": {
+          "boundary_eef_displacement_mean_m": {
+            "count": 4,
+            "max": 0.004176871493739361,
+            "mean": 0.0033279508142544318,
+            "median": 0.003364542342538062,
+            "min": 0.002405847078202242,
+            "p95": 0.004151305503884868
+          },
+          "boundary_gripper_sign_flip_fraction": {
+            "count": 4,
+            "max": 0.21153846153846154,
+            "mean": 0.06330580513711212,
+            "median": 0.020842379504993486,
+            "min": 0.0,
+            "p95": 0.18299918166939436
+          },
+          "boundary_translation_command_delta_mean": {
+            "count": 4,
+            "max": 0.370910057227538,
+            "mean": 0.23471866954168982,
+            "median": 0.22799922282436502,
+            "min": 0.1119661752904913,
+            "p95": 0.3587469678635254
+          },
+          "overlap_translation_command_rmse_mean": {
+            "count": 4,
+            "max": 0.22561953435325588,
+            "mean": 0.128125862974134,
+            "median": 0.1149639499974574,
+            "min": 0.05695601754836535,
+            "p95": 0.21362499486677736
+          },
+          "within_eef_displacement_mean_m": {
+            "count": 4,
+            "max": 0.004489036326421716,
+            "mean": 0.003286398826266364,
+            "median": 0.0032456864313044377,
+            "min": 0.0021651861160348644,
+            "p95": 0.004361963798062151
+          },
+          "within_translation_command_delta_mean": {
+            "count": 4,
+            "max": 0.05662022750689132,
+            "mean": 0.03147703487475482,
+            "median": 0.02474906566145222,
+            "min": 0.01978978066922352,
+            "p95": 0.05245734982518336
+          }
+        }
+      },
+      "trace_success": {
+        "episodes": 5,
+        "metrics": {
+          "boundary_eef_displacement_mean_m": {
+            "count": 5,
+            "max": 0.006471668763667697,
+            "mean": 0.005598500742261391,
+            "median": 0.005812201581660799,
+            "min": 0.0048285676844848245,
+            "p95": 0.006377024265208164
+          },
+          "boundary_gripper_sign_flip_fraction": {
+            "count": 5,
+            "max": 0.08695652173913043,
+            "mean": 0.017391304347826087,
+            "median": 0.0,
+            "min": 0.0,
+            "p95": 0.06956521739130433
+          },
+          "boundary_translation_command_delta_mean": {
+            "count": 5,
+            "max": 0.31900105214656577,
+            "mean": 0.2068778079770571,
+            "median": 0.18443629786688284,
+            "min": 0.1362606431072161,
+            "p95": 0.30185177674136804
+          },
+          "overlap_translation_command_rmse_mean": {
+            "count": 5,
+            "max": 0.12347076169471456,
+            "mean": 0.07901965055842904,
+            "median": 0.07152446628268397,
+            "min": 0.05525673890473117,
+            "p95": 0.11371066217163732
+          },
+          "within_eef_displacement_mean_m": {
+            "count": 5,
+            "max": 0.005970580736866283,
+            "mean": 0.005692368667983888,
+            "median": 0.005814880129207104,
+            "min": 0.005129276395963095,
+            "p95": 0.005952168998952405
+          },
+          "within_translation_command_delta_mean": {
+            "count": 5,
+            "max": 0.0471225668677456,
+            "mean": 0.042535672531365296,
+            "median": 0.04687757120018228,
+            "min": 0.033812778969781354,
+            "p95": 0.04710666251939102
+          }
+        }
+      }
+    }
+  }
+}

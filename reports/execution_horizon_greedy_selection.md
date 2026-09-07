@@ -31,3 +31,9 @@
 ## Limitations
 
 Q^A只评价当前H改变后由A继续的局部回报，与候选全程部署存在差异；300次分支计数来自60个root，不是300个独立闭环episode。有限早停集与单训练seed可能选中偶然较好的checkpoint，最终判断必须依据实际闭环，不能把选模目标改善当作成功率提升。
+
+## 已完成选模与测试进度
+
+两套小头均重放原650次更新，greedy准则均选step200。current在早停缓存标签上相对A净多4/300次成功、RPC差-0.055050秒，只改2/60个root的H；history净多2/300、RPC差-0.013474秒、改7/60个root。按早停准则选定current，参数与旧step450不同，仅该候选进入闭环。
+
+有效单H试验已完整结束，随后自动串行启动A/current step200的新100初态配对测试；04:25快照完成33/200局，尚无完整成绩。运行代码9dca506，服务器目录为`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/greedy_selection_9dca506`；tmux为`h25_greedy_selection`，30分钟监控为`greedy`。未重新采集训练数据或修改VLA。

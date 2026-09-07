@@ -1,0 +1,775 @@
+{
+  "alignment": {
+    "alignment": "Equal absolute environment steps, never equal call indices after the decision grids diverge.",
+    "before_first_h_or_grid_difference": {
+      "decision_physics_max_abs_difference": {
+        "count": 2,
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p95": 0.0
+      },
+      "decision_raw_proprio_max_abs_difference": {
+        "count": 2,
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p95": 0.0
+      },
+      "eef_position_difference_m": {
+        "count": 36,
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p95": 0.0
+      },
+      "eef_rotation_difference_rad": {
+        "count": 36,
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p95": 0.0
+      },
+      "executed_command_max_abs_difference": {
+        "count": 25,
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p95": 0.0
+      },
+      "first_state_step": 0,
+      "generated_chunk_max_abs_difference": {
+        "count": 2,
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p95": 0.0
+      },
+      "gripper_qpos_max_abs_difference": {
+        "count": 36,
+        "max": 0.0,
+        "mean": 0.0,
+        "median": 0.0,
+        "min": 0.0,
+        "p95": 0.0
+      },
+      "last_state_step": 35,
+      "matching_request_seeds": 2,
+      "scope": "Includes observations and the already generated plans at the first differing decision, before its actions execute.",
+      "shared_decisions": 2,
+      "shared_state_steps": 36
+    },
+    "common_environment_end_step": 246,
+    "common_prefix_through_step": 35,
+    "first_decision_grid_difference_step": 40,
+    "first_shared_decision_with_h_difference": {
+      "a_anchor_continuation_logits": [
+        1.275415301322937,
+        0.7713160514831543,
+        -0.9201524257659912,
+        -1.0560983419418335
+      ],
+      "a_anchor_probabilities": [
+        0.21833167970180511,
+        0.24715924263000488,
+        0.38221314549446106,
+        0.11299511790275574,
+        0.039300862699747086
+      ],
+      "a_ordered_continuation_logits": [
+        1.275415301322937,
+        0.7713160514831543,
+        -0.9201524257659912,
+        -1.0560983419418335
+      ],
+      "a_ordered_probabilities": [
+        0.21833167970180511,
+        0.24715924263000488,
+        0.38221314549446106,
+        0.11299511790275574,
+        0.039300862699747086
+      ],
+      "a_request_seed": 7370042,
+      "a_selected_h": 15,
+      "decision_physics_max_abs_difference": 0.0,
+      "generated_chunk_max_abs_difference": 0.0,
+      "history_anchor_continuation_logits": [
+        1.275415301322937,
+        0.7713160514831543,
+        -0.9201524257659912,
+        -1.0560983419418335
+      ],
+      "history_anchor_probabilities": [
+        0.21833167970180511,
+        0.24715924263000488,
+        0.38221314549446106,
+        0.11299511790275574,
+        0.039300862699747086
+      ],
+      "history_ordered_continuation_logits": [
+        0.8610036373138428,
+        0.5768900513648987,
+        -0.4219731092453003,
+        -1.6328381299972534
+      ],
+      "history_ordered_probabilities": [
+        0.29712969064712524,
+        0.252786248922348,
+        0.27183064818382263,
+        0.1491193175315857,
+        0.029134081676602364
+      ],
+      "history_request_seed": 7370042,
+      "history_selected_h": 5,
+      "step": 35
+    },
+    "full_common_environment_time": {
+      "eef_position_difference_m": {
+        "count": 247,
+        "max": 0.14733674540740777,
+        "mean": 0.05577324302164645,
+        "median": 0.03434865652741997,
+        "min": 0.0,
+        "p95": 0.14546793876586994
+      },
+      "eef_rotation_difference_rad": {
+        "count": 247,
+        "max": 0.26858631838886876,
+        "mean": 0.11174952011499036,
+        "median": 0.11963863343654808,
+        "min": 0.0,
+        "p95": 0.2069527379488294
+      },
+      "executed_command_max_abs_difference": {
+        "count": 236,
+        "max": 2.0097994804382324,
+        "mean": 0.552350133846877,
+        "median": 0.24427711963653564,
+        "min": 0.0,
+        "p95": 1.9924629926681519
+      },
+      "first_state_step": 0,
+      "gripper_qpos_max_abs_difference": {
+        "count": 247,
+        "max": 0.03512487644366018,
+        "mean": 0.004731194934001874,
+        "median": 0.0004224917918639109,
+        "min": 0.0,
+        "p95": 0.031331888356865095
+      },
+      "last_state_step": 246,
+      "shared_state_steps": 247
+    },
+    "shared_decision_steps": 2
+  },
+  "episode_id": 337,
+  "old_relation": "rescue",
+  "old_success": {
+    "ordered_feedback_history": true,
+    "ordered_transformer": false
+  },
+  "reproduction": {
+    "matches_original_by_mode": {
+      "ordered_feedback_history": true,
+      "ordered_transformer": true
+    },
+    "original_pair_reproduced": true,
+    "trace_relation": "rescue",
+    "trace_success": {
+      "ordered_feedback_history": true,
+      "ordered_transformer": false
+    }
+  },
+  "task_id": 4,
+  "task_name": "LIVING_ROOM_SCENE5_put_the_white_mug_on_the_left_plate_and_put_the_yellow_and_white_mug_on_the_right_plate",
+  "traces": {
+    "ordered_feedback_history": {
+      "actual_execution_steps": 236,
+      "boundary_count": 12,
+      "boundary_summary": {
+        "eef_displacement_direction_cosine": {
+          "count": 12,
+          "max": 0.9998473948149663,
+          "mean": 0.9863862658311243,
+          "median": 0.9900747970590561,
+          "min": 0.9388857606422484,
+          "p95": 0.9996308363433779
+        },
+        "eef_next_step_displacement_m": {
+          "count": 12,
+          "max": 0.011215022363856764,
+          "mean": 0.007111930532863371,
+          "median": 0.007130191661973132,
+          "min": 0.002344649584195841,
+          "p95": 0.01064649714803803
+        },
+        "eef_next_step_rotation_rad": {
+          "count": 12,
+          "max": 0.012806116122598729,
+          "mean": 0.006291139957475107,
+          "median": 0.005990419673664254,
+          "min": 0.0014791347748302568,
+          "p95": 0.012056595012453254
+        },
+        "eef_previous_step_displacement_m": {
+          "count": 12,
+          "max": 0.011914615286338059,
+          "mean": 0.006896315766447915,
+          "median": 0.006767677049032311,
+          "min": 0.0023538675582419036,
+          "p95": 0.010979237974552348
+        },
+        "gripper_command_delta_abs": {
+          "count": 12,
+          "max": 0.017300069332122803,
+          "mean": 0.00939914584159851,
+          "median": 0.008490204811096191,
+          "min": 0.0025878548622131348,
+          "p95": 0.015804824233055112
+        },
+        "gripper_nonzero_sign_flip_count": 0,
+        "gripper_nonzero_sign_flip_fraction": 0.0,
+        "no_overlap_boundary_count": 3,
+        "overlap_gripper_command_mae": {
+          "count": 9,
+          "max": 0.7977787375450134,
+          "mean": 0.09628739224539863,
+          "median": 0.0097847580909729,
+          "min": 0.00502387285232544,
+          "p95": 0.4835135293006894
+        },
+        "overlap_rotation_command_rmse": {
+          "count": 9,
+          "max": 0.029918735680332355,
+          "mean": 0.021079171046231204,
+          "median": 0.02111418157057197,
+          "min": 0.014209372787373466,
+          "p95": 0.028137513650084347
+        },
+        "overlap_translation_command_rmse": {
+          "count": 9,
+          "max": 0.12283815006915237,
+          "mean": 0.08513648723277861,
+          "median": 0.08659133154231889,
+          "min": 0.05024687594848208,
+          "p95": 0.12009233918367887
+        },
+        "rotation_command_delta_l2": {
+          "count": 12,
+          "max": 0.06779282477485525,
+          "mean": 0.043227752390938845,
+          "median": 0.04847602514406156,
+          "min": 0.010643557163660416,
+          "p95": 0.06352997466421377
+        },
+        "translation_command_delta_l2": {
+          "count": 12,
+          "max": 0.22722156086379125,
+          "mean": 0.1586179000412161,
+          "median": 0.16667890077958733,
+          "min": 0.060360838191163786,
+          "p95": 0.22556367902494334
+        },
+        "translation_command_direction_cosine": {
+          "count": 12,
+          "max": 0.9996976861481665,
+          "mean": 0.9376020874286776,
+          "median": 0.9703011253865976,
+          "min": 0.6431225270298173,
+          "p95": 0.9968470403930698
+        }
+      },
+      "decision_count": 13,
+      "episode_metrics": {
+        "boundary_eef_displacement_mean_m": 0.007111930532863371,
+        "boundary_gripper_sign_flip_fraction": 0.0,
+        "boundary_translation_command_delta_mean": 0.1586179000412161,
+        "overlap_translation_command_rmse_mean": 0.08513648723277861,
+        "within_eef_displacement_mean_m": 0.006766593550698502,
+        "within_translation_command_delta_mean": 0.05997767283383358
+      },
+      "example_order": "Five largest raw translation-command changes; ranking does not label anomalies or causes.",
+      "executed_command_differences": {
+        "boundary": {
+          "gripper_command_delta_abs": {
+            "count": 12,
+            "max": 0.017300069332122803,
+            "mean": 0.00939914584159851,
+            "median": 0.008490204811096191,
+            "min": 0.0025878548622131348,
+            "p95": 0.015804824233055112
+          },
+          "rotation_command_delta_l2": {
+            "count": 12,
+            "max": 0.06779282477485525,
+            "mean": 0.043227752390938845,
+            "median": 0.04847602514406156,
+            "min": 0.010643557163660416,
+            "p95": 0.06352997466421377
+          },
+          "translation_command_delta_l2": {
+            "count": 12,
+            "max": 0.22722156086379125,
+            "mean": 0.1586179000412161,
+            "median": 0.16667890077958733,
+            "min": 0.060360838191163786,
+            "p95": 0.22556367902494334
+          }
+        },
+        "within_chunk": {
+          "gripper_command_delta_abs": {
+            "count": 223,
+            "max": 1.982143759727478,
+            "mean": 0.03041707106235316,
+            "median": 0.0033355355262756348,
+            "min": 3.0279159545898438e-05,
+            "p95": 0.011810755729675281
+          },
+          "rotation_command_delta_l2": {
+            "count": 223,
+            "max": 0.02790090756754563,
+            "mean": 0.007065046710123592,
+            "median": 0.005520982041505682,
+            "min": 0.0004990040468183625,
+            "p95": 0.018284593596993574
+          },
+          "translation_command_delta_l2": {
+            "count": 223,
+            "max": 0.19797010892801883,
+            "mean": 0.05997767283383358,
+            "median": 0.05359867732113387,
+            "min": 0.002380109240592503,
+            "p95": 0.13470886399219953
+          }
+        }
+      },
+      "generated_plan_differences": {
+        "per_call_mean_gripper_command_delta_abs": {
+          "count": 13,
+          "max": 0.08778728048006694,
+          "mean": 0.042081660185104765,
+          "median": 0.004588400324185689,
+          "min": 0.0026437665025393167,
+          "p95": 0.0876557360092799
+        },
+        "per_call_mean_rotation_command_delta_l2": {
+          "count": 13,
+          "max": 0.0135317566835871,
+          "mean": 0.006791932284411339,
+          "median": 0.007552247693705154,
+          "min": 0.0015275991544120703,
+          "p95": 0.01110744235091706
+        },
+        "per_call_mean_translation_command_delta_l2": {
+          "count": 13,
+          "max": 0.10016497144545344,
+          "mean": 0.05774923914688824,
+          "median": 0.053910936756312,
+          "min": 0.02907311360966597,
+          "p95": 0.08562315343152047
+        }
+      },
+      "largest_boundary_command_changes": [
+        {
+          "eef_displacement_direction_cosine": 0.9979310927921003,
+          "eef_next_step_displacement_m": 0.011215022363856764,
+          "eef_next_step_rotation_rad": 0.011443350467788774,
+          "eef_previous_step_displacement_m": 0.011914615286338059,
+          "execution_h": 15,
+          "gripper_command_delta_abs": 0.0075141191482543945,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": 0.012115716934204102,
+          "overlap_rotation_command_rmse": 0.020599528789455687,
+          "overlap_steps": 5,
+          "overlap_translation_command_rmse": 0.12283815006915237,
+          "previous_execution_h": 20,
+          "previous_selected_h": 20,
+          "rotation_command_delta_l2": 0.04922723517888299,
+          "selected_h": 15,
+          "step": 80,
+          "translation_command_delta_l2": 0.22722156086379125,
+          "translation_command_direction_cosine": 0.9759278008582803
+        },
+        {
+          "eef_displacement_direction_cosine": 0.9852863208449615,
+          "eef_next_step_displacement_m": 0.005566577963759098,
+          "eef_next_step_rotation_rad": 0.0014958822765613867,
+          "eef_previous_step_displacement_m": 0.004090161267597096,
+          "execution_h": 25,
+          "gripper_command_delta_abs": 0.012963056564331055,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": 0.0097847580909729,
+          "overlap_rotation_command_rmse": 0.014209372787373466,
+          "overlap_steps": 10,
+          "overlap_translation_command_rmse": 0.10275135031498005,
+          "previous_execution_h": 15,
+          "previous_selected_h": 15,
+          "rotation_command_delta_l2": 0.010643557163660416,
+          "selected_h": 25,
+          "step": 130,
+          "translation_command_delta_l2": 0.22420723024770414,
+          "translation_command_direction_cosine": 0.9646744499149149
+        },
+        {
+          "eef_displacement_direction_cosine": 0.9769508882376516,
+          "eef_next_step_displacement_m": 0.0076159405843570175,
+          "eef_next_step_rotation_rad": 0.007823606787010128,
+          "eef_previous_step_displacement_m": 0.006901776713827431,
+          "execution_h": 11,
+          "gripper_command_delta_abs": 0.005079507827758789,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": null,
+          "overlap_rotation_command_rmse": null,
+          "overlap_steps": 0,
+          "overlap_translation_command_rmse": null,
+          "previous_execution_h": 25,
+          "previous_selected_h": 25,
+          "rotation_command_delta_l2": 0.04772481510924013,
+          "selected_h": 20,
+          "step": 235,
+          "translation_command_delta_l2": 0.2214578622865443,
+          "translation_command_direction_cosine": 0.9467116400980209
+        },
+        {
+          "eef_displacement_direction_cosine": 0.9889802492571907,
+          "eef_next_step_displacement_m": 0.00989033177577121,
+          "eef_next_step_rotation_rad": 0.005336773699048234,
+          "eef_previous_step_displacement_m": 0.010213929264909495,
+          "execution_h": 20,
+          "gripper_command_delta_abs": 0.010758817195892334,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": 0.007090979814529419,
+          "overlap_rotation_command_rmse": 0.02546568060471234,
+          "overlap_steps": 10,
+          "overlap_translation_command_rmse": 0.10779958152010248,
+          "previous_execution_h": 15,
+          "previous_selected_h": 15,
+          "rotation_command_delta_l2": 0.050192133384276694,
+          "selected_h": 20,
+          "step": 170,
+          "translation_command_delta_l2": 0.20450229851794338,
+          "translation_command_direction_cosine": 0.9642215555472828
+        },
+        {
+          "eef_displacement_direction_cosine": 0.9911693448609215,
+          "eef_next_step_displacement_m": 0.006096992903684343,
+          "eef_next_step_rotation_rad": 0.010550334508073042,
+          "eef_previous_step_displacement_m": 0.005854678091276291,
+          "execution_h": 5,
+          "gripper_command_delta_abs": 0.013613581657409668,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": null,
+          "overlap_rotation_command_rmse": null,
+          "overlap_steps": 0,
+          "overlap_translation_command_rmse": null,
+          "previous_execution_h": 25,
+          "previous_selected_h": 25,
+          "rotation_command_delta_l2": 0.02867993837450437,
+          "selected_h": 5,
+          "step": 35,
+          "translation_command_delta_l2": 0.1857657611481793,
+          "translation_command_direction_cosine": 0.9373745292047213
+        }
+      ],
+      "success": true,
+      "trace": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/traces/ordered_feedback_history/task04_ep000337.npz"
+    },
+    "ordered_transformer": {
+      "actual_execution_steps": 990,
+      "boundary_count": 49,
+      "boundary_summary": {
+        "eef_displacement_direction_cosine": {
+          "count": 49,
+          "max": 0.9998947813637247,
+          "mean": 0.759166368931215,
+          "median": 0.9592451473760398,
+          "min": -0.8325724568995889,
+          "p95": 0.9997471789219157
+        },
+        "eef_next_step_displacement_m": {
+          "count": 49,
+          "max": 0.010705463445708167,
+          "mean": 0.002405847078202242,
+          "median": 0.0010051322792930795,
+          "min": 9.34670077510458e-05,
+          "p95": 0.009634719424174319
+        },
+        "eef_next_step_rotation_rad": {
+          "count": 49,
+          "max": 0.010862175979949283,
+          "mean": 0.0029696857106184934,
+          "median": 0.0014443399585330008,
+          "min": 0.00010592357506882201,
+          "p95": 0.010378480955883104
+        },
+        "eef_previous_step_displacement_m": {
+          "count": 49,
+          "max": 0.010562863351341104,
+          "mean": 0.002409153770938923,
+          "median": 0.0009006694714952805,
+          "min": 2.613182933847755e-05,
+          "p95": 0.00968461903400123
+        },
+        "gripper_command_delta_abs": {
+          "count": 49,
+          "max": 1.9824536442756653,
+          "mean": 0.046514322563093534,
+          "median": 0.005202770233154297,
+          "min": 0.0005244016647338867,
+          "p95": 0.015097200870513902
+        },
+        "gripper_nonzero_sign_flip_count": 1,
+        "gripper_nonzero_sign_flip_fraction": 0.02040816326530612,
+        "no_overlap_boundary_count": 5,
+        "overlap_gripper_command_mae": {
+          "count": 44,
+          "max": 0.8003953695297241,
+          "mean": 0.04180758744478227,
+          "median": 0.005339956283569336,
+          "min": 0.0014960646629333496,
+          "p95": 0.1743106985092166
+        },
+        "overlap_rotation_command_rmse": {
+          "count": 44,
+          "max": 0.049060378468378164,
+          "mean": 0.011654563138997936,
+          "median": 0.008264238981386778,
+          "min": 0.002123790514006093,
+          "p95": 0.03175339868219257
+        },
+        "overlap_translation_command_rmse": {
+          "count": 44,
+          "max": 0.23298887377639602,
+          "mean": 0.05695601754836535,
+          "median": 0.038317683558833686,
+          "min": 0.0059650783024517715,
+          "p95": 0.14127865986247673
+        },
+        "rotation_command_delta_l2": {
+          "count": 49,
+          "max": 0.07102262031525783,
+          "mean": 0.021801691924391554,
+          "median": 0.016786659576072872,
+          "min": 0.001456911754580313,
+          "p95": 0.05486413609236444
+        },
+        "translation_command_delta_l2": {
+          "count": 49,
+          "max": 0.4839709143630173,
+          "mean": 0.1119661752904913,
+          "median": 0.07786301065713787,
+          "min": 0.011410981466649192,
+          "p95": 0.28699462917770197
+        },
+        "translation_command_direction_cosine": {
+          "count": 49,
+          "max": 0.9996545230523742,
+          "mean": 0.3750643912115822,
+          "median": 0.6918367103800013,
+          "min": -0.9418424294180437,
+          "p95": 0.9989654926708126
+        }
+      },
+      "decision_count": 50,
+      "episode_metrics": {
+        "boundary_eef_displacement_mean_m": 0.002405847078202242,
+        "boundary_gripper_sign_flip_fraction": 0.02040816326530612,
+        "boundary_translation_command_delta_mean": 0.1119661752904913,
+        "overlap_translation_command_rmse_mean": 0.05695601754836535,
+        "within_eef_displacement_mean_m": 0.0021651861160348644,
+        "within_translation_command_delta_mean": 0.01978978066922352
+      },
+      "example_order": "Five largest raw translation-command changes; ranking does not label anomalies or causes.",
+      "executed_command_differences": {
+        "boundary": {
+          "gripper_command_delta_abs": {
+            "count": 49,
+            "max": 1.9824536442756653,
+            "mean": 0.046514322563093534,
+            "median": 0.005202770233154297,
+            "min": 0.0005244016647338867,
+            "p95": 0.015097200870513902
+          },
+          "rotation_command_delta_l2": {
+            "count": 49,
+            "max": 0.07102262031525783,
+            "mean": 0.021801691924391554,
+            "median": 0.016786659576072872,
+            "min": 0.001456911754580313,
+            "p95": 0.05486413609236444
+          },
+          "translation_command_delta_l2": {
+            "count": 49,
+            "max": 0.4839709143630173,
+            "mean": 0.1119661752904913,
+            "median": 0.07786301065713787,
+            "min": 0.011410981466649192,
+            "p95": 0.28699462917770197
+          }
+        },
+        "within_chunk": {
+          "gripper_command_delta_abs": {
+            "count": 940,
+            "max": 1.9921161532402039,
+            "mean": 0.00940333256062041,
+            "median": 0.002457648515701294,
+            "min": 2.384185791015625e-07,
+            "p95": 0.00812889039516449
+          },
+          "rotation_command_delta_l2": {
+            "count": 940,
+            "max": 0.029867580970547845,
+            "mean": 0.0028112958772429342,
+            "median": 0.0010292957952229187,
+            "min": 4.264031093454883e-05,
+            "p95": 0.010973103115440612
+          },
+          "translation_command_delta_l2": {
+            "count": 940,
+            "max": 0.1819703593660313,
+            "mean": 0.01978978066922352,
+            "median": 0.004954845620036822,
+            "min": 0.00014769885362833944,
+            "p95": 0.08855303715462043
+          }
+        }
+      },
+      "generated_plan_differences": {
+        "per_call_mean_gripper_command_delta_abs": {
+          "count": 50,
+          "max": 0.08801473677158356,
+          "mean": 0.011446367998917897,
+          "median": 0.0030353652934233346,
+          "min": 0.0017625664671262105,
+          "p95": 0.08702259088555972
+        },
+        "per_call_mean_rotation_command_delta_l2": {
+          "count": 50,
+          "max": 0.010787118132335696,
+          "mean": 0.002752740895660014,
+          "median": 0.0012145291847709175,
+          "min": 0.0005180824515822976,
+          "p95": 0.008526347290348619
+        },
+        "per_call_mean_translation_command_delta_l2": {
+          "count": 50,
+          "max": 0.09470288107203817,
+          "mean": 0.019065517789191185,
+          "median": 0.005410089114142364,
+          "min": 0.0027799569565755285,
+          "p95": 0.07865008059464963
+        }
+      },
+      "largest_boundary_command_changes": [
+        {
+          "eef_displacement_direction_cosine": 0.9967225290898497,
+          "eef_next_step_displacement_m": 0.0025756175249336435,
+          "eef_next_step_rotation_rad": 0.005008647887851426,
+          "eef_previous_step_displacement_m": 0.0046617728176529824,
+          "execution_h": 20,
+          "gripper_command_delta_abs": 0.002667665481567383,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": 0.006015741825103759,
+          "overlap_rotation_command_rmse": 0.049060378468378164,
+          "overlap_steps": 5,
+          "overlap_translation_command_rmse": 0.23298887377639602,
+          "previous_execution_h": 20,
+          "previous_selected_h": 20,
+          "rotation_command_delta_l2": 0.07102262031525783,
+          "selected_h": 20,
+          "step": 550,
+          "translation_command_delta_l2": 0.4839709143630173,
+          "translation_command_direction_cosine": -0.5198389371837451
+        },
+        {
+          "eef_displacement_direction_cosine": 0.9862850704563177,
+          "eef_next_step_displacement_m": 0.009195888979956084,
+          "eef_next_step_rotation_rad": 0.006231821448725856,
+          "eef_previous_step_displacement_m": 0.010070451608203381,
+          "execution_h": 20,
+          "gripper_command_delta_abs": 0.009111583232879639,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": null,
+          "overlap_rotation_command_rmse": null,
+          "overlap_steps": 0,
+          "overlap_translation_command_rmse": null,
+          "previous_execution_h": 25,
+          "previous_selected_h": 25,
+          "rotation_command_delta_l2": 0.025869285955378466,
+          "selected_h": 20,
+          "step": 160,
+          "translation_command_delta_l2": 0.30452151983959114,
+          "translation_command_direction_cosine": 0.9176621857085042
+        },
+        {
+          "eef_displacement_direction_cosine": 0.900733377167773,
+          "eef_next_step_displacement_m": 0.0013660580170918636,
+          "eef_next_step_rotation_rad": 0.007335260936397944,
+          "eef_previous_step_displacement_m": 0.003217673069746385,
+          "execution_h": 20,
+          "gripper_command_delta_abs": 1.9824536442756653,
+          "gripper_nonzero_sign_flip": true,
+          "overlap_gripper_command_mae": null,
+          "overlap_rotation_command_rmse": null,
+          "overlap_steps": 0,
+          "overlap_translation_command_rmse": null,
+          "previous_execution_h": 25,
+          "previous_selected_h": 25,
+          "rotation_command_delta_l2": 0.0469039173249763,
+          "selected_h": 20,
+          "step": 230,
+          "translation_command_delta_l2": 0.29445291424612374,
+          "translation_command_direction_cosine": -0.7337360240826477
+        },
+        {
+          "eef_displacement_direction_cosine": 0.9998947813637247,
+          "eef_next_step_displacement_m": 0.0018051321974336537,
+          "eef_next_step_rotation_rad": 0.002245100044433975,
+          "eef_previous_step_displacement_m": 0.003588030421083519,
+          "execution_h": 20,
+          "gripper_command_delta_abs": 0.004409670829772949,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": 0.005978190898895263,
+          "overlap_rotation_command_rmse": 0.009592597848268079,
+          "overlap_steps": 5,
+          "overlap_translation_command_rmse": 0.09097208788213944,
+          "previous_execution_h": 20,
+          "previous_selected_h": 20,
+          "rotation_command_delta_l2": 0.019823180367078638,
+          "selected_h": 20,
+          "step": 590,
+          "translation_command_delta_l2": 0.27580720157506955,
+          "translation_command_direction_cosine": -0.8754460729487914
+        },
+        {
+          "eef_displacement_direction_cosine": 0.9845970715655502,
+          "eef_next_step_displacement_m": 0.005070710261060008,
+          "eef_next_step_rotation_rad": 0.0034288663095505376,
+          "eef_previous_step_displacement_m": 0.005583576557722607,
+          "execution_h": 15,
+          "gripper_command_delta_abs": 0.003323078155517578,
+          "gripper_nonzero_sign_flip": false,
+          "overlap_gripper_command_mae": 0.603445315361023,
+          "overlap_rotation_command_rmse": 0.020583038456459018,
+          "overlap_steps": 10,
+          "overlap_translation_command_rmse": 0.11486086523984379,
+          "previous_execution_h": 15,
+          "previous_selected_h": 15,
+          "rotation_command_delta_l2": 0.04758176821771043,
+          "selected_h": 15,
+          "step": 105,
+          "translation_command_delta_l2": 0.24703728604418834,
+          "translation_command_direction_cosine": 0.9439854556467372
+        }
+      ],
+      "success": false,
+      "trace": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/traces/ordered_transformer/task04_ep000337.npz"
+    }
+  }
+}
