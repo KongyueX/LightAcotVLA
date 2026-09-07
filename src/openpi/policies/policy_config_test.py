@@ -36,13 +36,33 @@ def test_execution_horizon_artifact_paired_distribution_flag_is_opt_in() -> None
         "execution_horizon_paired_distribution_heads": False,
         "execution_horizon_ordered_continuation_head": False,
         "execution_horizon_ordered_readout": "global",
+        "execution_horizon_visual_query_conditioning": False,
+        "execution_horizon_expert_feature_dim": 0,
+        "execution_horizon_expert_feature_projection_dim": 64,
     }
     assert distribution == {
         "execution_horizon_paired_advantage_heads": False,
         "execution_horizon_paired_distribution_heads": True,
         "execution_horizon_ordered_continuation_head": True,
         "execution_horizon_ordered_readout": "candidate",
+        "execution_horizon_visual_query_conditioning": False,
+        "execution_horizon_expert_feature_dim": 0,
+        "execution_horizon_expert_feature_projection_dim": 64,
     }
+
+
+def test_execution_horizon_architecture_flags_are_loaded_from_sidecar() -> None:
+    query = policy_config._execution_horizon_paired_head_overrides(  # noqa: SLF001
+        {"visual_query_conditioning": True}
+    )
+    expert = policy_config._execution_horizon_paired_head_overrides(  # noqa: SLF001
+        {"expert_feature_dim": 1024, "expert_feature_projection_dim": 64}
+    )
+    assert query["execution_horizon_visual_query_conditioning"] is True
+    assert query["execution_horizon_expert_feature_dim"] == 0
+    assert expert["execution_horizon_visual_query_conditioning"] is False
+    assert expert["execution_horizon_expert_feature_dim"] == 1024
+    assert expert["execution_horizon_expert_feature_projection_dim"] == 64
 
 
 def test_merge_acot_endpoint_student_replaces_only_selected_params() -> None:

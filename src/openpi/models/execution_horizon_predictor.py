@@ -38,6 +38,9 @@ class ExecutionHorizonPredictorConfig:
     coarse_stride: int = 2
     final_stride: int = 1
     visual_num_queries: int = 0
+    visual_query_conditioning: bool = False
+    expert_feature_dim: int = 0
+    expert_feature_projection_dim: int = 64
     paired_advantage_heads: bool = False
     paired_distribution_heads: bool = False
     ordered_continuation_head: bool = False
@@ -95,6 +98,17 @@ class ExecutionHorizonPredictorConfig:
             raise ValueError("visual_num_queries must be non-negative.")
         if self.visual_num_queries and not 4 <= self.visual_num_queries <= 8:
             raise ValueError("visual_num_queries must be zero (disabled) or lie in [4, 8].")
+        if self.expert_feature_dim < 0 or self.expert_feature_projection_dim <= 0:
+            raise ValueError("expert_feature_dim must be non-negative and expert_feature_projection_dim positive.")
+        if self.visual_query_conditioning and self.expert_feature_dim:
+            raise ValueError("visual_query_conditioning and expert features are separate, mutually exclusive variants.")
+        if self.visual_query_conditioning and not self.visual_num_queries:
+            raise ValueError("visual_query_conditioning requires learned visual queries.")
+        if (self.visual_query_conditioning or self.expert_feature_dim) and (
+            self.temporal_backbone != "transformer" or not self.ordered_continuation_head
+            or self.ordered_readout != "global"
+        ):
+            raise ValueError("Conditioned visual queries and expert features require a global ordered Transformer.")
         if self.paired_advantage_heads and self.temporal_backbone != "transformer":
             raise ValueError("paired_advantage_heads are supported only by the transformer backbone.")
         if self.paired_distribution_heads and self.temporal_backbone != "transformer":
@@ -432,10 +446,20 @@ class _LearnedQueryPool(nnx.Module):
         queries = jax.random.normal(rngs.params(), (num_queries, hidden_dim), dtype=param_dtype)
         self.queries = nnx.Param(queries / jnp.sqrt(float(hidden_dim)))
 
-    def __call__(self, prefix_tokens: jax.Array, prefix_mask: jax.Array) -> jax.Array:
+    def __call__(
+        self, prefix_tokens: jax.Array, prefix_mask: jax.Array, *, query_delta: jax.Array | None = None
+    ) -> jax.Array:
         keys = self.key_proj(jnp.asarray(prefix_tokens, dtype=jnp.float32))
         values = self.value_proj(jnp.asarray(prefix_tokens, dtype=jnp.float32))
         logits = jnp.einsum("qd,btd->bqt", self.queries.value, keys) / jnp.sqrt(float(self.hidden_dim))
+        if query_delta is not None:
+            query_delta = jnp.asarray(query_delta, dtype=jnp.float32)
+            if query_delta.shape != (keys.shape[0], self.hidden_dim):
+                raise ValueError("query_delta must have shape (batch, hidden_dim).")
+            # A shared query shift adds the same conditional attention term to
+            # each slot. Zero initialization preserves the original logits.
+            correction = jnp.einsum("bd,btd->bt", query_delta, keys) / jnp.sqrt(float(self.hidden_dim))
+            logits = logits + correction[:, None, :]
         mask = jnp.asarray(prefix_mask, dtype=jnp.bool_)[:, None, :]
         masked_logits = jnp.where(mask, logits, -1e30)
         weights = jax.nn.softmax(masked_logits, axis=-1)
@@ -596,6 +620,22 @@ class ExecutionHorizonPredictor(nnx.Module):
                 self.candidate_readout.continuation_out.bias.value = jnp.zeros_like(
                     self.candidate_readout.continuation_out.bias.value
                 )
+        # Add variant modules after the full original tree so the base
+        # parameter initialization remains unchanged for the same RNG seed.
+        if config.visual_query_conditioning:
+            self.visual_query_conditioner = nnx.Linear(
+                h, h, rngs=rngs, param_dtype=param_dtype,
+                kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros,
+            )
+        if config.expert_feature_dim:
+            self.expert_feature_in = nnx.Linear(
+                config.expert_feature_dim, config.expert_feature_projection_dim,
+                rngs=rngs, param_dtype=param_dtype,
+            )
+            self.expert_feature_out = nnx.Linear(
+                config.expert_feature_projection_dim, h, rngs=rngs, param_dtype=param_dtype,
+                kernel_init=jax.nn.initializers.zeros, bias_init=jax.nn.initializers.zeros,
+            )
 
     def _align_coarse(self, coarse_actions: jax.Array) -> jax.Array:
         if self.config.temporal_backbone == "local_mlp":
@@ -717,6 +757,7 @@ class ExecutionHorizonPredictor(nnx.Module):
         previous_valid: jax.Array,
         prefix_tokens: jax.Array | None = None,
         prefix_mask: jax.Array | None = None,
+        expert_hidden: jax.Array | None = None,
         return_training_cache: bool = False,
     ) -> dict[str, jax.Array]:
         cfg = self.config
@@ -763,9 +804,18 @@ class ExecutionHorizonPredictor(nnx.Module):
             ],
             axis=-1,
         )
-        context = nnx.swish(self.prefix_proj(prefix_feature))
-        context = context + nnx.swish(self.state_proj(state)) + nnx.swish(self.controller_proj(controller))
+        prefix_context = nnx.swish(self.prefix_proj(prefix_feature))
+        state_context = nnx.swish(self.state_proj(state))
+        context = prefix_context + state_context + nnx.swish(self.controller_proj(controller))
         tokens = nnx.swish(self.action_proj(action_features)) + context[:, None, :]
+        if cfg.expert_feature_dim:
+            if expert_hidden is None:
+                raise ValueError("expert features require expert_hidden from the existing final denoising step.")
+            expert_hidden = jnp.asarray(expert_hidden, dtype=jnp.float32)
+            expected_shape = (tokens.shape[0], cfg.action_horizon, cfg.expert_feature_dim)
+            if expert_hidden.shape != expected_shape:
+                raise ValueError(f"expert_hidden must have shape {expected_shape}, got {expert_hidden.shape}.")
+            tokens = tokens + self.expert_feature_out(nnx.swish(self.expert_feature_in(expert_hidden)))
 
         if cfg.temporal_backbone == "local_mlp":
             for layer in self.temporal_layers:
@@ -781,7 +831,14 @@ class ExecutionHorizonPredictor(nnx.Module):
                         "Transformer visual query pooling requires prefix_tokens and prefix_mask from the existing "
                         "VLA prefix forward."
                     )
-                visual_tokens = self.visual_pool(prefix_tokens, prefix_mask) + context[:, None, :]
+                if cfg.visual_query_conditioning:
+                    query_delta = self.visual_query_conditioner(
+                        jax.lax.stop_gradient(prefix_context + state_context)
+                    )
+                    visual_tokens = self.visual_pool(prefix_tokens, prefix_mask, query_delta=query_delta)
+                else:
+                    visual_tokens = self.visual_pool(prefix_tokens, prefix_mask)
+                visual_tokens = visual_tokens + context[:, None, :]
                 sequence = jnp.concatenate([visual_tokens, sequence], axis=1)
             for index, layer in enumerate(self.temporal_layers):
                 if return_training_cache and index == len(self.temporal_layers) - 1:

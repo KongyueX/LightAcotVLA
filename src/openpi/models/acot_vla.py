@@ -366,6 +366,9 @@ class ACOTConfig(_model.BaseModelConfig):
     execution_horizon_coarse_stride: int = 2
     execution_horizon_final_stride: int = 1
     execution_horizon_visual_num_queries: int = 0
+    execution_horizon_visual_query_conditioning: bool = False
+    execution_horizon_expert_feature_dim: int = 0
+    execution_horizon_expert_feature_projection_dim: int = 64
     execution_horizon_paired_advantage_heads: bool = False
     execution_horizon_paired_distribution_heads: bool = False
     execution_horizon_ordered_continuation_head: bool = False
@@ -415,6 +418,9 @@ class ACOTConfig(_model.BaseModelConfig):
                 coarse_stride=self.execution_horizon_coarse_stride,
                 final_stride=self.execution_horizon_final_stride,
                 visual_num_queries=self.execution_horizon_visual_num_queries,
+                visual_query_conditioning=self.execution_horizon_visual_query_conditioning,
+                expert_feature_dim=self.execution_horizon_expert_feature_dim,
+                expert_feature_projection_dim=self.execution_horizon_expert_feature_projection_dim,
                 paired_advantage_heads=self.execution_horizon_paired_advantage_heads,
                 paired_distribution_heads=self.execution_horizon_paired_distribution_heads,
                 ordered_continuation_head=self.execution_horizon_ordered_continuation_head,
@@ -422,6 +428,8 @@ class ACOTConfig(_model.BaseModelConfig):
                 elapsed_advantage_scale=self.execution_horizon_elapsed_advantage_scale,
                 calls_advantage_scale=self.execution_horizon_calls_advantage_scale,
             )
+            if self.execution_horizon_expert_feature_dim not in (0, _gemma.get_config(self.action_expert_variant).width):
+                raise ValueError("execution_horizon_expert_feature_dim must match the final action expert width.")
         if self.pact_flow_scheduler:
             if not self.adopt_explicit_action_reasoner or not self.adopt_implicit_action_reasoner:
                 raise ValueError("PACT-Flow requires both explicit and implicit action reasoners.")
@@ -608,6 +616,8 @@ class ACOT_VLA(_model.BaseModel):
             )
         self.execution_horizon_predictor_enabled = config.execution_horizon_predictor
         self.execution_horizon_visual_num_queries = config.execution_horizon_visual_num_queries
+        self.execution_horizon_expert_feature_dim = config.execution_horizon_expert_feature_dim
+        self.execution_horizon_expert_width = action_expert_config.width
         if self.execution_horizon_predictor_enabled:
             self.execution_horizon_predictor = ExecutionHorizonPredictor(
                 ExecutionHorizonPredictorConfig(
@@ -627,6 +637,9 @@ class ACOT_VLA(_model.BaseModel):
                     coarse_stride=config.execution_horizon_coarse_stride,
                     final_stride=config.execution_horizon_final_stride,
                     visual_num_queries=config.execution_horizon_visual_num_queries,
+                    visual_query_conditioning=config.execution_horizon_visual_query_conditioning,
+                    expert_feature_dim=config.execution_horizon_expert_feature_dim,
+                    expert_feature_projection_dim=config.execution_horizon_expert_feature_projection_dim,
                     paired_advantage_heads=config.execution_horizon_paired_advantage_heads,
                     paired_distribution_heads=config.execution_horizon_paired_distribution_heads,
                     ordered_continuation_head=config.execution_horizon_ordered_continuation_head,
@@ -2972,6 +2985,7 @@ class ACOT_VLA(_model.BaseModel):
         previous_valid: jax.Array,
         prefix_tokens: jax.Array | None = None,
         prefix_mask: jax.Array | None = None,
+        expert_hidden: jax.Array | None = None,
         return_training_cache: bool = False,
     ) -> dict[str, jax.Array]:
         if not self.execution_horizon_predictor_enabled:
@@ -2988,6 +3002,7 @@ class ACOT_VLA(_model.BaseModel):
             previous_valid=previous_valid,
             prefix_tokens=prefix_tokens,
             prefix_mask=prefix_mask,
+            expert_hidden=expert_hidden,
             return_training_cache=return_training_cache,
         )
 
@@ -3107,6 +3122,7 @@ class ACOT_VLA(_model.BaseModel):
         *,
         num_steps: int | at.Int[at.Array, ""] = 10,
         final_time_warp_alpha: jax.Array | float = 0.0,
+        return_expert_hidden: bool = False,
     ) -> dict[str, Any]:
         observation = prefix_state["observation"]
         prefix_tokens = prefix_state["prefix_tokens"]
@@ -3117,7 +3133,10 @@ class ACOT_VLA(_model.BaseModel):
         action_dt = -1.0 / num_steps
 
         def step_expert(carry):
-            x_t, time, step_idx = carry
+            if return_expert_hidden:
+                x_t, time, step_idx, _ = carry
+            else:
+                x_t, time, step_idx = carry
             # A weak endpoint-directed time warp reuses the legacy expert
             # graph while matching OFP time_blend(t, r=0, alpha).  The ODE
             # integration step remains unchanged; alpha=0 is exactly the
@@ -3155,13 +3174,24 @@ class ACOT_VLA(_model.BaseModel):
                 kv_cache=kv_cache,
                 adarms_cond=[None, None, adarms_cond],
             )
-            v_t = self.action_out_proj(suffix_out[:, -self.action_horizon :])
+            final_hidden = suffix_out[:, -self.action_horizon :]
+            v_t = self.action_out_proj(final_hidden)
+            if return_expert_hidden:
+                return x_t + action_dt * v_t, time + action_dt, step_idx + 1, jnp.asarray(final_hidden, dtype=jnp.float32)
             return x_t + action_dt * v_t, time + action_dt, step_idx + 1
 
         def cond_expert(carry):
-            x_t, time, _ = carry
+            time = carry[1]
             return time >= -action_dt / 2
 
+        if return_expert_hidden:
+            hidden_initial = jnp.zeros(
+                (batch_size, self.action_horizon, self.execution_horizon_expert_width), dtype=jnp.float32
+            )
+            x_0_expert, _, _, last_hidden = jax.lax.while_loop(
+                cond_expert, step_expert, (expert_action_noise, 1.0, 1, hidden_initial)
+            )
+            return {"actions": x_0_expert, "execution_horizon_expert_hidden": jax.lax.stop_gradient(last_hidden)}
         x_0_expert, _, _ = jax.lax.while_loop(cond_expert, step_expert, (expert_action_noise, 1.0, 1))
         return {"actions": x_0_expert}
 

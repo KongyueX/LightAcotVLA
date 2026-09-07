@@ -60,7 +60,7 @@ def _execution_horizon_artifact(
     return params_path, config
 
 
-def _execution_horizon_paired_head_overrides(config: dict[str, Any]) -> dict[str, bool | str]:
+def _execution_horizon_paired_head_overrides(config: dict[str, Any]) -> dict[str, bool | str | int]:
     """Translate optional head flags while keeping legacy artifacts opt-out."""
 
     return {
@@ -68,6 +68,9 @@ def _execution_horizon_paired_head_overrides(config: dict[str, Any]) -> dict[str
         "execution_horizon_paired_distribution_heads": bool(config.get("paired_distribution_heads", False)),
         "execution_horizon_ordered_continuation_head": bool(config.get("ordered_continuation_head", False)),
         "execution_horizon_ordered_readout": str(config.get("ordered_readout", "global")),
+        "execution_horizon_visual_query_conditioning": bool(config.get("visual_query_conditioning", False)),
+        "execution_horizon_expert_feature_dim": int(config.get("expert_feature_dim", 0)),
+        "execution_horizon_expert_feature_projection_dim": int(config.get("expert_feature_projection_dim", 64)),
     }
 
 

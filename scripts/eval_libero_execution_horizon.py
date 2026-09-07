@@ -34,13 +34,16 @@ LEGACY_MODES = (
 SELECTOR_MODES = ("q_guided_selector", "sft_selector", "ppo_selector")
 HIERARCHICAL_MODE = "hierarchical_transformer"
 ORDERED_MODE = "ordered_transformer"
+VISUAL_QUERY_MODE = "ordered_visual_query"
+EXPERT_HIDDEN_MODE = "ordered_expert_hidden"
+ARCHITECTURE_MODES = (VISUAL_QUERY_MODE, EXPERT_HIDDEN_MODE)
 ORDERED_H10_HYSTERESIS_MODE = "ordered_h10_hysteresis"
 ORDERED_SMDP_MODE = "ordered_smdp"
 LAST_BLOCK_SMDP_MODE = "ordered_smdp_last_block"
 FEEDBACK_CURRENT_MODE = "ordered_feedback_current"
 FEEDBACK_HISTORY_MODE = "ordered_feedback_history"
 FEEDBACK_MODES = (FEEDBACK_CURRENT_MODE, FEEDBACK_HISTORY_MODE)
-ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE, *FEEDBACK_MODES)
+ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE, *FEEDBACK_MODES, *ARCHITECTURE_MODES)
 FIXED_H_MODE = "fixed_h"
 MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES)
 
@@ -52,6 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--original-host", default=None)
     parser.add_argument("--original-port", type=int, default=None)
     parser.add_argument("--original-model-action-horizon", type=int, default=None)
+    parser.add_argument("--visual-query-port", type=int, default=None)
+    parser.add_argument("--expert-hidden-port", type=int, default=None)
     parser.add_argument("--policy-api-key", default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--task-suite-name", default="libero_10")
@@ -1140,7 +1145,15 @@ def _mode_runtime(
     args: argparse.Namespace,
     client: websocket_policy.WebsocketClientPolicy,
     original_client: websocket_policy.WebsocketClientPolicy | None = None,
+    architecture_clients: dict[str, websocket_policy.WebsocketClientPolicy] | None = None,
 ) -> tuple[websocket_policy.WebsocketClientPolicy, argparse.Namespace]:
+    if mode in ARCHITECTURE_MODES:
+        if architecture_clients is None or mode not in architecture_clients:
+            raise ValueError(f"{mode} requires its own configured sidecar endpoint.")
+        mode_args = copy.copy(args)
+        mode_args.port = args.visual_query_port if mode == VISUAL_QUERY_MODE else args.expert_hidden_port
+        mode_args.modes = [mode]
+        return architecture_clients[mode], mode_args
     if mode != "original" or getattr(args, "original_port", None) is None:
         return client, args
     if original_client is None:
@@ -1383,7 +1396,7 @@ def _run_episode(
             )
             if mode == HIERARCHICAL_MODE:
                 required_horizon = max(args._hierarchical_calibration.candidate_horizons)
-            elif mode == ORDERED_MODE:
+            elif mode in (ORDERED_MODE, *ARCHITECTURE_MODES):
                 required_horizon = ordered.selected_horizon(
                     result,
                     model_action_horizon=args.model_action_horizon,
@@ -2223,7 +2236,7 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         and not (key.startswith("feedback_current_") and FEEDBACK_CURRENT_MODE not in args.modes)
         and not (key.startswith("feedback_history_") and FEEDBACK_HISTORY_MODE not in args.modes)
         and not (key.startswith("trace_") and getattr(args, "trace_output_dir", None) is None)
-        and not (key in {"original_host", "original_port", "original_model_action_horizon"} and value is None)
+        and not (key in {"original_host", "original_port", "original_model_action_horizon", "visual_query_port", "expert_hidden_port"} and value is None)
     }
 
 
@@ -2757,8 +2770,20 @@ def main(args: argparse.Namespace) -> None:
             ping_interval=None,
             ping_timeout=None,
         )
-    mode_runtimes = {mode: _mode_runtime(mode, args, client, original_client) for mode in args.modes}
-    if original_client is None:
+    architecture_clients = {}
+    for mode in ARCHITECTURE_MODES:
+        if mode not in args.modes:
+            continue
+        port = args.visual_query_port if mode == VISUAL_QUERY_MODE else args.expert_hidden_port
+        if port is None:
+            raise ValueError(f"{mode} requires its endpoint port.")
+        architecture_clients[mode] = websocket_policy.WebsocketClientPolicy(
+            args.host, port, api_key=args.policy_api_key, ping_interval=None, ping_timeout=None,
+        )
+    mode_runtimes = {
+        mode: _mode_runtime(mode, args, client, original_client, architecture_clients) for mode in args.modes
+    }
+    if original_client is None and not architecture_clients:
         if LAST_BLOCK_SMDP_MODE in args.modes:
             _warmup(client, task_suite, args, initial_state_bank, selectors[LAST_BLOCK_SMDP_MODE])
         else:

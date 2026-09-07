@@ -347,6 +347,7 @@ class Policy(BasePolicy):
         self._sample_actions_joint_coupled = None
         self._sample_actions_batched_mc = None
         self._predict_execution_horizon = None
+        self._execution_horizon_expert_feature_dim = int(getattr(model, "execution_horizon_expert_feature_dim", 0))
         # Strictly opt-in, single-client feasibility cache for reusing only the
         # VLM prefix across consecutive sequential-profile RPCs. Runtime
         # observation/state and flow noise are replaced on every request.
@@ -384,7 +385,9 @@ class Policy(BasePolicy):
             self._sample_actions_profile_prefix = nnx_utils.module_jit(model.sample_actions_profile_prefix)
             self._sample_actions_profile_implicit = nnx_utils.module_jit(model.sample_actions_profile_implicit)
             self._sample_actions_profile_coarse = nnx_utils.module_jit(model.sample_actions_profile_coarse)
-            self._sample_actions_profile_expert = nnx_utils.module_jit(model.sample_actions_profile_expert)
+            self._sample_actions_profile_expert = nnx_utils.module_jit(
+                model.sample_actions_profile_expert, static_argnames=("return_expert_hidden",)
+            )
         if hasattr(model, "sample_actions_profile_direct_one_step_expert"):
             self._sample_actions_profile_direct_one_step_expert = nnx_utils.module_jit(
                 model.sample_actions_profile_direct_one_step_expert,
@@ -761,6 +764,10 @@ class Policy(BasePolicy):
             inputs.pop("export_execution_horizon_prefix_tokens", False)
         )
         export_last_block_cache = _as_bool(inputs.pop("execution_horizon_export_last_block_cache", False))
+        export_architecture_cache = _as_bool(inputs.pop("execution_horizon_export_architecture_cache", False))
+        retain_expert_hidden = export_architecture_cache or (
+            run_execution_horizon_predictor and self._execution_horizon_expert_feature_dim > 0
+        )
         previous_actions = inputs.pop("execution_horizon_previous_actions", None)
         previous_h = inputs.pop("execution_horizon_previous_h", 1)
         budget_balance = inputs.pop("execution_horizon_budget_balance", 0.0)
@@ -814,6 +821,7 @@ class Policy(BasePolicy):
             override_inputs.pop("run_execution_horizon_predictor", None)
             override_inputs.pop("export_execution_horizon_prefix_tokens", None)
             override_inputs.pop("execution_horizon_export_last_block_cache", None)
+            override_inputs.pop("execution_horizon_export_architecture_cache", None)
             override_inputs.pop("execution_horizon_previous_actions", None)
             override_inputs.pop("execution_horizon_previous_h", None)
             override_inputs.pop("execution_horizon_budget_balance", None)
@@ -1626,6 +1634,12 @@ class Policy(BasePolicy):
             raise ValueError("The loaded policy does not implement OFP interval inference.")
         if joint_coupled_sampler and export_acot_cache:
             raise ValueError("joint_coupled_sampler does not yet support export_acot_cache.")
+        if retain_expert_hidden:
+            self._validate_execution_horizon_architecture_path(
+                sample_kwargs, profile_policy_timing=profile_policy_timing,
+                joint_coupled_sampler=joint_coupled_sampler, batched_mc_samples=batched_mc_samples,
+                temporal_prefix_reuse_period=temporal_prefix_reuse_period,
+            )
         if batched_mc_samples:
             if self._sample_actions_batched_mc is None:
                 raise ValueError("The loaded policy does not implement a batched MC teacher.")
@@ -1694,6 +1708,8 @@ class Policy(BasePolicy):
                 absolute_decision_step=absolute_decision_step,
                 p3t_prefix_transport=p3t_prefix_transport_enabled,
                 mrr_a264=mrr_a264_enabled,
+                **({"retain_expert_hidden": True} if retain_expert_hidden else {}),
+                **({"export_architecture_cache": True} if export_architecture_cache else {}),
             )
         else:
             result = self._sample_actions(sample_rng, observation, **sample_kwargs)
@@ -1704,6 +1720,10 @@ class Policy(BasePolicy):
             if "coarse_actions" in result:
                 result["execution_horizon_coarse_actions_normalized"] = result["coarse_actions"]
 
+        if retain_expert_hidden and "execution_horizon_expert_hidden" not in result:
+            raise ValueError("The selected inference path did not expose its last executed final-expert hidden state.")
+        if run_execution_horizon_predictor or export_architecture_cache:
+            normalized_previous_actions = self._normalize_previous_actions(previous_actions)
         if run_execution_horizon_predictor:
             if self._predict_execution_horizon is None:
                 raise ValueError("run_execution_horizon_predictor=True requires a V2-P predictor sidecar checkpoint.")
@@ -1711,7 +1731,6 @@ class Policy(BasePolicy):
                 raise TypeError("Execution-horizon prediction requires structured action outputs.")
             if "execution_horizon_prefix_feature" not in result:
                 raise KeyError("Policy result did not expose the shared prefix feature.")
-            normalized_previous_actions = self._normalize_previous_actions(previous_actions)
             predictor_start = time.monotonic()
             predictor_outputs = self._predict_execution_horizon(
                 prefix_feature=result["execution_horizon_prefix_feature"],
@@ -1725,13 +1744,25 @@ class Policy(BasePolicy):
                 previous_valid=jnp.asarray(previous_valid, dtype=jnp.bool_).reshape((1,)),
                 prefix_tokens=result.get("execution_horizon_prefix_tokens"),
                 prefix_mask=result.get("execution_horizon_prefix_mask"),
+                **({"expert_hidden": result["execution_horizon_expert_hidden"]}
+                   if self._execution_horizon_expert_feature_dim > 0 else {}),
                 **({"return_training_cache": True} if export_last_block_cache else {}),
             )
             _block_until_ready(predictor_outputs)
             detailed_timing["execution_horizon_predictor_ms"] = (time.monotonic() - predictor_start) * 1000
             result.update({f"execution_horizon_{key}": value for key, value in predictor_outputs.items()})
 
-        if isinstance(result, dict) and not export_execution_horizon_prefix_tokens:
+        if export_architecture_cache:
+            result.update({
+                "execution_horizon_previous_actions_normalized": jnp.asarray(normalized_previous_actions)[None, ...],
+                "execution_horizon_previous_h": jnp.asarray(previous_h, dtype=jnp.float32).reshape((1,)),
+                "execution_horizon_previous_valid": jnp.asarray(previous_valid, dtype=jnp.bool_).reshape((1,)),
+                "execution_horizon_budget_balance": jnp.asarray(budget_balance, dtype=jnp.float32).reshape((1,)),
+                "execution_horizon_episode_progress": jnp.asarray(episode_progress, dtype=jnp.float32).reshape((1,)),
+            })
+        elif isinstance(result, dict):
+            result.pop("execution_horizon_expert_hidden", None)
+        if isinstance(result, dict) and not (export_execution_horizon_prefix_tokens or export_architecture_cache):
             # Full prefix activations are an opt-in collection artifact. Never
             # transfer them over the normal policy/RPC path merely because a
             # visual-query predictor sidecar is loaded.
@@ -2103,6 +2134,35 @@ class Policy(BasePolicy):
             and self._sample_actions_profile_expert is not None
         )
 
+    def _validate_execution_horizon_architecture_path(
+        self, sample_kwargs: dict[str, Any], *, profile_policy_timing: bool,
+        joint_coupled_sampler: bool, batched_mc_samples: int, temporal_prefix_reuse_period: int,
+    ) -> None:
+        """Architecture features are defined for the ordinary profiled multistep expert."""
+        final_steps = sample_kwargs.get("final_denoising_steps")
+        if final_steps is None:
+            final_steps = sample_kwargs.get("num_steps", 10)
+        alternatives = {
+            "joint_coupled_sampler": joint_coupled_sampler,
+            "batched_mc_samples": batched_mc_samples > 0,
+            "temporal_prefix_reuse": temporal_prefix_reuse_period > 0,
+            "contextual_compiler": self._acot_contextual_compiler is not None,
+            "token_time_warp": sample_kwargs.get("token_time_warp_alpha") is not None,
+            "final_time_warp": float(sample_kwargs.get("final_time_warp_alpha", 0.0)) != 0.0,
+            "final_endpoint_conditioning": float(sample_kwargs.get("final_endpoint_condition_strength", 0.0)) != 0.0,
+            "final_hybrid": sample_kwargs.get("final_hybrid_mode", "none") != "none",
+            **{key: _as_bool(sample_kwargs.get(key, False)) for key in (
+                "pact_flow_scheduler", "ofp_interval_flow", "adaptive_final_time_warp", "final_midpoint",
+                "selective_gripper_refinement", "apply_harp_residual", "apply_harp_gripper_event",
+                "force_direct_one_step_expert",
+            )},
+        }
+        if not profile_policy_timing or not self._can_profile_sample_actions() or int(final_steps) < 2:
+            raise ValueError("Execution-horizon architecture features require profile_policy_timing=True and the multistep final expert.")
+        unsupported = [name for name, active in alternatives.items() if active]
+        if unsupported:
+            raise ValueError(f"Execution-horizon architecture features do not support these inference paths: {unsupported}.")
+
     def _profile_sample_actions(
         self,
         sample_rng: at.KeyArrayLike,
@@ -2114,6 +2174,8 @@ class Policy(BasePolicy):
         absolute_decision_step: int | None = None,
         p3t_prefix_transport: bool = False,
         mrr_a264: bool = False,
+        retain_expert_hidden: bool = False,
+        export_architecture_cache: bool = False,
     ) -> tuple[dict[str, Any], dict[str, float]]:
         assert self._sample_actions_profile_prefix is not None
         assert self._sample_actions_profile_implicit is not None
@@ -2478,6 +2540,7 @@ class Policy(BasePolicy):
                         else sample_kwargs.get("num_steps", 10)
                     ),
                     final_time_warp_alpha=final_time_warp_alpha,
+                    **({"return_expert_hidden": True} if retain_expert_hidden else {}),
                 )
             _block_until_ready(expert_outputs)
             timing["action_expert_ms"] = (time.monotonic() - stage_start) * 1000
@@ -2833,6 +2896,15 @@ class Policy(BasePolicy):
         ):
             if name in prefix_state:
                 result[name] = prefix_state[name]
+        if export_architecture_cache:
+            result["execution_horizon_prefix_tokens"] = jnp.asarray(prefix_state["prefix_out"], dtype=jnp.float32)
+            result["execution_horizon_prefix_mask"] = jnp.asarray(prefix_state["prefix_mask"], dtype=jnp.bool_)
+            if "execution_horizon_prefix_feature" not in result:
+                mask = prefix_state["prefix_mask"].astype(prefix_state["prefix_out"].dtype)
+                result["execution_horizon_prefix_feature"] = jnp.asarray(
+                    jnp.sum(prefix_state["prefix_out"] * mask[..., None], axis=1)
+                    / jnp.maximum(jnp.sum(mask, axis=1, keepdims=True), 1.0), dtype=jnp.float32,
+                )
         if export_acot_cache:
             implicit_action_reason = implicit_outputs.get("implicit_action_reason")
             if implicit_action_reason is None:

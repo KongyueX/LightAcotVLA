@@ -777,3 +777,166 @@ def test_legacy_local_mlp_default_shapes_are_unchanged():
     assert outputs["raw_h_logits"].shape == (2, 10)
     assert outputs["success_logits"].shape == (2, 10)
     assert "hazard_logits" not in outputs
+
+
+def _architecture_inputs() -> dict[str, jax.Array]:
+    inputs = _inputs()
+    fields = ("prefix_feature", "prefix_tokens", "state", "coarse_actions", "final_actions")
+    for seed, name in enumerate(fields, start=11):
+        inputs[name] = jax.random.normal(jax.random.key(seed), inputs[name].shape)
+    return inputs
+
+
+@pytest.mark.parametrize("variant", ["query", "expert"])
+def test_architecture_variants_preserve_a_parameters_and_outputs_at_zero_initialization(variant):
+    base_config = dataclasses.replace(_transformer_config(), ordered_continuation_head=True)
+    base = predictor_lib.ExecutionHorizonPredictor(base_config, rngs=nnx.Rngs(7))
+    overrides = {"visual_query_conditioning": True} if variant == "query" else {
+        "expert_feature_dim": 12, "expert_feature_projection_dim": 8,
+    }
+    module = predictor_lib.ExecutionHorizonPredictor(dataclasses.replace(base_config, **overrides), rngs=nnx.Rngs(7))
+    base_state = nnx.state(base, nnx.Param).flat_state()
+    changed_state = nnx.state(module, nnx.Param).flat_state()
+    expected_roots = {"visual_query_conditioner"} if variant == "query" else {
+        "expert_feature_in", "expert_feature_out",
+    }
+    assert {path[0] for path in changed_state if path not in base_state} == expected_roots
+    assert {path for path in changed_state if path[0] not in expected_roots} == set(base_state)
+    for path, value in base_state.items():
+        np.testing.assert_array_equal(value.value, changed_state[path].value)
+    projection = module.visual_query_conditioner if variant == "query" else module.expert_feature_out
+    np.testing.assert_array_equal(projection.kernel.value, np.zeros(projection.kernel.value.shape))
+    np.testing.assert_array_equal(projection.bias.value, np.zeros(projection.bias.value.shape))
+    inputs = _architecture_inputs()
+    hidden = jax.random.normal(jax.random.key(32), (2, 25, 12))
+    base_outputs = base(**inputs)
+    outputs = module(**inputs, **({"expert_hidden": hidden} if variant == "expert" else {}))
+    assert outputs.keys() == base_outputs.keys()
+    for name in base_outputs:
+        np.testing.assert_array_equal(outputs[name], base_outputs[name])
+    ignored_hidden = base(**inputs, expert_hidden=hidden)
+    for name in base_outputs:
+        np.testing.assert_array_equal(ignored_hidden[name], base_outputs[name])
+
+
+def test_visual_query_condition_uses_prefix_and_state_but_not_actions_or_controller(monkeypatch):
+    config = dataclasses.replace(_transformer_config(), ordered_continuation_head=True, visual_query_conditioning=True)
+    module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
+    module.visual_query_conditioner.kernel.value = 0.4 * jnp.eye(config.hidden_dim)
+    calls = []
+    pool_type = type(module.visual_pool)
+    original_call = pool_type.__call__
+
+    def capture(self, prefix_tokens, prefix_mask, *, query_delta=None):
+        pooled = original_call(self, prefix_tokens, prefix_mask, query_delta=query_delta)
+        calls.append((np.asarray(query_delta), np.asarray(pooled)))
+        return pooled
+
+    monkeypatch.setattr(pool_type, "__call__", capture)
+    inputs = _architecture_inputs()
+    module(**inputs)
+    expected_condition = (
+        nnx.swish(module.prefix_proj(inputs["prefix_feature"])) + nnx.swish(module.state_proj(inputs["state"]))
+    )
+    np.testing.assert_array_equal(calls[-1][0], module.visual_query_conditioner(expected_condition))
+    original_delta, original_pool = calls[-1]
+    module(**{**inputs, "state": inputs["state"] + 2.0})
+    assert not np.allclose(calls[-1][0], original_delta)
+    assert not np.allclose(calls[-1][1], original_pool)
+    module(**{**inputs, "prefix_feature": inputs["prefix_feature"] + 1.0})
+    assert not np.allclose(calls[-1][0], original_delta)
+    module(**{
+        **inputs, "final_actions": inputs["final_actions"] + 3.0,
+        "budget_balance": inputs["budget_balance"] + 0.2,
+        "episode_progress": inputs["episode_progress"] + 0.3,
+        "previous_h": jnp.full((2,), 15),
+    })
+    np.testing.assert_array_equal(calls[-1][0], original_delta)
+    np.testing.assert_array_equal(calls[-1][1], original_pool)
+
+
+def test_expert_hidden_residual_preserves_action_positions_before_transformer(monkeypatch):
+    config = dataclasses.replace(
+        _transformer_config(), ordered_continuation_head=True,
+        expert_feature_dim=12, expert_feature_projection_dim=8,
+    )
+    module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
+    module.expert_feature_in.kernel.value = jnp.zeros((12, 8)).at[0, 0].set(1.0)
+    module.expert_feature_out.kernel.value = jnp.zeros((8, config.hidden_dim)).at[0, 0].set(0.7)
+    captured = []
+    block_type = type(module.temporal_layers[0])
+    original_call = block_type.__call__
+
+    def capture(self, tokens):
+        if self is module.temporal_layers[0]:
+            captured.append(np.asarray(tokens))
+        return original_call(self, tokens)
+
+    monkeypatch.setattr(block_type, "__call__", capture)
+    inputs = _architecture_inputs()
+    hidden = jnp.zeros((2, 25, 12))
+    original_outputs = module(**inputs, expert_hidden=hidden)
+    changed_outputs = module(**inputs, expert_hidden=hidden.at[0, 7, 0].set(2.0))
+    difference = captured[1] - captured[0]
+    changed_position = config.visual_num_queries + 7
+    assert abs(difference[0, changed_position, 0]) > 0.1
+    difference[0, changed_position, 0] = 0.0
+    np.testing.assert_array_equal(difference, np.zeros_like(difference))
+    assert not np.allclose(
+        original_outputs["ordered_continuation_logits"], changed_outputs["ordered_continuation_logits"]
+    )
+
+
+@pytest.mark.parametrize("variant", ["query", "expert"])
+def test_zero_initialized_architecture_module_receives_trainable_gradient(variant):
+    config = dataclasses.replace(_transformer_config(), ordered_continuation_head=True)
+    config = dataclasses.replace(config, **(
+        {"visual_query_conditioning": True} if variant == "query" else {"expert_feature_dim": 12}
+    ))
+    module = predictor_lib.ExecutionHorizonPredictor(config, rngs=nnx.Rngs(7))
+    graphdef, params = nnx.split(module)
+    inputs = _architecture_inputs()
+    if variant == "expert":
+        inputs["expert_hidden"] = jax.random.normal(jax.random.key(16), (2, 25, 12))
+
+    def objective(current_params):
+        outputs = nnx.merge(graphdef, current_params)(**inputs)
+        return -jnp.mean(outputs["ordered_horizon_log_probability"][:, -1])
+
+    value, gradients = jax.value_and_grad(objective)(params)
+    assert np.isfinite(np.asarray(value))
+    root = "visual_query_conditioner" if variant == "query" else "expert_feature_out"
+    leaves = jax.tree.leaves(gradients[root])
+    assert all(np.all(np.isfinite(np.asarray(leaf))) for leaf in leaves)
+    assert any(np.any(np.asarray(leaf) != 0) for leaf in leaves)
+
+
+def test_architecture_config_and_expert_input_constraints_preserve_defaults():
+    base = dataclasses.replace(_transformer_config(), ordered_continuation_head=True)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        dataclasses.replace(base, visual_query_conditioning=True, expert_feature_dim=12)
+    with pytest.raises(ValueError, match="requires learned visual queries"):
+        dataclasses.replace(base, visual_num_queries=0, visual_query_conditioning=True)
+    with pytest.raises(ValueError, match="global ordered Transformer"):
+        dataclasses.replace(base, expert_feature_dim=12, ordered_continuation_head=False)
+    with pytest.raises(ValueError, match="global ordered Transformer"):
+        dataclasses.replace(base, visual_query_conditioning=True, ordered_readout="candidate")
+    with pytest.raises(ValueError, match="expert_feature_dim"):
+        dataclasses.replace(base, expert_feature_dim=-1)
+    with pytest.raises(ValueError, match="expert_feature_projection_dim"):
+        dataclasses.replace(base, expert_feature_dim=12, expert_feature_projection_dim=0)
+    legacy_dict = dataclasses.asdict(base)
+    for name in ("visual_query_conditioning", "expert_feature_dim", "expert_feature_projection_dim"):
+        legacy_dict.pop(name)
+    restored = predictor_lib.ExecutionHorizonPredictorConfig(**legacy_dict)
+    assert restored.visual_query_conditioning is False
+    assert restored.expert_feature_dim == 0
+    assert restored.expert_feature_projection_dim == 64
+    module = predictor_lib.ExecutionHorizonPredictor(dataclasses.replace(base, expert_feature_dim=12), rngs=nnx.Rngs(7))
+    with pytest.raises(ValueError, match="require expert_hidden"):
+        module(**_inputs())
+    for shape in ((2, 24, 12), (2, 25, 13), (1, 25, 12), (25, 12)):
+        with pytest.raises(ValueError, match="expert_hidden must have shape"):
+            module(**_inputs(), expert_hidden=jnp.zeros(shape))
+    with pytest.raises(ValueError, match="query_delta must have shape"):
+        module.visual_pool(_inputs()["prefix_tokens"], _inputs()["prefix_mask"], query_delta=jnp.zeros((2, 31)))
