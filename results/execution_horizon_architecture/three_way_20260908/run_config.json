@@ -1,0 +1,10 @@
+{
+  "a_predictor_dir": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/ordered_dynamic_round4_a5e60b1_20260905_v1/predictor_seed7_lr1e4",
+  "code_dir": "/root/autodl-tmp/acotvla/code/LightAcotVLA_8e0c0ad",
+  "host": "localhost",
+  "output_dir": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/architecture_query_hidden_20260908_v1",
+  "policy_dir": "/root/autodl-tmp/acotvla/checkpoints/acot_libero_long_chunk_h25/h25_from_h20_lr1e5_seed42_split42_e2f9b27/5000",
+  "port": 8050,
+  "python": "/root/autodl-tmp/acotvla/envs/acotvla-py311/bin/python",
+  "source_dir": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1"
+}

@@ -1,0 +1,617 @@
+{
+  "pairwise": {
+    "ordered_expert_hidden": {
+      "both_failure": 5,
+      "both_success": 83,
+      "exact_mcnemar_two_sided_p": 0.7744140625,
+      "gates": {
+        "full_elapsed_reduced_ucb95": false,
+        "policy_time_reduced_ucb95": false,
+        "rpc_time_reduced_ucb95": false,
+        "strict_engineering_go": false,
+        "success_noninferior_lcb95": false
+      },
+      "metric_delta_candidate_minus_reference": {
+        "actual_episode_elapsed_total_ms": {
+          "ci95": [
+            -686.1929857772775,
+            1833.0384536407637
+          ],
+          "lcb95": -497.53063542069856,
+          "mean": 496.7122151516378,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 1607.7160428864886
+        },
+        "actual_policy_total_ms": {
+          "ci95": [
+            -205.35747261508368,
+            685.6383522243701
+          ],
+          "lcb95": -155.42265355191194,
+          "mean": 175.07172897923738,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 578.8028815062719
+        },
+        "policy_calls": {
+          "ci95": [
+            -1.7,
+            6.68
+          ],
+          "lcb95": -1.2399999999999998,
+          "mean": 1.8399999999999999,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 5.82
+        },
+        "policy_rpc_wall_total_ms": {
+          "ci95": [
+            -234.05239198927302,
+            756.5550954247591
+          ],
+          "lcb95": -176.8903878252022,
+          "mean": 189.66464295517653,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 659.5608146861197
+        }
+      },
+      "net_rescues": -2,
+      "paired_episodes": 100,
+      "per_task": {
+        "0": {
+          "elapsed_ms_delta": 113.90883638523519,
+          "episodes": 10,
+          "policy_calls_delta": 0.2,
+          "policy_ms_delta": 47.055668104439974,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 54.40785656683147,
+          "success_delta": 0.0
+        },
+        "1": {
+          "elapsed_ms_delta": 205.4731852374971,
+          "episodes": 10,
+          "policy_calls_delta": 0.5,
+          "policy_ms_delta": 86.41501003876328,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 102.11203740909696,
+          "success_delta": 0.0
+        },
+        "2": {
+          "elapsed_ms_delta": -19.24115070141852,
+          "episodes": 10,
+          "policy_calls_delta": 0.2,
+          "policy_ms_delta": -4.326325049623847,
+          "regressions": 1,
+          "rescues": 1,
+          "rpc_ms_delta": -11.512990295886993,
+          "success_delta": 0.0
+        },
+        "3": {
+          "elapsed_ms_delta": 2870.028434507549,
+          "episodes": 10,
+          "policy_calls_delta": 6.8,
+          "policy_ms_delta": 776.9517559092492,
+          "regressions": 2,
+          "rescues": 0,
+          "rpc_ms_delta": 870.7394681405276,
+          "success_delta": -0.2
+        },
+        "4": {
+          "elapsed_ms_delta": -396.6545191593468,
+          "episodes": 10,
+          "policy_calls_delta": -0.9,
+          "policy_ms_delta": -238.01985052414238,
+          "regressions": 1,
+          "rescues": 1,
+          "rpc_ms_delta": -297.47440847568214,
+          "success_delta": 0.0
+        },
+        "5": {
+          "elapsed_ms_delta": 127.1283635403961,
+          "episodes": 10,
+          "policy_calls_delta": 0.2,
+          "policy_ms_delta": 42.022483609616756,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 47.9557485319674,
+          "success_delta": 0.0
+        },
+        "6": {
+          "elapsed_ms_delta": 319.39212242141366,
+          "episodes": 10,
+          "policy_calls_delta": 1.4,
+          "policy_ms_delta": 108.34203520789742,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 115.0698113720864,
+          "success_delta": 0.0
+        },
+        "7": {
+          "elapsed_ms_delta": 3585.9100840985775,
+          "episodes": 10,
+          "policy_calls_delta": 15.0,
+          "policy_ms_delta": 1515.3479237109423,
+          "regressions": 2,
+          "rescues": 0,
+          "rpc_ms_delta": 1671.0088134743273,
+          "success_delta": -0.2
+        },
+        "8": {
+          "elapsed_ms_delta": -1431.3557880930603,
+          "episodes": 10,
+          "policy_calls_delta": -3.5,
+          "policy_ms_delta": -449.3105359375477,
+          "regressions": 0,
+          "rescues": 2,
+          "rpc_ms_delta": -510.8912814408541,
+          "success_delta": 0.2
+        },
+        "9": {
+          "elapsed_ms_delta": -407.4674167204648,
+          "episodes": 10,
+          "policy_calls_delta": -1.5,
+          "policy_ms_delta": -133.7608752772212,
+          "regressions": 1,
+          "rescues": 1,
+          "rpc_ms_delta": -144.76862573064864,
+          "success_delta": 0.0
+        }
+      },
+      "regressions": 7,
+      "rescues": 5,
+      "speedups": {
+        "actual_episode_elapsed_total_ms": {
+          "candidate_mean": 11586.556587833911,
+          "candidate_reduction_fraction": -0.04478982738253695,
+          "reference_mean": 11089.844372682273,
+          "reference_over_candidate": 0.9571302991198269
+        },
+        "actual_policy_total_ms": {
+          "candidate_mean": 2030.7520222943276,
+          "candidate_reduction_fraction": -0.09434369142675947,
+          "reference_mean": 1855.6802933150902,
+          "reference_over_candidate": 0.9137897059526536
+        },
+        "policy_calls": {
+          "candidate_mean": 18.82,
+          "candidate_reduction_fraction": -0.1083627797408716,
+          "reference_mean": 16.98,
+          "reference_over_candidate": 0.9022316684378321
+        },
+        "policy_rpc_wall_total_ms": {
+          "candidate_mean": 2255.191533244215,
+          "candidate_reduction_fraction": -0.09182385562099166,
+          "reference_mean": 2065.5268902890384,
+          "reference_over_candidate": 0.9158986542121619
+        }
+      },
+      "success_delta_cluster_bootstrap": {
+        "ci95": [
+          -0.11024999999999993,
+          0.06999999999999999
+        ],
+        "lcb95": -0.1,
+        "mean": -0.02,
+        "num_clusters": 100,
+        "num_rows": 100,
+        "num_tasks": 10,
+        "ucb95": 0.06
+      },
+      "success_rate_delta": -0.02
+    },
+    "ordered_visual_query": {
+      "both_failure": 5,
+      "both_success": 84,
+      "exact_mcnemar_two_sided_p": 1.0,
+      "gates": {
+        "full_elapsed_reduced_ucb95": false,
+        "policy_time_reduced_ucb95": false,
+        "rpc_time_reduced_ucb95": false,
+        "strict_engineering_go": false,
+        "success_noninferior_lcb95": false
+      },
+      "metric_delta_candidate_minus_reference": {
+        "actual_episode_elapsed_total_ms": {
+          "ci95": [
+            -645.8362984503619,
+            1654.2446806385412
+          ],
+          "lcb95": -504.2250155720394,
+          "mean": 412.5736027676612,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 1411.9581198007807
+        },
+        "actual_policy_total_ms": {
+          "ci95": [
+            -234.79965478705708,
+            483.588084821822
+          ],
+          "lcb95": -185.5552910522092,
+          "mean": 93.67783525492996,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 412.55642382102087
+        },
+        "policy_calls": {
+          "ci95": [
+            -2.25,
+            4.54
+          ],
+          "lcb95": -1.8,
+          "mean": 0.8100000000000002,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 3.8600000000000003
+        },
+        "policy_rpc_wall_total_ms": {
+          "ci95": [
+            -256.261764952098,
+            545.7872842971699
+          ],
+          "lcb95": -203.59690678329207,
+          "mean": 100.30071223154664,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 461.18628700007685
+        }
+      },
+      "net_rescues": -1,
+      "paired_episodes": 100,
+      "per_task": {
+        "0": {
+          "elapsed_ms_delta": 345.8547711838037,
+          "episodes": 10,
+          "policy_calls_delta": 0.6,
+          "policy_ms_delta": 78.5237695556134,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 81.39952258206904,
+          "success_delta": 0.0
+        },
+        "1": {
+          "elapsed_ms_delta": -316.0865065641701,
+          "episodes": 10,
+          "policy_calls_delta": -1.5,
+          "policy_ms_delta": -135.3317841887474,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": -147.5314782001078,
+          "success_delta": 0.0
+        },
+        "2": {
+          "elapsed_ms_delta": 55.102468794211745,
+          "episodes": 10,
+          "policy_calls_delta": 0.2,
+          "policy_ms_delta": 41.11552140675485,
+          "regressions": 1,
+          "rescues": 1,
+          "rpc_ms_delta": 45.86251867003739,
+          "success_delta": 0.0
+        },
+        "3": {
+          "elapsed_ms_delta": 2919.25725270994,
+          "episodes": 10,
+          "policy_calls_delta": 7.5,
+          "policy_ms_delta": 824.3609237018973,
+          "regressions": 1,
+          "rescues": 0,
+          "rpc_ms_delta": 916.7130921501666,
+          "success_delta": -0.1
+        },
+        "4": {
+          "elapsed_ms_delta": 350.4980066791177,
+          "episodes": 10,
+          "policy_calls_delta": 0.2,
+          "policy_ms_delta": -58.6241337005049,
+          "regressions": 1,
+          "rescues": 1,
+          "rpc_ms_delta": -86.17438515648246,
+          "success_delta": 0.0
+        },
+        "5": {
+          "elapsed_ms_delta": 158.7658635340631,
+          "episodes": 10,
+          "policy_calls_delta": -0.2,
+          "policy_ms_delta": -6.433619325980544,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": -8.777127834036946,
+          "success_delta": 0.0
+        },
+        "6": {
+          "elapsed_ms_delta": 1696.7483440879732,
+          "episodes": 10,
+          "policy_calls_delta": 6.7,
+          "policy_ms_delta": 694.889839971438,
+          "regressions": 2,
+          "rescues": 1,
+          "rpc_ms_delta": 762.3843435198069,
+          "success_delta": -0.1
+        },
+        "7": {
+          "elapsed_ms_delta": 67.58951372466981,
+          "episodes": 10,
+          "policy_calls_delta": -0.6,
+          "policy_ms_delta": -48.411022359505296,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": -54.92850379087031,
+          "success_delta": 0.0
+        },
+        "8": {
+          "elapsed_ms_delta": -525.551131227985,
+          "episodes": 10,
+          "policy_calls_delta": -2.1,
+          "policy_ms_delta": -200.44724568724632,
+          "regressions": 0,
+          "rescues": 1,
+          "rpc_ms_delta": -222.77081031352282,
+          "success_delta": 0.1
+        },
+        "9": {
+          "elapsed_ms_delta": -626.442555245012,
+          "episodes": 10,
+          "policy_calls_delta": -2.7,
+          "policy_ms_delta": -252.8638968244195,
+          "regressions": 1,
+          "rescues": 1,
+          "rpc_ms_delta": -283.1700493115932,
+          "success_delta": 0.0
+        }
+      },
+      "regressions": 6,
+      "rescues": 5,
+      "speedups": {
+        "actual_episode_elapsed_total_ms": {
+          "candidate_mean": 11502.417975449935,
+          "candidate_reduction_fraction": -0.03720283070734139,
+          "reference_mean": 11089.844372682273,
+          "reference_over_candidate": 0.9641315761913509
+        },
+        "actual_policy_total_ms": {
+          "candidate_mean": 1949.3581285700202,
+          "candidate_reduction_fraction": -0.05048166733913991,
+          "reference_mean": 1855.6802933150902,
+          "reference_over_candidate": 0.9519442662269304
+        },
+        "policy_calls": {
+          "candidate_mean": 17.79,
+          "candidate_reduction_fraction": -0.04770318021201406,
+          "reference_mean": 16.98,
+          "reference_over_candidate": 0.954468802698145
+        },
+        "policy_rpc_wall_total_ms": {
+          "candidate_mean": 2165.827602520585,
+          "candidate_reduction_fraction": -0.04855938342081381,
+          "reference_mean": 2065.5268902890384,
+          "reference_over_candidate": 0.953689429336473
+        }
+      },
+      "success_delta_cluster_bootstrap": {
+        "ci95": [
+          -0.08,
+          0.06
+        ],
+        "lcb95": -0.06999999999999999,
+        "mean": -0.01,
+        "num_clusters": 100,
+        "num_rows": 100,
+        "num_tasks": 10,
+        "ucb95": 0.05
+      },
+      "success_rate_delta": -0.01
+    }
+  },
+  "runs": {
+    "ordered_expert_hidden": {
+      "episodes": 100,
+      "means": {
+        "actual_episode_elapsed_total_ms": 11586.556587833911,
+        "actual_policy_total_ms": 2030.7520222943276,
+        "policy_calls": 18.82,
+        "policy_rpc_wall_total_ms": 2255.191533244215
+      },
+      "per_task_success": {
+        "0": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "1": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "2": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "3": {
+          "episodes": 10,
+          "success_count": 8,
+          "success_rate": 0.8
+        },
+        "4": {
+          "episodes": 10,
+          "success_count": 8,
+          "success_rate": 0.8
+        },
+        "5": {
+          "episodes": 10,
+          "success_count": 7,
+          "success_rate": 0.7
+        },
+        "6": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "7": {
+          "episodes": 10,
+          "success_count": 8,
+          "success_rate": 0.8
+        },
+        "8": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "9": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        }
+      },
+      "success_count": 88,
+      "success_rate": 0.88,
+      "timeout_count": 12,
+      "timeout_rate": 0.12
+    },
+    "ordered_transformer": {
+      "episodes": 100,
+      "means": {
+        "actual_episode_elapsed_total_ms": 11089.844372682273,
+        "actual_policy_total_ms": 1855.6802933150902,
+        "policy_calls": 16.98,
+        "policy_rpc_wall_total_ms": 2065.5268902890384
+      },
+      "per_task_success": {
+        "0": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "1": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "2": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "3": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "4": {
+          "episodes": 10,
+          "success_count": 8,
+          "success_rate": 0.8
+        },
+        "5": {
+          "episodes": 10,
+          "success_count": 7,
+          "success_rate": 0.7
+        },
+        "6": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "7": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "8": {
+          "episodes": 10,
+          "success_count": 8,
+          "success_rate": 0.8
+        },
+        "9": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        }
+      },
+      "success_count": 90,
+      "success_rate": 0.9,
+      "timeout_count": 10,
+      "timeout_rate": 0.1
+    },
+    "ordered_visual_query": {
+      "episodes": 100,
+      "means": {
+        "actual_episode_elapsed_total_ms": 11502.417975449935,
+        "actual_policy_total_ms": 1949.3581285700202,
+        "policy_calls": 17.79,
+        "policy_rpc_wall_total_ms": 2165.827602520585
+      },
+      "per_task_success": {
+        "0": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "1": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "2": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "3": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "4": {
+          "episodes": 10,
+          "success_count": 8,
+          "success_rate": 0.8
+        },
+        "5": {
+          "episodes": 10,
+          "success_count": 7,
+          "success_rate": 0.7
+        },
+        "6": {
+          "episodes": 10,
+          "success_count": 8,
+          "success_rate": 0.8
+        },
+        "7": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "8": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "9": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        }
+      },
+      "success_count": 89,
+      "success_rate": 0.89,
+      "timeout_count": 11,
+      "timeout_rate": 0.11
+    }
+  },
+  "semantics": "Same frozen VLA and external observations; episode-interleaved endpoints, one active RPC at a time. Adapter and hidden-capture costs are included in policy/RPC/full-episode timing. No architecture cache exported during evaluation.",
+  "status": "complete"
+}

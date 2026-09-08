@@ -1,0 +1,9 @@
+{
+  "completed_roots": 60,
+  "counterfactual_branches_run": 1500,
+  "expected_roots": 60,
+  "feature_label_alignment": "same real source call",
+  "labels_reused": false,
+  "source_split": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1/early_stop",
+  "status": "complete"
+}

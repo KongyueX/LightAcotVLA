@@ -1,0 +1,6 @@
+{
+  "controller": "/root/autodl-tmp/acotvla/code/LightAcotVLA_5b70d1d/scripts/run_execution_horizon_architecture_experiment.py",
+  "trainer": "/root/autodl-tmp/acotvla/code/LightAcotVLA_5b70d1d/scripts/train_execution_horizon_architecture.py",
+  "model_and_eval_code": "/root/autodl-tmp/acotvla/code/LightAcotVLA_8e0c0ad",
+  "validation_batch_size": 1
+}
