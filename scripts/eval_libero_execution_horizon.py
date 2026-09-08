@@ -44,7 +44,10 @@ FEEDBACK_CURRENT_MODE = "ordered_feedback_current"
 FEEDBACK_CURRENT_ONCE_MODE = "ordered_feedback_current_once"
 FEEDBACK_HISTORY_MODE = "ordered_feedback_history"
 FEEDBACK_MODES = (FEEDBACK_CURRENT_MODE, FEEDBACK_HISTORY_MODE, FEEDBACK_CURRENT_ONCE_MODE)
-ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE, *FEEDBACK_MODES, *ARCHITECTURE_MODES)
+MIDCHUNK_FRESH_MODE = "ordered_midchunk_fresh"
+MIDCHUNK_MASKED_MODE = "ordered_midchunk_masked"
+MIDCHUNK_MODES = (MIDCHUNK_FRESH_MODE, MIDCHUNK_MASKED_MODE)
+ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE, *FEEDBACK_MODES, *ARCHITECTURE_MODES, *MIDCHUNK_MODES)
 FIXED_H_MODE = "fixed_h"
 MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES)
 
@@ -115,6 +118,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--feedback-current-params", default=None)
     parser.add_argument("--feedback-history-params", default=None)
+    parser.add_argument("--midchunk-fresh-params", default=None)
+    parser.add_argument("--midchunk-masked-params", default=None)
     parser.add_argument("--resize-size", type=int, default=224)
     parser.add_argument("--num-steps-wait", type=int, default=10)
     parser.add_argument("--action-cot-denoising-steps", type=int, default=10)
@@ -875,6 +880,17 @@ def _load_selectors(
             if model.variant != variant or max(model.candidates) > args.model_action_horizon:
                 raise ValueError("Feedback checkpoint variant or action horizon does not match the evaluation.")
             selectors[mode] = model
+    for mode, variant in ((MIDCHUNK_FRESH_MODE, "fresh"), (MIDCHUNK_MASKED_MODE, "masked")):
+        if mode in args.modes:
+            from openpi.execution_horizon.midchunk import MidchunkMonitor
+
+            params = getattr(args, f"midchunk_{variant}_params")
+            if params is None or args.model_action_horizon != 25:
+                raise ValueError(f"{mode} requires --midchunk-{variant}-params and an H25 action model.")
+            monitor = MidchunkMonitor.load(params)
+            if monitor.variant != variant:
+                raise ValueError("Midchunk checkpoint variant does not match its evaluation mode.")
+            selectors[mode] = monitor
     return selectors
 
 
@@ -1477,6 +1493,21 @@ def _run_episode(
                     episode_progress=episode_progress, request_seed=request_seed,
                 )
             horizons.append(horizon)
+            midchunk_inputs = None
+            if mode in MIDCHUNK_MODES:
+                from openpi.execution_horizon.midchunk import proprio_from_observation
+
+                selector_info.update(
+                    selector_policy=mode, midchunk_checked=False, replanned_early=False,
+                    nominal_horizon=int(selected_horizon),
+                )
+                if horizon > 5:
+                    midchunk_inputs = {
+                        "temporal_feature": np.asarray(result["execution_horizon_temporal_feature"]).reshape(-1),
+                        "start_proprio": proprio_from_observation(observation),
+                        "chunk_actions": action_chunk,
+                        "planned_h": int(selected_horizon), "episode_progress": episode_progress,
+                    }
             compact_router_info: dict[str, Any] = {}
             if args.compact_alpha_router:
                 required_router_outputs = {
@@ -1639,8 +1670,25 @@ def _run_episode(
                 if done or libero_eval._env_success(env):
                     success = True
                     break
-            if mode == FEEDBACK_CURRENT_ONCE_MODE:
+                if mode in MIDCHUNK_MODES and step - execution_start_step == 5 and step - execution_start_step < horizon:
+                    monitor_started = time.perf_counter()
+                    midchunk_inputs["current_proprio"] = proprio_from_observation(observation)
+                    midchunk_inputs["episode_progress"] = step / episode_step_limit
+                    replan, monitor_info = selector.decide(midchunk_inputs)
+                    selector_info.update(
+                        midchunk_checked=True, replanned_early=bool(replan),
+                        midchunk_environment_step=step,
+                        midchunk_monitor_ms=(time.perf_counter() - monitor_started) * 1000.0,
+                        midchunk_monitor=monitor_info,
+                    )
+                    if replan:
+                        break
+            if mode == FEEDBACK_CURRENT_ONCE_MODE or mode in MIDCHUNK_MODES:
                 previous_horizon = step - execution_start_step
+            if mode in MIDCHUNK_MODES:
+                horizons[-1] = previous_horizon
+                decisions[-1]["execution_horizon"] = previous_horizon
+                decisions[-1]["selector_json"] = json.dumps(selector_info, separators=(",", ":"))
     except Exception as exc:
         trace_error = f"{type(exc).__name__}: {exc}"
         raise
@@ -2274,6 +2322,8 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
             and not any(mode in args.modes for mode in (FEEDBACK_CURRENT_MODE, FEEDBACK_CURRENT_ONCE_MODE))
         )
         and not (key.startswith("feedback_history_") and FEEDBACK_HISTORY_MODE not in args.modes)
+        and not (key.startswith("midchunk_fresh_") and MIDCHUNK_FRESH_MODE not in args.modes)
+        and not (key.startswith("midchunk_masked_") and MIDCHUNK_MASKED_MODE not in args.modes)
         and not (key.startswith("trace_") and getattr(args, "trace_output_dir", None) is None)
         and not (key in {"original_host", "original_port", "original_model_action_horizon", "visual_query_port", "expert_hidden_port"} and value is None)
     }
