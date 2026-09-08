@@ -1,0 +1,14 @@
+[
+  "/usr/bin/timeout",
+  "--signal=TERM",
+  "--kill-after=15s",
+  "7065",
+  "/root/autodl-tmp/acotvla/envs/acotvla-py311/bin/python",
+  "/root/autodl-tmp/acotvla/code/LightAcotVLA_a6ca256/scripts/train_execution_horizon_midchunk.py",
+  "--data-dir",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2/collection",
+  "--output-dir",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2/training",
+  "--protocol",
+  "gripper_event"
+]

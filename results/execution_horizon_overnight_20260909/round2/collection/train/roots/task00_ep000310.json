@@ -1,0 +1,69 @@
+{
+  "branch_order": [
+    "continue",
+    "replan"
+  ],
+  "branches": [
+    {
+      "action": 0,
+      "calls": 14,
+      "choice": "continue",
+      "policy": 1.525475270114839,
+      "repeat": 0,
+      "root_physics_difference": 0.0,
+      "rpc": 1.7010886864736676,
+      "segment_seconds": 6.6910477839410305,
+      "steps": 268,
+      "success": true
+    },
+    {
+      "action": 0,
+      "calls": 13,
+      "choice": "continue",
+      "policy": 1.4391360427252948,
+      "repeat": 1,
+      "root_physics_difference": 0.0,
+      "rpc": 1.600954393390566,
+      "segment_seconds": 6.059326199814677,
+      "steps": 250,
+      "success": true
+    },
+    {
+      "action": 1,
+      "calls": 13,
+      "choice": "replan",
+      "policy": 1.4135384154506028,
+      "repeat": 0,
+      "root_physics_difference": 0.0,
+      "rpc": 1.576902786269784,
+      "segment_seconds": 6.360312036238611,
+      "steps": 251,
+      "success": true
+    },
+    {
+      "action": 1,
+      "calls": 14,
+      "choice": "replan",
+      "policy": 1.5274937525391579,
+      "repeat": 1,
+      "root_physics_difference": 0.0,
+      "rpc": 1.6944812070578337,
+      "segment_seconds": 6.822037496138364,
+      "steps": 283,
+      "success": true
+    }
+  ],
+  "check_schedule": "gripper_event",
+  "chunk_start_step": 50,
+  "continuation": "A for both choices",
+  "episode_id": 310,
+  "episode_step_limit": 1000,
+  "executed_in_chunk": 20,
+  "model_inputs": "raw_feature only; physics, terminal source outcome and gray caches are excluded",
+  "planned_h": 25,
+  "root_reconstruction": "fresh same-seed environment and complete recorded float32 action prefix",
+  "root_step": 70,
+  "status": "complete",
+  "task_id": 0,
+  "timing": "starts at midchunk after reconstruction; the already-paid chunk-start RPC is excluded"
+}

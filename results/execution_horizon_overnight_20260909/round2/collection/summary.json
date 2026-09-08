@@ -1,0 +1,37 @@
+{
+  "branch_budget": 280,
+  "branch_order": [
+    "continue",
+    "replan"
+  ],
+  "check_after": null,
+  "check_schedule": "gripper_event",
+  "early_roots": 19,
+  "feature_dim": 458,
+  "fresh_feature_start": 442,
+  "gray_cache_used_by_model": false,
+  "no_eligible_episodes": [
+    {
+      "episode_id": 309,
+      "partition": "train",
+      "task_id": 5
+    },
+    {
+      "episode_id": 308,
+      "partition": "train",
+      "task_id": 6
+    },
+    {
+      "episode_id": 332,
+      "partition": "early",
+      "task_id": 5
+    }
+  ],
+  "num_branches": 268,
+  "num_roots": 67,
+  "seed_formula": "chunk-start root seed + 100000000 + repeat * 20000000 + continuation call index",
+  "source_episode_budget": 70,
+  "status": "complete",
+  "train_roots": 48,
+  "training_root_selection": "one reservoir-sampled nonterminal eligible scheduled state per complete A episode"
+}

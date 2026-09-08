@@ -1,0 +1,41 @@
+{
+  "NFE": [
+    10,
+    10
+  ],
+  "check_after": null,
+  "check_schedule": "gripper_event",
+  "host": "localhost",
+  "initial_state_bank": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1/initial_state_bank_0_365",
+  "num_steps_wait": 10,
+  "partitions": {
+    "early": [
+      332,
+      333
+    ],
+    "train": [
+      308,
+      309,
+      310,
+      311,
+      312
+    ]
+  },
+  "port": 8040,
+  "protocol": "gripper_event",
+  "repeats": 2,
+  "resize_size": 224,
+  "seed": 107007,
+  "tasks": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ]
+}

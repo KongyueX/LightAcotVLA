@@ -1,0 +1,332 @@
+{
+  "batch_size": 64,
+  "branch_repeats": 2,
+  "critic": false,
+  "data_dir": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2/collection",
+  "early": {
+    "branch_repeats": 2,
+    "directory": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2/collection/early",
+    "episode_groups": [
+      [
+        0,
+        332
+      ],
+      [
+        0,
+        333
+      ],
+      [
+        1,
+        332
+      ],
+      [
+        1,
+        333
+      ],
+      [
+        2,
+        332
+      ],
+      [
+        2,
+        333
+      ],
+      [
+        3,
+        332
+      ],
+      [
+        3,
+        333
+      ],
+      [
+        4,
+        332
+      ],
+      [
+        4,
+        333
+      ],
+      [
+        5,
+        333
+      ],
+      [
+        6,
+        332
+      ],
+      [
+        6,
+        333
+      ],
+      [
+        7,
+        332
+      ],
+      [
+        7,
+        333
+      ],
+      [
+        8,
+        332
+      ],
+      [
+        8,
+        333
+      ],
+      [
+        9,
+        332
+      ],
+      [
+        9,
+        333
+      ]
+    ],
+    "feature_dim": 458,
+    "paired_repeats": 38,
+    "roots": 19,
+    "roots_by_task": {
+      "0": 2,
+      "1": 2,
+      "2": 2,
+      "3": 2,
+      "4": 2,
+      "5": 1,
+      "6": 2,
+      "7": 2,
+      "8": 2,
+      "9": 2
+    },
+    "target_max": 0.5082100022802675,
+    "target_mean": 0.02603220096379547,
+    "target_min": -0.0037938910024240546
+  },
+  "feature_dim": 458,
+  "learning_rate": 0.001,
+  "log_every": 25,
+  "normalization": "same train-only mean/std; masked tail16 cleared after normalization",
+  "pre_feature_dim": 442,
+  "protocol": "gripper_event",
+  "seed": 7,
+  "target": "mean_paired[S_replan * (1 + .02*(C_continue-C_replan)/max(1 second,C_continue,C_replan)) - S_continue]",
+  "time_bonus": 0.02,
+  "training": {
+    "branch_repeats": 2,
+    "directory": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2/collection/train",
+    "episode_groups": [
+      [
+        0,
+        308
+      ],
+      [
+        0,
+        309
+      ],
+      [
+        0,
+        310
+      ],
+      [
+        0,
+        311
+      ],
+      [
+        0,
+        312
+      ],
+      [
+        1,
+        308
+      ],
+      [
+        1,
+        309
+      ],
+      [
+        1,
+        310
+      ],
+      [
+        1,
+        311
+      ],
+      [
+        1,
+        312
+      ],
+      [
+        2,
+        308
+      ],
+      [
+        2,
+        309
+      ],
+      [
+        2,
+        310
+      ],
+      [
+        2,
+        311
+      ],
+      [
+        2,
+        312
+      ],
+      [
+        3,
+        308
+      ],
+      [
+        3,
+        309
+      ],
+      [
+        3,
+        310
+      ],
+      [
+        3,
+        311
+      ],
+      [
+        3,
+        312
+      ],
+      [
+        4,
+        308
+      ],
+      [
+        4,
+        309
+      ],
+      [
+        4,
+        310
+      ],
+      [
+        4,
+        311
+      ],
+      [
+        4,
+        312
+      ],
+      [
+        5,
+        308
+      ],
+      [
+        5,
+        310
+      ],
+      [
+        5,
+        311
+      ],
+      [
+        5,
+        312
+      ],
+      [
+        6,
+        309
+      ],
+      [
+        6,
+        310
+      ],
+      [
+        6,
+        311
+      ],
+      [
+        6,
+        312
+      ],
+      [
+        7,
+        308
+      ],
+      [
+        7,
+        309
+      ],
+      [
+        7,
+        310
+      ],
+      [
+        7,
+        311
+      ],
+      [
+        7,
+        312
+      ],
+      [
+        8,
+        308
+      ],
+      [
+        8,
+        309
+      ],
+      [
+        8,
+        310
+      ],
+      [
+        8,
+        311
+      ],
+      [
+        8,
+        312
+      ],
+      [
+        9,
+        308
+      ],
+      [
+        9,
+        309
+      ],
+      [
+        9,
+        310
+      ],
+      [
+        9,
+        311
+      ],
+      [
+        9,
+        312
+      ]
+    ],
+    "feature_dim": 458,
+    "paired_repeats": 96,
+    "roots": 48,
+    "roots_by_task": {
+      "0": 5,
+      "1": 5,
+      "2": 5,
+      "3": 5,
+      "4": 5,
+      "5": 4,
+      "6": 4,
+      "7": 5,
+      "8": 5,
+      "9": 5
+    },
+    "target_max": 0.5052933229683396,
+    "target_mean": -0.03187716089055343,
+    "target_min": -1.0
+  },
+  "updates_per_variant": 400
+}

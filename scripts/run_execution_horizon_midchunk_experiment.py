@@ -49,11 +49,11 @@ def bounded_stage(args: argparse.Namespace, name: str, command: list[str]) -> No
         raise
 
 
-def summarize(directory: pathlib.Path) -> dict:
+def summarize(directory: pathlib.Path, modes: tuple[str, ...] = MODES) -> dict:
     summary = json.loads((directory / "summary.json").read_text())
     if summary.get("status") != "complete":
         raise ValueError("Cannot summarize a partial development cohort as complete.")
-    runs = {mode: {} for mode in MODES}
+    runs = {mode: {} for mode in modes}
     with (directory / "rollout_rows.csv").open() as handle:
         for row in csv.DictReader(handle):
             key = (int(row["task_id"]), int(row["episode"]))
@@ -65,14 +65,15 @@ def summarize(directory: pathlib.Path) -> dict:
         raise ValueError("Development results do not cover the fixed 100 initial states.")
     metrics = {mode: paired._run_summary(rows, keys) for mode, rows in runs.items()}
     comparisons = {
-        mode: paired._pairwise_audit(runs[MODES[0]], runs[mode], keys, samples=5000, seed=7,
+        mode: paired._pairwise_audit(runs[modes[0]], runs[mode], keys, samples=5000, seed=7,
                                     noninferiority_margin=.01)
-        for mode in MODES[1:]
+        for mode in modes[1:]
     }
-    comparisons["fresh_vs_masked"] = paired._pairwise_audit(
-        runs[MODES[2]], runs[MODES[1]], keys, samples=5000, seed=7, noninferiority_margin=.01,
-    )
-    monitor = {mode: {"checks": 0, "replans": 0, "monitor_ms": 0.0} for mode in MODES[1:]}
+    if MODES[1] in runs and MODES[2] in runs:
+        comparisons["fresh_vs_masked"] = paired._pairwise_audit(
+            runs[MODES[2]], runs[MODES[1]], keys, samples=5000, seed=7, noninferiority_margin=.01,
+        )
+    monitor = {mode: {"checks": 0, "replans": 0, "monitor_ms": 0.0} for mode in modes[1:]}
     with (directory / "decisions.csv").open() as handle:
         for row in csv.DictReader(handle):
             if row["mode"] not in monitor:

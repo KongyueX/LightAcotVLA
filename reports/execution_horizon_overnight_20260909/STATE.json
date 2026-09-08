@@ -4,11 +4,9 @@
   "phase": "experiment-bridge",
   "start_utc": "2026-09-08T19:12:30Z",
   "deadline_utc": "2026-09-09T01:12:30Z",
-  "last_seen_utc": "2026-09-08T22:19:37.545830+00:00",
-  "round": 2,
-  "pending_experiments": [
-    "h25_overnight:round2 event collect -> train -> conditional development"
-  ],
+  "last_seen_utc": "2026-09-08T23:29:03.122336+00:00",
+  "round": 3,
+  "pending_experiments": [],
   "reviewer_agent_id": "/root/overnight_reviewer",
   "auto_proceed": true,
   "human_checkpoint": false,
@@ -16,7 +14,7 @@
   "auto_write": false,
   "render_html": false,
   "max_review_rounds": 4,
-  "direction": "event-aligned within-chunk proprioceptive feedback",
+  "direction": "frozen cached-context event scheduling closed-loop validation",
   "official_aris_helpers_available": false,
   "watchdog_registered": false,
   "notes": [
@@ -36,25 +34,26 @@
   "round_output": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2",
   "stage_child_pid": 170276,
   "last_progress": {
-    "checked_utc": "2026-09-08T22:23:55.606736+00:00",
+    "checked_utc": "2026-09-08T22:58:29Z",
     "round": 2,
     "stage": "collect",
-    "completed_branches": 8,
+    "completed_branches": 193,
     "branch_cap": 280,
-    "partition": "train",
+    "partition": "early",
     "task_id": 0,
-    "episode_id": 310,
+    "episode_id": 332,
     "child_alive": true
   },
   "round1_local_results": "results/execution_horizon_overnight_20260909/round1",
   "review_run_id": "run_20260909_6ab433e7",
-  "review_round": 1,
+  "review_round": 2,
   "review_trace": ".aris/traces/auto-review-loop/2026-09-09_run01",
-  "review_score": 5,
+  "review_score": 6,
   "review_verdict": "not ready",
   "round2_protocol": "gripper_event",
   "round1_outcome": "both_selected_constant_continue; saturated_early",
   "round2_local_results": "results/execution_horizon_overnight_20260909/round2",
   "first_real_io_round1": "Task0/300 root290, nominal H20, first five branches completed, reconstruction delta0, feature457 and four RGB256x256x3 caches valid",
-  "first_real_io_round2": "Task0/308 root80, H15,k5,feature458,trials2x2,all4branches complete,physics_delta0"
+  "first_real_io_round2": "Task0/308 root80, H15,k5,feature458,trials2x2,all4branches complete,physics_delta0",
+  "round2_outcome": "fresh and masked identical early actions; no incremental proprio evidence"
 }

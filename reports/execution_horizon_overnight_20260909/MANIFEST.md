@@ -17,3 +17,5 @@
 | 20260909_061617 | research-pipeline | refine-logs/EXPERIMENT_PLAN.md | implementation | Latest plan |
 | 20260909_061617 | research-pipeline | refine-logs/EXPERIMENT_TRACKER.md | implementation | Round1 complete and round2 code ready |
 | 20260909_061617 | research-pipeline | refine-logs/round_1_results.md | implementation | Negative early selection with raw evidence |
+| 20260909_072903 | research-pipeline | refine-logs/round_2_results.md | implementation | Complete event data and locked candidate interpretation |
+| 20260909_072903 | research-pipeline | refine-logs/EXPERIMENT_PLAN.md | implementation | Frozen cached-policy validation registered before execution |

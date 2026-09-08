@@ -7,3 +7,6 @@
 
 - R1完整结果：train两分支均211/240；early均60/60且oracle几乎无RPC余地，400步均选step0，未形成新策略，跳过重复A开发。
 - R1复盘5/10、not ready：训练过拟合、early饱和；改为夹爪事件后观察、固定新episode，检验更相关的状态覆盖，尚无R2结果。
+
+- R2事件early有非零收益，但fresh与masked同一6/19选择，未证明新proprio增益。唯一救回与大部分RPC收益集中在一个随机root，需要完整闭环。
+- 选择固定masked与A的200局开发对照，不改权重/阈值，不追认fresh条件通过。

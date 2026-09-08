@@ -1,0 +1,12 @@
+{
+  "check_schedule": "gripper_event",
+  "eligible_chunks": 0,
+  "episode_id": 308,
+  "sampling": "one uniform reservoir over nonterminal eligible scheduled checks in a complete A episode",
+  "source_calls": 14,
+  "source_seconds": 7.747843323741108,
+  "source_steps": 270,
+  "source_success": true,
+  "status": "no_eligible_chunk",
+  "task_id": 6
+}
