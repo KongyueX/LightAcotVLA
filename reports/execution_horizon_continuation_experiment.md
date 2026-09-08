@@ -18,7 +18,21 @@
 
 后续组更新如启动，复用已有current小头，A/VLA冻结，不增加网络、critic或训练轮次扫描；同一训练初态生成A参考和候选完整轨迹，使用实际成功与RPC回报。保持原开发100初态上与同批A比较，只有明确胜出的唯一候选才进入预留200初态。具体启动设置和结果追加到本文件。
 
+该条件满足时，固定采用20组训练初态（每task IDs310/311），每组1条A greedy参考和3条冻结current step200行为策略的sampled完整轨迹，共80局，组内交错运行。首call因`history_valid=False`没有可训练残差，保持A greedy并排除actor更新；其余候选decision保存实际用于采样的概率、log-prob、H、原始feature、同状态A logits和真实duration/RPC。A参考轨迹仅用于组回报基准，不作为候选on-policy样本。
+
+回报固定为`success × [1 + 0.02 × (RPC_A − RPC_i) / max(1秒, RPC_A, RPC_i)]`，优势只减去包括A在内的组均值，不除以组内标准差，避免放大微小耗时差。使用clipped ratio损失（clip0.1）、A→候选KL权重0.05，组间与候选轨迹间等权，轨迹内平均。仅更新原current四个小头参数，保留原归一化；lr1e-4、4 epochs、一次更新，不按训练回报扫描checkpoint。这是待条件触发的有界pilot配置，尚未执行，也不宣称复现BCP。
+
 用户要求只保证逻辑和输入输出：本批仅验证同根动作/状态对应、候选H和实际运行，不扩充测试矩阵或一般审计。任何当前错误只作最小修复；原A服务和已有数据保留，阶段进度通过飞书汇报。
+
+## 启动记录
+
+2026-09-09 00:14（北京时间），`140d6ea`已推送main，并以独立代码快照在原服务器启动。运行脚本为`scripts/probe_execution_horizon_continuation.py`，tmux为`h25_continuation`，使用原8040服务。输出目录：
+
+`/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/continuation_diagnosis_20260909_v1`
+
+`probe/roots/*.json`按分支写入，`probe/summary.json`在整批完成时生成。启动通知获飞书服务`FEISHU_OK start`；首个Task0、ID300分歧root已找到并开始四格接力比较。目前未启动第二阶段更新，尚无整批结论。
+
+首root位于step105，A选H20、current选H25；首个repeat四格均已完成，重构physics差为0，均成功。它只确认真实输入输出和分支流程已跑通，不代表整体接力差异结论。已建立15分钟任务心跳`a`，运行中按需处理，完成后分析并依据上述条件推进；状态无实质变化时静默。
 
 ## Limitations
 
