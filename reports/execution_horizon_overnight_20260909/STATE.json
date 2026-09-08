@@ -4,9 +4,11 @@
   "phase": "experiment-bridge",
   "start_utc": "2026-09-08T19:12:30Z",
   "deadline_utc": "2026-09-09T01:12:30Z",
-  "last_seen_utc": "2026-09-08T19:23:21.333981+00:00",
+  "last_seen_utc": "2026-09-08T19:34:26.392074+00:00",
   "round": 1,
-  "pending_experiments": [],
+  "pending_experiments": [
+    "h25_overnight:round1 collect -> train -> conditional development"
+  ],
   "reviewer_agent_id": null,
   "auto_proceed": true,
   "human_checkpoint": false,
@@ -26,10 +28,12 @@
   "automation_name": "A六小时ARIS自动迭代",
   "automation_id": "a-aris",
   "pending_agents": {},
-  "local_work": [
-    "scripts/eval_libero_execution_horizon.py",
-    "scripts/run_execution_horizon_midchunk_experiment.py"
-  ],
+  "local_work": [],
   "workflow_root": "/Users/kongyue/LightAcotVLA/reports/execution_horizon_overnight_20260909",
-  "implementation_complete": true
+  "implementation_complete": true,
+  "code_commit": "2550b4b",
+  "code_snapshot": "/root/autodl-tmp/acotvla/code/LightAcotVLA_2550b4b",
+  "round_output": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round1",
+  "stage_child_pid": 165485,
+  "first_real_io": "Task0/300 root290, nominal H20, first five branches completed, reconstruction delta0, feature457 and four RGB256x256x3 caches valid"
 }

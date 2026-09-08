@@ -12,3 +12,4 @@
 | 20260909_033137 | experiment-bridge | refine-logs/EXPERIMENT_PLAN.md | implementation | Latest locked plan |
 | 20260909_033137 | experiment-bridge | refine-logs/EXPERIMENT_TRACKER_20260909_033137.md | implementation | Implementation complete |
 | 20260909_033137 | experiment-bridge | refine-logs/EXPERIMENT_TRACKER.md | implementation | Latest tracker |
+| 20260909_033426 | run-experiment | refine-logs/EXPERIMENT_TRACKER_20260909_033426.md | implementation | First real branches running, deadline enforced |
