@@ -1,0 +1,349 @@
+{
+  "feedback_selector_ms_per_call": {
+    "ordered_feedback_current_once": 0.1373375664576163,
+    "ordered_transformer": 0.0
+  },
+  "pairwise": {
+    "ordered_feedback_current_once": {
+      "both_failure": 5,
+      "both_success": 92,
+      "exact_mcnemar_two_sided_p": 1.0,
+      "gates": {
+        "full_elapsed_reduced_ucb95": false,
+        "policy_time_reduced_ucb95": false,
+        "rpc_time_reduced_ucb95": false,
+        "strict_engineering_go": false,
+        "success_noninferior_lcb95": false
+      },
+      "metric_delta_candidate_minus_reference": {
+        "actual_episode_elapsed_total_ms": {
+          "ci95": [
+            -563.8069829125889,
+            1012.8239856191185
+          ],
+          "lcb95": -451.6712388226297,
+          "mean": 136.00827130954713,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 844.4287431607956
+        },
+        "actual_policy_total_ms": {
+          "ci95": [
+            -163.79967273026705,
+            259.4834313071333
+          ],
+          "lcb95": -134.68425121204928,
+          "mean": 30.617622206918895,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 220.675975319231
+        },
+        "policy_calls": {
+          "ci95": [
+            -1.52,
+            2.51
+          ],
+          "lcb95": -1.2400000000000002,
+          "mean": 0.3400000000000001,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 2.08
+        },
+        "policy_rpc_wall_total_ms": {
+          "ci95": [
+            -192.1141660005087,
+            291.8986267897999
+          ],
+          "lcb95": -152.34652344882488,
+          "mean": 33.11831459403038,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 247.0748903322965
+        }
+      },
+      "net_rescues": 1,
+      "paired_episodes": 100,
+      "per_task": {
+        "0": {
+          "elapsed_ms_delta": 365.9260017797351,
+          "episodes": 10,
+          "policy_calls_delta": 0.7,
+          "policy_ms_delta": 90.20133763551712,
+          "regressions": 0,
+          "rescues": 1,
+          "rpc_ms_delta": 99.63517454452813,
+          "success_delta": 0.1
+        },
+        "1": {
+          "elapsed_ms_delta": -598.6894145142287,
+          "episodes": 10,
+          "policy_calls_delta": -2.4,
+          "policy_ms_delta": -264.7721969522536,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": -295.1568715274334,
+          "success_delta": 0.0
+        },
+        "2": {
+          "elapsed_ms_delta": -5.993345286697149,
+          "episodes": 10,
+          "policy_calls_delta": -0.1,
+          "policy_ms_delta": -1.593877049162984,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 0.15630386769771576,
+          "success_delta": 0.0
+        },
+        "3": {
+          "elapsed_ms_delta": 2725.548029318452,
+          "episodes": 10,
+          "policy_calls_delta": 7.0,
+          "policy_ms_delta": 726.0402197483927,
+          "regressions": 1,
+          "rescues": 0,
+          "rpc_ms_delta": 801.15573592484,
+          "success_delta": -0.1
+        },
+        "4": {
+          "elapsed_ms_delta": 116.09970205463469,
+          "episodes": 10,
+          "policy_calls_delta": 0.5,
+          "policy_ms_delta": 65.4952751006931,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 72.93087588623166,
+          "success_delta": 0.0
+        },
+        "5": {
+          "elapsed_ms_delta": -117.83875352703035,
+          "episodes": 10,
+          "policy_calls_delta": 0.0,
+          "policy_ms_delta": -61.61882248707116,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": -81.105871591717,
+          "success_delta": 0.0
+        },
+        "6": {
+          "elapsed_ms_delta": 36.581249395385385,
+          "episodes": 10,
+          "policy_calls_delta": 0.2,
+          "policy_ms_delta": 18.287622276693583,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 18.843965604901314,
+          "success_delta": 0.0
+        },
+        "7": {
+          "elapsed_ms_delta": -1272.2933012526482,
+          "episodes": 10,
+          "policy_calls_delta": -2.9,
+          "policy_ms_delta": -320.5842088907957,
+          "regressions": 0,
+          "rescues": 1,
+          "rpc_ms_delta": -354.16250322014093,
+          "success_delta": 0.1
+        },
+        "8": {
+          "elapsed_ms_delta": 573.8269612193108,
+          "episodes": 10,
+          "policy_calls_delta": 1.3,
+          "policy_ms_delta": 168.50904459133744,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": 197.0831305719912,
+          "success_delta": 0.0
+        },
+        "9": {
+          "elapsed_ms_delta": -463.0844160914421,
+          "episodes": 10,
+          "policy_calls_delta": -0.9,
+          "policy_ms_delta": -113.78817190416157,
+          "regressions": 0,
+          "rescues": 0,
+          "rpc_ms_delta": -128.19679412059486,
+          "success_delta": 0.0
+        }
+      },
+      "regressions": 1,
+      "rescues": 2,
+      "speedups": {
+        "actual_episode_elapsed_total_ms": {
+          "candidate_mean": 10887.21740347799,
+          "candidate_reduction_fraction": -0.012650509318305412,
+          "reference_mean": 10751.209132168442,
+          "reference_over_candidate": 0.9875075268299411
+        },
+        "actual_policy_total_ms": {
+          "candidate_mean": 1763.3637897996232,
+          "candidate_reduction_fraction": -0.017669998514240438,
+          "reference_mean": 1732.7461675927043,
+          "reference_over_candidate": 0.9826368090441518
+        },
+        "policy_calls": {
+          "candidate_mean": 16.44,
+          "candidate_reduction_fraction": -0.02111801242236024,
+          "reference_mean": 16.1,
+          "reference_over_candidate": 0.9793187347931873
+        },
+        "policy_rpc_wall_total_ms": {
+          "candidate_mean": 1956.7958657024428,
+          "candidate_reduction_fraction": -0.0172161465287921,
+          "reference_mean": 1923.6775511084124,
+          "reference_over_candidate": 0.9830752327442486
+        }
+      },
+      "success_delta_cluster_bootstrap": {
+        "ci95": [
+          -0.04,
+          0.06000000000000001
+        ],
+        "lcb95": -0.03,
+        "mean": 0.01,
+        "num_clusters": 100,
+        "num_rows": 100,
+        "num_tasks": 10,
+        "ucb95": 0.05
+      },
+      "success_rate_delta": 0.01
+    }
+  },
+  "runs": {
+    "ordered_feedback_current_once": {
+      "episodes": 100,
+      "means": {
+        "actual_episode_elapsed_total_ms": 10887.21740347799,
+        "actual_policy_total_ms": 1763.3637897996232,
+        "policy_calls": 16.44,
+        "policy_rpc_wall_total_ms": 1956.7958657024428
+      },
+      "per_task_success": {
+        "0": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "1": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "2": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "3": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "4": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "5": {
+          "episodes": 10,
+          "success_count": 7,
+          "success_rate": 0.7
+        },
+        "6": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "7": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "8": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "9": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        }
+      },
+      "success_count": 94,
+      "success_rate": 0.94,
+      "timeout_count": 6,
+      "timeout_rate": 0.06
+    },
+    "ordered_transformer": {
+      "episodes": 100,
+      "means": {
+        "actual_episode_elapsed_total_ms": 10751.209132168442,
+        "actual_policy_total_ms": 1732.7461675927043,
+        "policy_calls": 16.1,
+        "policy_rpc_wall_total_ms": 1923.6775511084124
+      },
+      "per_task_success": {
+        "0": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "1": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "2": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "3": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "4": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "5": {
+          "episodes": 10,
+          "success_count": 7,
+          "success_rate": 0.7
+        },
+        "6": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "7": {
+          "episodes": 10,
+          "success_count": 9,
+          "success_rate": 0.9
+        },
+        "8": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        },
+        "9": {
+          "episodes": 10,
+          "success_count": 10,
+          "success_rate": 1.0
+        }
+      },
+      "success_count": 93,
+      "success_rate": 0.93,
+      "timeout_count": 7,
+      "timeout_rate": 0.07
+    }
+  },
+  "semantics": "Same H25/A service and new bank states; modes interleaved per episode. Feedback time is outside RPC and inside full episode.",
+  "status": "complete"
+}
