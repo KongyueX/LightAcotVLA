@@ -41,8 +41,9 @@ ORDERED_H10_HYSTERESIS_MODE = "ordered_h10_hysteresis"
 ORDERED_SMDP_MODE = "ordered_smdp"
 LAST_BLOCK_SMDP_MODE = "ordered_smdp_last_block"
 FEEDBACK_CURRENT_MODE = "ordered_feedback_current"
+FEEDBACK_CURRENT_ONCE_MODE = "ordered_feedback_current_once"
 FEEDBACK_HISTORY_MODE = "ordered_feedback_history"
-FEEDBACK_MODES = (FEEDBACK_CURRENT_MODE, FEEDBACK_HISTORY_MODE)
+FEEDBACK_MODES = (FEEDBACK_CURRENT_MODE, FEEDBACK_HISTORY_MODE, FEEDBACK_CURRENT_ONCE_MODE)
 ORDERED_MODES = (ORDERED_MODE, ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE, *FEEDBACK_MODES, *ARCHITECTURE_MODES)
 FIXED_H_MODE = "fixed_h"
 MODES = (*LEGACY_MODES, FIXED_H_MODE, HIERARCHICAL_MODE, *ORDERED_MODES, *SELECTOR_MODES)
@@ -860,7 +861,10 @@ def _load_selectors(
         if max(model.candidates) > args.model_action_horizon:
             raise ValueError("Last-block candidates cannot exceed the served action horizon.")
         selectors[LAST_BLOCK_SMDP_MODE] = model
-    for mode, variant in ((FEEDBACK_CURRENT_MODE, "current"), (FEEDBACK_HISTORY_MODE, "history")):
+    for mode, variant in (
+        (FEEDBACK_CURRENT_MODE, "current"), (FEEDBACK_HISTORY_MODE, "history"),
+        (FEEDBACK_CURRENT_ONCE_MODE, "current"),
+    ):
         if mode in args.modes:
             from openpi.execution_horizon.feedback import FeedbackSelector
 
@@ -884,13 +888,34 @@ def _select_horizon(
     selector_rng: np.random.Generator | None = None,
     previous_horizon: int = 10,
     feedback_inputs: dict[str, Any] | None = None,
+    has_intervened: bool = False,
 ) -> tuple[int, dict[str, Any]]:
     if mode == "original":
         return args.original_horizon, {"raw_horizon": args.original_horizon, "budget_limited": 0.0}
     if mode in {"fixed_h9", FIXED_H_MODE}:
         return args.fixed_horizon, {"raw_horizon": args.fixed_horizon, "budget_limited": 0.0}
     if mode in ORDERED_MODES:
-        if mode in FEEDBACK_MODES:
+        if mode == FEEDBACK_CURRENT_ONCE_MODE:
+            started = time.perf_counter()
+            anchor_h = ordered.selected_horizon(result, model_action_horizon=args.model_action_horizon)
+            candidate_h = None
+            info = {}
+            if not has_intervened:
+                if selector is None or feedback_inputs is None:
+                    raise ValueError("Single-intervention evaluation requires the current selector and observation history.")
+                candidate_h, info = selector.decide(feedback_inputs)
+            intervened_now = not has_intervened and candidate_h != anchor_h
+            selected = candidate_h if intervened_now else anchor_h
+            info.update(
+                raw_horizon=anchor_h, selector_policy=FEEDBACK_CURRENT_ONCE_MODE,
+                anchor_h=anchor_h, candidate_h=candidate_h, candidate_evaluated=not has_intervened,
+                first_disagreement_intervened=intervened_now,
+                has_intervened_before_decision=has_intervened,
+                has_intervened=has_intervened or intervened_now,
+                selector_postprocess_ms=(time.perf_counter() - started) * 1000.0,
+                budget_limited=0.0,
+            )
+        elif mode in FEEDBACK_MODES:
             if selector is None or feedback_inputs is None:
                 raise ValueError("Feedback evaluation requires a selector and continuous observation history.")
             started = time.perf_counter()
@@ -1285,6 +1310,8 @@ def _run_episode(
     previous_actions: np.ndarray | None = None
     previous_horizon = 10
     previous_observation: dict[str, Any] | None = None
+    has_intervened = False
+    intervention_step = None
     episode_trace = None
     trace_error = None
     budget_state = v2.EpisodeBudgetState(balance=min(args.v2_initial_budget, args.v2_budget_capacity))
@@ -1421,7 +1448,13 @@ def _run_episode(
                 selector_rng=np.random.default_rng(request_seed + 991),
                 previous_horizon=previous_horizon,
                 feedback_inputs=feedback_inputs,
+                **({"has_intervened": has_intervened} if mode == FEEDBACK_CURRENT_ONCE_MODE else {}),
             )
+            if mode == FEEDBACK_CURRENT_ONCE_MODE:
+                if selector_info["first_disagreement_intervened"]:
+                    intervention_step = step
+                has_intervened = bool(selector_info["has_intervened"])
+                selector_info["intervention_environment_step"] = intervention_step
             if mode in {ORDERED_H10_HYSTERESIS_MODE, ORDERED_SMDP_MODE, LAST_BLOCK_SMDP_MODE, *FEEDBACK_MODES} and len(action_chunk) < horizon:
                 raise ValueError(
                     f"{mode} selected H{horizon}, but the served chunk has only {len(action_chunk)} actions."
@@ -1589,6 +1622,7 @@ def _run_episode(
             )
             previous_actions = action_chunk
             previous_horizon = horizon
+            execution_start_step = step
             for action in action_chunk[:horizon]:
                 try:
                     observation, _, done, _ = env.step(np.asarray(action).tolist())
@@ -1605,6 +1639,8 @@ def _run_episode(
                 if done or libero_eval._env_success(env):
                     success = True
                     break
+            if mode == FEEDBACK_CURRENT_ONCE_MODE:
+                previous_horizon = step - execution_start_step
     except Exception as exc:
         trace_error = f"{type(exc).__name__}: {exc}"
         raise
@@ -2233,7 +2269,10 @@ def _run_signature(args: argparse.Namespace) -> dict[str, Any]:
         and not (key.startswith("ordered_h10_") and ORDERED_H10_HYSTERESIS_MODE not in args.modes)
         and not (key.startswith("ordered_smdp_") and ORDERED_SMDP_MODE not in args.modes)
         and not (key.startswith("last_block_smdp_") and LAST_BLOCK_SMDP_MODE not in args.modes)
-        and not (key.startswith("feedback_current_") and FEEDBACK_CURRENT_MODE not in args.modes)
+        and not (
+            key.startswith("feedback_current_")
+            and not any(mode in args.modes for mode in (FEEDBACK_CURRENT_MODE, FEEDBACK_CURRENT_ONCE_MODE))
+        )
         and not (key.startswith("feedback_history_") and FEEDBACK_HISTORY_MODE not in args.modes)
         and not (key.startswith("trace_") and getattr(args, "trace_output_dir", None) is None)
         and not (key in {"original_host", "original_port", "original_model_action_horizon", "visual_query_port", "expert_hidden_port"} and value is None)
