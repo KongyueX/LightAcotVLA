@@ -1494,19 +1494,36 @@ def _run_episode(
                 )
             horizons.append(horizon)
             midchunk_inputs = None
+            midchunk_check_after = None
             if mode in MIDCHUNK_MODES:
-                from openpi.execution_horizon.midchunk import proprio_from_observation
+                from openpi.execution_horizon.midchunk import planned_gripper_check_step, proprio_from_observation
+
+                if selector.check_schedule == "gripper_event":
+                    previous_gripper_command = (
+                        libero_eval.LIBERO_DUMMY_ACTION[6] if previous_actions is None
+                        else previous_actions[previous_horizon - 1, 6]
+                    )
+                    midchunk_check_after = planned_gripper_check_step(
+                        action_chunk, selected_horizon, previous_gripper_command,
+                    )
+                elif horizon > 5:
+                    midchunk_check_after = 5
+                if midchunk_check_after is not None and midchunk_check_after >= horizon:
+                    midchunk_check_after = None
 
                 selector_info.update(
                     selector_policy=mode, midchunk_checked=False, replanned_early=False,
                     nominal_horizon=int(selected_horizon),
+                    midchunk_check_after=midchunk_check_after,
+                    midchunk_check_schedule=selector.check_schedule,
                 )
-                if horizon > 5:
+                if midchunk_check_after is not None:
                     midchunk_inputs = {
                         "temporal_feature": np.asarray(result["execution_horizon_temporal_feature"]).reshape(-1),
                         "start_proprio": proprio_from_observation(observation),
                         "chunk_actions": action_chunk,
                         "planned_h": int(selected_horizon), "episode_progress": episode_progress,
+                        "executed_in_chunk": midchunk_check_after,
                     }
             compact_router_info: dict[str, Any] = {}
             if args.compact_alpha_router:
@@ -1670,7 +1687,7 @@ def _run_episode(
                 if done or libero_eval._env_success(env):
                     success = True
                     break
-                if mode in MIDCHUNK_MODES and step - execution_start_step == 5 and step - execution_start_step < horizon:
+                if mode in MIDCHUNK_MODES and step - execution_start_step == midchunk_check_after:
                     monitor_started = time.perf_counter()
                     midchunk_inputs["current_proprio"] = proprio_from_observation(observation)
                     midchunk_inputs["episode_progress"] = step / episode_step_limit

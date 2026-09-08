@@ -1,4 +1,4 @@
-"""Collect paired continue/replan labels after five executed actions in an A chunk."""
+"""Collect paired continue/replan labels at scheduled observations inside an A chunk."""
 # ruff: noqa: SLF001
 
 from __future__ import annotations
@@ -21,11 +21,13 @@ import probe_execution_horizon_first_divergence as first_probe
 from openpi.execution_horizon.initial_states import InitialStateBank
 from openpi.execution_horizon.midchunk import CHECK_AFTER
 from openpi.execution_horizon.midchunk import MidchunkMonitor
+from openpi.execution_horizon.midchunk import planned_gripper_check_step
 from openpi.execution_horizon.midchunk import proprio_from_observation
 from openpi.execution_horizon.trace import _physics_state
 
 
 PARTITIONS = {"train": tuple(range(300, 308)), "early": (330, 331)}
+EVENT_PARTITIONS = {"train": tuple(range(308, 313)), "early": (332, 333)}
 TASKS = tuple(range(10))
 REPEATS = 3
 BRANCH_NAMES = ("continue", "replan")
@@ -39,6 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=8040)
     parser.add_argument("--seed", type=int, default=97007)
+    parser.add_argument("--protocol", choices=("fixed5", "gripper_event"), default="fixed5")
     return parser
 
 
@@ -48,13 +51,15 @@ def _write_json(path: pathlib.Path, data: dict[str, Any]) -> None:
 
 
 def _eval_args(args: argparse.Namespace) -> argparse.Namespace:
-    return evaluator.build_parser().parse_args([
+    result = evaluator.build_parser().parse_args([
         "--output-dir", str(args.output_dir), "--initial-state-bank", str(args.initial_state_bank),
         "--host", args.host, "--port", str(args.port), "--seed", str(args.seed),
         "--modes", "ordered_transformer", "--model-action-horizon", "25",
         "--action-cot-denoising-steps", "10", "--final-denoising-steps", "10",
         "--resize-size", "224", "--num-steps-wait", "10",
     ])
+    result.protocol = args.protocol
+    return result
 
 
 def _gray_views(observation: dict[str, Any]) -> np.ndarray:
@@ -84,16 +89,16 @@ def _load_root(path: pathlib.Path) -> dict[str, np.ndarray]:
         return {name: archive[name].copy() for name in archive.files}
 
 
-def _new_trials() -> dict[str, np.ndarray]:
+def _new_trials(repeats: int = REPEATS) -> dict[str, np.ndarray]:
     return {
-        "trial_success": np.zeros((2, REPEATS), dtype=np.bool_),
-        "trial_rpc": np.full((2, REPEATS), np.nan, dtype=np.float64),
-        "trial_policy": np.full((2, REPEATS), np.nan, dtype=np.float64),
-        "trial_segment_seconds": np.full((2, REPEATS), np.nan, dtype=np.float64),
-        "trial_calls": np.zeros((2, REPEATS), dtype=np.int32),
-        "trial_steps": np.zeros((2, REPEATS), dtype=np.int32),
-        "trial_valid": np.zeros((2, REPEATS), dtype=np.bool_),
-        "trial_root_physics_difference": np.full((2, REPEATS), np.nan, dtype=np.float64),
+        "trial_success": np.zeros((2, repeats), dtype=np.bool_),
+        "trial_rpc": np.full((2, repeats), np.nan, dtype=np.float64),
+        "trial_policy": np.full((2, repeats), np.nan, dtype=np.float64),
+        "trial_segment_seconds": np.full((2, repeats), np.nan, dtype=np.float64),
+        "trial_calls": np.zeros((2, repeats), dtype=np.int32),
+        "trial_steps": np.zeros((2, repeats), dtype=np.int32),
+        "trial_valid": np.zeros((2, repeats), dtype=np.bool_),
+        "trial_root_physics_difference": np.full((2, repeats), np.nan, dtype=np.float64),
     }
 
 
@@ -113,6 +118,9 @@ def collect_source(
     success = False
     previous_actions = None
     previous_h = 10
+    previous_gripper = float(libero_eval.LIBERO_DUMMY_ACTION[6])
+    protocol = getattr(args, "protocol", "fixed5")
+    repeats = 2 if protocol == "gripper_event" else REPEATS
     started = time.perf_counter()
     try:
         env.reset()
@@ -138,15 +146,19 @@ def collect_source(
             calls += 1
             actions = continuation._action_chunk(result)
             planned_h = feedback._selected_h(result)
-            start_gray = _gray_views(observation) if planned_h > CHECK_AFTER else None
-            if planned_h > CHECK_AFTER:
+            check_step = (
+                planned_gripper_check_step(actions, planned_h, previous_gripper)
+                if protocol == "gripper_event" else CHECK_AFTER if planned_h > CHECK_AFTER else None
+            )
+            start_gray = _gray_views(observation) if check_step is not None else None
+            if check_step is not None:
                 start_agentview_rgb = np.asarray(observation["agentview_image"], dtype=np.uint8).copy()
                 start_wrist_rgb = np.asarray(observation["robot0_eye_in_hand_image"], dtype=np.uint8).copy()
-            first_count = min(CHECK_AFTER, planned_h)
+            first_count = check_step if check_step is not None else planned_h
             observation, step, success = continuation._execute(
                 env, actions[:first_count], step=step, limit=limit, recorded_actions=prefix
             )
-            if planned_h > CHECK_AFTER and step - start_step == CHECK_AFTER and not success and step < limit:
+            if check_step is not None and step - start_step == check_step and not success and step < limit:
                 eligible += 1
                 if int(sampler.integers(eligible)) == 0:
                     current_proprio = proprio_from_observation(observation)
@@ -155,6 +167,7 @@ def collect_source(
                         "temporal_feature": temporal, "start_proprio": start_proprio,
                         "chunk_actions": actions, "planned_h": planned_h,
                         "episode_progress": step / limit, "current_proprio": current_proprio,
+                        "executed_in_chunk": check_step,
                     }
                     physics, _ = _physics_state(env)
                     root = {
@@ -163,21 +176,23 @@ def collect_source(
                         "root_step": np.asarray(step, dtype=np.int32),
                         "chunk_start_step": np.asarray(start_step, dtype=np.int32),
                         "episode_step_limit": np.asarray(limit, dtype=np.int32),
-                        "executed_in_chunk": np.asarray(CHECK_AFTER, dtype=np.int32),
+                        "executed_in_chunk": np.asarray(check_step, dtype=np.int32),
+                        "check_schedule": np.asarray(protocol),
+                        "previous_gripper_command": np.asarray(previous_gripper, dtype=np.float32),
                         "planned_h": np.asarray(planned_h, dtype=np.int32),
                         "episode_progress": np.asarray(step / limit, dtype=np.float32),
                         "root_request_seed": np.asarray(seed, dtype=np.uint32),
                         "simulator_seed": np.asarray(args.seed, dtype=np.int32),
                         "source_decision_index": np.asarray(calls - 1, dtype=np.int32),
                         "prefix_actions": np.asarray(prefix, dtype=np.float32), "physics_state": physics,
-                        "chunk_actions": actions.copy(), "remaining_actions": actions[CHECK_AFTER:planned_h].copy(),
+                        "chunk_actions": actions.copy(), "remaining_actions": actions[check_step:planned_h].copy(),
                         "temporal_feature": temporal, "start_proprio": start_proprio.copy(),
                         "current_proprio": current_proprio, "raw_feature": feature_builder.build_features(inputs),
                         "start_gray": start_gray, "current_gray": _gray_views(observation),
                         "start_agentview_rgb": start_agentview_rgb, "start_wrist_rgb": start_wrist_rgb,
                         "current_agentview_rgb": np.asarray(observation["agentview_image"], dtype=np.uint8).copy(),
                         "current_wrist_rgb": np.asarray(observation["robot0_eye_in_hand_image"], dtype=np.uint8).copy(),
-                        **_new_trials(),
+                        **_new_trials(repeats),
                     }
             if not success and step < limit and planned_h > first_count:
                 observation, step, success = continuation._execute(
@@ -185,12 +200,14 @@ def collect_source(
                 )
             previous_actions = actions.copy()
             previous_h = step - start_step
+            previous_gripper = float(prefix[-1][6])
         report = {
             "status": "complete" if root is not None else "no_eligible_chunk",
             "task_id": task_id, "episode_id": episode, "source_success": bool(success),
             "source_steps": step, "source_calls": calls, "eligible_chunks": eligible,
             "source_seconds": time.perf_counter() - started,
-            "sampling": "one uniform reservoir over nonterminal H>5 chunks after exactly five executed actions",
+            "check_schedule": protocol,
+            "sampling": "one uniform reservoir over nonterminal eligible scheduled checks in a complete A episode",
         }
         if root is not None:
             root.update(
@@ -218,8 +235,9 @@ def collect_branch(
         if not reconstruction["root_valid"] or limit != int(record["episode_step_limit"]):
             raise continuation.InputMismatch(f"Midchunk root reconstruction does not match: {reconstruction}")
         step = root["step"]
+        executed_in_chunk = int(record["executed_in_chunk"])
         previous_actions = record["chunk_actions"].copy()
-        previous_h = CHECK_AFTER
+        previous_h = executed_in_chunk
         success = False
         calls = 0
         rpc = 0.0
@@ -229,7 +247,7 @@ def collect_branch(
             observation, step, success = continuation._execute(
                 env, record["remaining_actions"], step=step, limit=limit
             )
-            previous_h = CHECK_AFTER + step - root["step"]
+            previous_h = executed_in_chunk + step - root["step"]
         while not success and step < limit:
             seed = first_probe._continuation_seed(int(record["root_request_seed"]), repeat, calls)
             result, timing, _ = continuation._request_once(
@@ -261,7 +279,7 @@ def _root_report(record: dict[str, np.ndarray]) -> dict[str, Any]:
     branches = []
     valid = np.asarray(record["trial_valid"], dtype=bool)
     for action in range(2):
-        for repeat in range(REPEATS):
+        for repeat in range(valid.shape[1]):
             if valid[action, repeat]:
                 row = {"choice": BRANCH_NAMES[action], "action": action, "repeat": repeat}
                 for field in TRIAL_FIELDS:
@@ -272,7 +290,8 @@ def _root_report(record: dict[str, np.ndarray]) -> dict[str, Any]:
         "status": "complete" if bool(valid.all()) else "running",
         "task_id": int(record["task_id"]), "episode_id": int(record["episode_id"]),
         "root_step": int(record["root_step"]), "chunk_start_step": int(record["chunk_start_step"]),
-        "planned_h": int(record["planned_h"]), "executed_in_chunk": CHECK_AFTER,
+        "planned_h": int(record["planned_h"]), "executed_in_chunk": int(record["executed_in_chunk"]),
+        "check_schedule": str(record.get("check_schedule", "fixed5")),
         "episode_step_limit": int(record["episode_step_limit"]), "branches": branches,
         "branch_order": list(BRANCH_NAMES), "continuation": "A for both choices",
         "root_reconstruction": "fresh same-seed environment and complete recorded float32 action prefix",
@@ -284,12 +303,16 @@ def _root_report(record: dict[str, np.ndarray]) -> dict[str, Any]:
 def main(args: argparse.Namespace) -> None:
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    partitions = EVENT_PARTITIONS if args.protocol == "gripper_event" else PARTITIONS
+    repeats = 2 if args.protocol == "gripper_event" else REPEATS
     configuration = {
         "initial_state_bank": str(args.initial_state_bank.resolve()), "host": args.host, "port": args.port,
-        "seed": args.seed, "partitions": {name: list(ids) for name, ids in PARTITIONS.items()},
-        "tasks": list(TASKS), "repeats": REPEATS, "check_after": CHECK_AFTER,
+        "seed": args.seed, "partitions": {name: list(ids) for name, ids in partitions.items()},
+        "tasks": list(TASKS), "repeats": repeats, "check_after": CHECK_AFTER,
         "NFE": [10, 10], "resize_size": 224, "num_steps_wait": 10,
     }
+    if args.protocol == "gripper_event":
+        configuration.update(protocol=args.protocol, check_schedule=args.protocol, check_after=None)
     with (output / "collector.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         config_path = output / "run_config.json"
@@ -306,13 +329,13 @@ def main(args: argparse.Namespace) -> None:
         suite = benchmark.get_benchmark_dict()["libero_10"]()
         client = websocket_policy.WebsocketClientPolicy(args.host, args.port, ping_interval=None, ping_timeout=None)
         eval_args = _eval_args(args)
-        builder = MidchunkMonitor.initialize("fresh")
+        builder = MidchunkMonitor.initialize("fresh", check_schedule=args.protocol)
         status_path = output / "status.json"
-        counts = {name: 0 for name in PARTITIONS}
+        counts = {name: 0 for name in partitions}
         completed_branches = 0
         no_eligible = []
         try:
-            for partition, episodes in PARTITIONS.items():
+            for partition, episodes in partitions.items():
                 roots_dir = output / partition / "roots"
                 roots_dir.mkdir(parents=True, exist_ok=True)
                 for task in TASKS:
@@ -341,7 +364,7 @@ def main(args: argparse.Namespace) -> None:
                             if record is None:
                                 no_eligible.append({"partition": partition, "task_id": task, "episode_id": episode})
                                 continue
-                        for repeat in range(REPEATS):
+                        for repeat in range(record["trial_valid"].shape[1]):
                             order = (0, 1) if repeat % 2 == 0 else (1, 0)
                             for action in order:
                                 if not bool(record["trial_valid"][action, repeat]):
@@ -368,11 +391,14 @@ def main(args: argparse.Namespace) -> None:
             summary = {
                 "status": "complete", "num_roots": sum(counts.values()), "num_branches": completed_branches,
                 "train_roots": counts["train"], "early_roots": counts["early"],
-                "source_episode_budget": 100, "branch_budget": 600, "no_eligible_episodes": no_eligible,
-                "branch_order": list(BRANCH_NAMES), "feature_dim": 457, "fresh_feature_start": 441,
-                "check_after": CHECK_AFTER, "gray_cache_used_by_model": False,
+                "source_episode_budget": sum(map(len, partitions.values())) * len(TASKS),
+                "branch_budget": sum(map(len, partitions.values())) * len(TASKS) * 2 * repeats,
+                "no_eligible_episodes": no_eligible,
+                "branch_order": list(BRANCH_NAMES), "feature_dim": builder.feature_dim,
+                "fresh_feature_start": builder.pre_feature_dim, "check_schedule": args.protocol,
+                "check_after": CHECK_AFTER if args.protocol == "fixed5" else None, "gray_cache_used_by_model": False,
                 "seed_formula": "chunk-start root seed + 100000000 + repeat * 20000000 + continuation call index",
-                "training_root_selection": "one reservoir-sampled nonterminal k5 state per complete A episode",
+                "training_root_selection": "one reservoir-sampled nonterminal eligible scheduled state per complete A episode",
             }
             _write_json(output / "summary.json", summary)
             _write_json(status_path, summary)

@@ -1,0 +1,12 @@
+[
+  "/usr/bin/timeout",
+  "--signal=TERM",
+  "--kill-after=15s",
+  "13256",
+  "/root/autodl-tmp/acotvla/envs/acotvla-py311/bin/python",
+  "/root/autodl-tmp/acotvla/code/LightAcotVLA_2550b4b/scripts/train_execution_horizon_midchunk.py",
+  "--data-dir",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round1/collection",
+  "--output-dir",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round1/training"
+]

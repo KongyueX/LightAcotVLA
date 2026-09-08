@@ -1,0 +1,92 @@
+{
+  "branch_order": [
+    "continue",
+    "replan"
+  ],
+  "branches": [
+    {
+      "action": 0,
+      "calls": 9,
+      "choice": "continue",
+      "policy": 0.9879829175770283,
+      "repeat": 0,
+      "root_physics_difference": 0.0,
+      "rpc": 1.098667861893773,
+      "segment_seconds": 3.8644334841519594,
+      "steps": 216,
+      "success": true
+    },
+    {
+      "action": 0,
+      "calls": 7,
+      "choice": "continue",
+      "policy": 0.7641644175164402,
+      "repeat": 1,
+      "root_physics_difference": 0.0,
+      "rpc": 0.8518424886278808,
+      "segment_seconds": 3.2816970529966056,
+      "steps": 172,
+      "success": true
+    },
+    {
+      "action": 0,
+      "calls": 4,
+      "choice": "continue",
+      "policy": 0.43724146438762546,
+      "repeat": 2,
+      "root_physics_difference": 0.0,
+      "rpc": 0.4852107409387827,
+      "segment_seconds": 1.9194632549770176,
+      "steps": 110,
+      "success": true
+    },
+    {
+      "action": 1,
+      "calls": 9,
+      "choice": "replan",
+      "policy": 0.9989054859615862,
+      "repeat": 0,
+      "root_physics_difference": 0.0,
+      "rpc": 1.1107019409537315,
+      "segment_seconds": 3.7996572041884065,
+      "steps": 204,
+      "success": true
+    },
+    {
+      "action": 1,
+      "calls": 8,
+      "choice": "replan",
+      "policy": 0.8810300957411528,
+      "repeat": 1,
+      "root_physics_difference": 0.0,
+      "rpc": 0.9816856663674116,
+      "segment_seconds": 3.468509328085929,
+      "steps": 190,
+      "success": true
+    },
+    {
+      "action": 1,
+      "calls": 8,
+      "choice": "replan",
+      "policy": 0.8798128548078239,
+      "repeat": 2,
+      "root_physics_difference": 0.0,
+      "rpc": 0.9793974915519357,
+      "segment_seconds": 3.2223882703110576,
+      "steps": 180,
+      "success": true
+    }
+  ],
+  "chunk_start_step": 300,
+  "continuation": "A for both choices",
+  "episode_id": 302,
+  "episode_step_limit": 1000,
+  "executed_in_chunk": 5,
+  "model_inputs": "raw_feature only; physics, terminal source outcome and gray caches are excluded",
+  "planned_h": 20,
+  "root_reconstruction": "fresh same-seed environment and complete recorded float32 action prefix",
+  "root_step": 305,
+  "status": "complete",
+  "task_id": 8,
+  "timing": "starts at midchunk after reconstruction; the already-paid chunk-start RPC is excluded"
+}

@@ -1,0 +1,18 @@
+[
+  "/usr/bin/timeout",
+  "--signal=TERM",
+  "--kill-after=15s",
+  "20432",
+  "/root/autodl-tmp/acotvla/envs/acotvla-py311/bin/python",
+  "/root/autodl-tmp/acotvla/code/LightAcotVLA_2550b4b/scripts/collect_execution_horizon_midchunk.py",
+  "--initial-state-bank",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1/initial_state_bank_0_365",
+  "--output-dir",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round1/collection",
+  "--host",
+  "localhost",
+  "--port",
+  "8040",
+  "--seed",
+  "97007"
+]

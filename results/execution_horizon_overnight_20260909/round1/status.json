@@ -1,0 +1,7 @@
+{
+  "finished_at": 1788903096.275781,
+  "reason": "Selected fresh monitor is identically continue; no new closed-loop policy to evaluate.",
+  "stage": "training",
+  "status": "awaiting_review",
+  "training_summary": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round1/training/summary.json"
+}

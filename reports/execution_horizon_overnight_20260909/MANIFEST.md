@@ -13,3 +13,7 @@
 | 20260909_033137 | experiment-bridge | refine-logs/EXPERIMENT_TRACKER_20260909_033137.md | implementation | Implementation complete |
 | 20260909_033137 | experiment-bridge | refine-logs/EXPERIMENT_TRACKER.md | implementation | Latest tracker |
 | 20260909_033426 | run-experiment | refine-logs/EXPERIMENT_TRACKER_20260909_033426.md | implementation | First real branches running, deadline enforced |
+| 20260909_061617 | research-pipeline | refine-logs/EXPERIMENT_PLAN_20260909_061617.md | implementation | Precommitted event experiment |
+| 20260909_061617 | research-pipeline | refine-logs/EXPERIMENT_PLAN.md | implementation | Latest plan |
+| 20260909_061617 | research-pipeline | refine-logs/EXPERIMENT_TRACKER.md | implementation | Round1 complete and round2 code ready |
+| 20260909_061617 | research-pipeline | refine-logs/round_1_results.md | implementation | Negative early selection with raw evidence |

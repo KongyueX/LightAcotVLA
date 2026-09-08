@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=pathlib.Path, required=True)
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
+    parser.add_argument("--protocol", choices=("fixed5", "gripper_event"), default="fixed5")
     return parser
 
 
@@ -36,7 +37,9 @@ def _write_json(path: pathlib.Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def load_split(directory: pathlib.Path, *, episode_ids: range) -> dict[str, Any]:
+def load_split(
+    directory: pathlib.Path, *, episode_ids: range, feature_dim: int = FEATURE_DIM, branch_repeats: int = 3,
+) -> dict[str, Any]:
     paths = sorted(directory.rglob("*.npz"))
     if not paths:
         raise ValueError(f"No closed mid-chunk roots in {directory}.")
@@ -51,10 +54,10 @@ def load_split(directory: pathlib.Path, *, episode_ids: range) -> dict[str, Any]
         success = np.asarray(record["trial_success"], dtype=np.float64)
         rpc = np.asarray(record["trial_rpc"], dtype=np.float64)
         valid = np.asarray(record["trial_valid"], dtype=bool)
-        if feature.shape != (FEATURE_DIM,) or not np.all(np.isfinite(feature)):
-            raise ValueError(f"Expected finite raw_feature[{FEATURE_DIM}] in {path}.")
-        if success.shape != (2, 3) or rpc.shape != success.shape or valid.shape != success.shape:
-            raise ValueError(f"Expected continue/replan by three paired repeats in {path}.")
+        if feature.shape != (feature_dim,) or not np.all(np.isfinite(feature)):
+            raise ValueError(f"Expected finite raw_feature[{feature_dim}] in {path}.")
+        if success.shape != (2, branch_repeats) or rpc.shape != success.shape or valid.shape != success.shape:
+            raise ValueError(f"Expected continue/replan by {branch_repeats} paired repeats in {path}.")
         paired = valid[0] & valid[1]
         if not paired.any():
             raise ValueError(f"Root has no valid paired outcomes: {path}.")
@@ -86,6 +89,7 @@ def load_split(directory: pathlib.Path, *, episode_ids: range) -> dict[str, Any]
         "identities": np.asarray([(record["task_id"], record["episode_id"], record["root_step"]) for record in records]),
         "summary": {
             "directory": str(directory.resolve()), "roots": len(records),
+            "feature_dim": feature_dim, "branch_repeats": branch_repeats,
             "roots_by_task": {str(task): sum(record["task_id"] == task for record in records) for task in range(10)},
             "episode_groups": [list(identity) for identity in identities],
             "paired_repeats": sum(record["success"].shape[1] for record in records),
@@ -141,8 +145,9 @@ def _copy_params(params: dict[str, Any]) -> dict[str, np.ndarray]:
 
 def train_variant(
     variant: str, training: dict[str, Any], early: dict[str, Any], mean: np.ndarray, std: np.ndarray, output: pathlib.Path,
+    *, check_schedule: str = "fixed5",
 ) -> tuple[MidchunkMonitor, dict[str, Any], dict[str, np.ndarray]]:
-    monitor = MidchunkMonitor.initialize(variant=variant, seed=SEED, threshold=0.0)
+    monitor = MidchunkMonitor.initialize(variant=variant, seed=SEED, threshold=0.0, check_schedule=check_schedule)
     monitor.feature_mean, monitor.feature_std = mean.copy(), std.copy()
     initial_params = _copy_params(monitor.params)
     output.mkdir()
@@ -215,6 +220,8 @@ def train_variant(
     })
     summary = {
         "status": "complete", "variant": variant, "updates": UPDATES, "best_step": best_step,
+        "check_schedule": monitor.check_schedule,
+        "feature_dim": monitor.feature_dim, "pre_feature_dim": monitor.pre_feature_dim,
         "initial_early": initial_metrics, "best_early_before_calibration": best_metrics,
         "last_early": metrics, "selected_train_mse": float(np.mean((selected_train_scores - training["targets"]) ** 2)),
         "selected_early_mse": float(np.mean((selected_early_scores - early["targets"]) ** 2)),
@@ -259,13 +266,25 @@ def main(args: argparse.Namespace) -> None:
     data_dir, output = args.data_dir.resolve(), args.output_dir.resolve()
     if output.exists() and any(output.iterdir()):
         raise ValueError("Use an empty output directory for the fixed mid-chunk training run.")
-    training = load_split(data_dir / "train", episode_ids=range(300, 308))
-    early = load_split(data_dir / "early", episode_ids=range(330, 332))
-    normalization = MidchunkMonitor.initialize(variant="fresh", seed=SEED)
+    normalization = MidchunkMonitor.initialize(variant="fresh", seed=SEED, check_schedule=args.protocol)
+    if args.protocol == "gripper_event":
+        train_episodes, early_episodes, branch_repeats = range(308, 313), range(332, 334), 2
+    else:
+        train_episodes, early_episodes, branch_repeats = range(300, 308), range(330, 332), 3
+    training = load_split(
+        data_dir / "train", episode_ids=train_episodes,
+        feature_dim=normalization.feature_dim, branch_repeats=branch_repeats,
+    )
+    early = load_split(
+        data_dir / "early", episode_ids=early_episodes,
+        feature_dim=normalization.feature_dim, branch_repeats=branch_repeats,
+    )
     normalization.fit_normalization(training["features"])
     output.mkdir(parents=True, exist_ok=True)
     contract = {
         "data_dir": str(data_dir), "updates_per_variant": UPDATES, "learning_rate": LEARNING_RATE,
+        "protocol": args.protocol, "feature_dim": normalization.feature_dim,
+        "pre_feature_dim": normalization.pre_feature_dim, "branch_repeats": branch_repeats,
         "batch_size": BATCH_SIZE, "seed": SEED, "log_every": LOG_EVERY,
         "target": "mean_paired[S_replan * (1 + .02*(C_continue-C_replan)/max(1 second,C_continue,C_replan)) - S_continue]",
         "time_bonus": TIME_BONUS, "critic": False, "normalization": "same train-only mean/std; masked tail16 cleared after normalization",
@@ -276,6 +295,7 @@ def main(args: argparse.Namespace) -> None:
     for variant in ("fresh", "masked"):
         trained[variant] = train_variant(
             variant, training, early, normalization.feature_mean, normalization.feature_std, output / variant,
+            check_schedule=args.protocol,
         )
     fresh_model, _, fresh_predictions = trained["fresh"]
     target_count = int(np.sum(fresh_predictions["early_gain"] > fresh_model.threshold))

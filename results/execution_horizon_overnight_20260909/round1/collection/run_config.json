@@ -1,0 +1,42 @@
+{
+  "NFE": [
+    10,
+    10
+  ],
+  "check_after": 5,
+  "host": "localhost",
+  "initial_state_bank": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1/initial_state_bank_0_365",
+  "num_steps_wait": 10,
+  "partitions": {
+    "early": [
+      330,
+      331
+    ],
+    "train": [
+      300,
+      301,
+      302,
+      303,
+      304,
+      305,
+      306,
+      307
+    ]
+  },
+  "port": 8040,
+  "repeats": 3,
+  "resize_size": 224,
+  "seed": 97007,
+  "tasks": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ]
+}

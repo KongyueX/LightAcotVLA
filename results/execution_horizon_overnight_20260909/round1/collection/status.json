@@ -1,0 +1,20 @@
+{
+  "branch_budget": 600,
+  "branch_order": [
+    "continue",
+    "replan"
+  ],
+  "check_after": 5,
+  "early_roots": 20,
+  "feature_dim": 457,
+  "fresh_feature_start": 441,
+  "gray_cache_used_by_model": false,
+  "no_eligible_episodes": [],
+  "num_branches": 600,
+  "num_roots": 100,
+  "seed_formula": "chunk-start root seed + 100000000 + repeat * 20000000 + continuation call index",
+  "source_episode_budget": 100,
+  "status": "complete",
+  "train_roots": 80,
+  "training_root_selection": "one reservoir-sampled nonterminal k5 state per complete A episode"
+}

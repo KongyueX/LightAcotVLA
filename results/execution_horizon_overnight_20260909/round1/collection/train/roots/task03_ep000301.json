@@ -1,0 +1,92 @@
+{
+  "branch_order": [
+    "continue",
+    "replan"
+  ],
+  "branches": [
+    {
+      "action": 0,
+      "calls": 0,
+      "choice": "continue",
+      "policy": 0.0,
+      "repeat": 0,
+      "root_physics_difference": 0.0,
+      "rpc": 0.0,
+      "segment_seconds": 0.16231286339461803,
+      "steps": 12,
+      "success": true
+    },
+    {
+      "action": 0,
+      "calls": 0,
+      "choice": "continue",
+      "policy": 0.0,
+      "repeat": 1,
+      "root_physics_difference": 0.0,
+      "rpc": 0.0,
+      "segment_seconds": 0.16113025834783912,
+      "steps": 12,
+      "success": true
+    },
+    {
+      "action": 0,
+      "calls": 0,
+      "choice": "continue",
+      "policy": 0.0,
+      "repeat": 2,
+      "root_physics_difference": 0.0,
+      "rpc": 0.0,
+      "segment_seconds": 0.16351440083235502,
+      "steps": 12,
+      "success": true
+    },
+    {
+      "action": 1,
+      "calls": 1,
+      "choice": "replan",
+      "policy": 0.10925966687500477,
+      "repeat": 0,
+      "root_physics_difference": 0.0,
+      "rpc": 0.12251332122832537,
+      "segment_seconds": 0.24374359101057053,
+      "steps": 9,
+      "success": true
+    },
+    {
+      "action": 1,
+      "calls": 1,
+      "choice": "replan",
+      "policy": 0.11236717505380511,
+      "repeat": 1,
+      "root_physics_difference": 0.0,
+      "rpc": 0.12620829418301582,
+      "segment_seconds": 0.28081187419593334,
+      "steps": 11,
+      "success": true
+    },
+    {
+      "action": 1,
+      "calls": 1,
+      "choice": "replan",
+      "policy": 0.11075281724333763,
+      "repeat": 2,
+      "root_physics_difference": 0.0,
+      "rpc": 0.12362010218203068,
+      "segment_seconds": 0.2594781988300383,
+      "steps": 10,
+      "success": true
+    }
+  ],
+  "chunk_start_step": 215,
+  "continuation": "A for both choices",
+  "episode_id": 301,
+  "episode_step_limit": 1000,
+  "executed_in_chunk": 5,
+  "model_inputs": "raw_feature only; physics, terminal source outcome and gray caches are excluded",
+  "planned_h": 25,
+  "root_reconstruction": "fresh same-seed environment and complete recorded float32 action prefix",
+  "root_step": 220,
+  "status": "complete",
+  "task_id": 3,
+  "timing": "starts at midchunk after reconstruction; the already-paid chunk-start RPC is excluded"
+}

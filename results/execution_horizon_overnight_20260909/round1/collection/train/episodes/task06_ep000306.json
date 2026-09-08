@@ -1,0 +1,11 @@
+{
+  "eligible_chunks": 10,
+  "episode_id": 306,
+  "sampling": "one uniform reservoir over nonterminal H>5 chunks after exactly five executed actions",
+  "source_calls": 11,
+  "source_seconds": 6.8061478291638196,
+  "source_steps": 221,
+  "source_success": true,
+  "status": "complete",
+  "task_id": 6
+}

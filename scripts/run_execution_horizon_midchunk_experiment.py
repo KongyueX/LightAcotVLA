@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 from datetime import datetime
+from fractions import Fraction
 import json
 import pathlib
 import sys
@@ -29,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=pathlib.Path, required=True)
     parser.add_argument("--initial-state-bank", type=pathlib.Path, required=True)
     parser.add_argument("--deadline-utc", required=True)
+    parser.add_argument("--protocol", choices=("fixed5", "gripper_event"), default="fixed5")
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=8040)
     return parser
@@ -80,8 +82,8 @@ def summarize(directory: pathlib.Path) -> dict:
             record["checks"] += int(info["midchunk_checked"])
             record["replans"] += int(info["replanned_early"])
             record["monitor_ms"] += float(info.get("midchunk_monitor_ms", 0.0))
-            if info["replanned_early"] and int(row["execution_horizon"]) != 5:
-                raise ValueError("A first-version midchunk replan must occur after five executed actions.")
+            if info["replanned_early"] and int(row["execution_horizon"]) != info["midchunk_check_after"]:
+                raise ValueError("A midchunk replan must occur at its scheduled execution step.")
     for record in monitor.values():
         record["trigger_fraction"] = record["replans"] / record["checks"] if record["checks"] else 0.0
         record["monitor_ms_per_episode"] = record["monitor_ms"] / len(keys)
@@ -98,17 +100,25 @@ def main(args: argparse.Namespace) -> None:
     collect = args.output_dir / "collection"
     training = args.output_dir / "training"
     development = args.output_dir / "development"
-    notify(args.output_dir, "start", "六小时研究第一轮已启动：chunk内第5步的新proprio决定继续/重规划。先采最多80训练+20early状态、两分支各3次，训练fresh/masked小头；A与VLA冻结，所有worker受09:12截止时间约束。")
+    event_protocol = args.protocol == "gripper_event"
+    start_message = (
+        "事件对齐研究已启动：夹爪命令转换至少2动作后，在后续5步档位读取新proprio。预定50训练+20early源episode、每root两分支各2次，上限280分支；按锁定early规则决定是否值得完整开发对照。"
+        if event_protocol else
+        "固定k5研究已启动：先采最多80训练+20early状态、两分支各3次，训练fresh/masked小头。"
+    )
+    notify(args.output_dir, "start", start_message + "A与VLA冻结，所有worker受09:12截止时间约束。")
     try:
         bounded_stage(args, "collect", [
             sys.executable, str(args.code_dir / "scripts/collect_execution_horizon_midchunk.py"),
             "--initial-state-bank", str(args.initial_state_bank), "--output-dir", str(collect),
-            "--host", args.host, "--port", str(args.port), "--seed", "97007",
+            "--host", args.host, "--port", str(args.port), "--seed", "107007" if event_protocol else "97007",
+            "--protocol", args.protocol,
         ])
         notify(args.output_dir, "collection_complete", "第一轮中段continue/replan配对采集完成，进入两个冻结基线之上的轻量小头训练与early选模。")
         bounded_stage(args, "train", [
             sys.executable, str(args.code_dir / "scripts/train_execution_horizon_midchunk.py"),
             "--data-dir", str(collect), "--output-dir", str(training),
+            "--protocol", args.protocol,
         ])
         training_summary = json.loads((training / "summary.json").read_text())
         from openpi.execution_horizon.midchunk import MidchunkMonitor
@@ -122,6 +132,25 @@ def main(args: argparse.Namespace) -> None:
             })
             notify(args.output_dir, "fresh_zero_selected", "early选择了恒定继续执行的fresh模型，尚无新的闭环策略。本轮训练与标签保留，先交结果复盘，不重复评测等同A的零输出模型，也不据此否定新反馈方向。")
             return
+        if event_protocol:
+            fresh_info = training_summary["variants"]["fresh"]
+            masked_info = training_summary["variants"]["masked"]
+
+            def early_score(info: dict) -> tuple[Fraction, float]:
+                fraction = info["success_fraction"]
+                return Fraction(fraction["numerator"], fraction["denominator"]), -info["root_equal_rpc_seconds"]
+
+            if not (
+                early_score(fresh_info["early"]) > early_score(fresh_info["initial_early"])
+                and early_score(fresh_info["early"]) > early_score(masked_info["early"])
+            ):
+                write_json(args.output_dir / "status.json", {
+                    "status": "awaiting_review", "stage": "training",
+                    "reason": "Event fresh model did not improve over both continue and trigger-matched masked on locked early states.",
+                    "training_summary": str(training / "summary.json"), "finished_at": time.time(),
+                })
+                notify(args.output_dir, "event_early_not_qualified", "事件fresh未在锁定early状态上同时优于continue与触发匹配masked，先保留原始结果并进入复盘，不自动扩展开发、强选末步或使用预留集。")
+                return
         notify(args.output_dir, "training_complete", "fresh/masked小头训练与early锁模完成；接下来使用同100开发初态比较原A与两个中段监视器，全部实际成本计入闭环。")
         if args.deadline_epoch - time.time() < 3600:
             write_json(args.output_dir / "status.json", {
@@ -147,13 +176,13 @@ def main(args: argparse.Namespace) -> None:
         analysis = summarize(development)
         write_json(args.output_dir / "summary.json", {
             "status": "complete", "training": training_summary, "development": analysis,
-            "deadline_utc": args.deadline_utc,
+            "deadline_utc": args.deadline_utc, "protocol": args.protocol,
         })
         write_json(args.output_dir / "status.json", {
             "status": "awaiting_review", "stage": "development", "finished_at": time.time(),
             "summary": str(args.output_dir / "summary.json"),
         })
-        lines = ["第一轮三组开发闭环完成，等待一次结果复盘："]
+        lines = [f"{args.protocol}三组开发闭环完成，等待一次结果复盘："]
         for mode, row in analysis["runs"].items():
             means = row["means"]
             lines.append(f"{mode}: {row['success_count']}/100成功，RPC {means['policy_rpc_wall_total_ms']/1000:.3f}秒，整局 {means['actual_episode_elapsed_total_ms']/1000:.3f}秒。")
