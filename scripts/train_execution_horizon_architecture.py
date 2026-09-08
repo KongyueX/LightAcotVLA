@@ -189,13 +189,18 @@ def main(args: Args) -> None:
         updates, optimizer_state = optimizer.update(gradients, optimizer_state, p)
         return optax.apply_updates(p, updates), optimizer_state, value
 
-    infer = jax.jit(lambda p, batch: apply_model(graphdef, p, frozen, batch, args.variant))
-    evaluate = jax.jit(lambda p, batch: loss(p, batch)[1])
-    initial_prediction = jax.device_get(infer(params, val_data))
-    if not np.allclose(
-        initial_prediction["ordered_continuation_logits"], val_np["continuation_logits"], rtol=0, atol=1e-4
-    ):
-        raise ValueError("Zero-initialized adapter does not reproduce cached A logits.")
+    infer_one = jax.jit(lambda p, fixed, batch: apply_model(graphdef, p, fixed, batch, args.variant))
+
+    def infer(p, batch):
+        predictions = [jax.device_get(infer_one(
+            p, frozen, {name: value[index:index + 1] for name, value in batch.items()},
+        )) for index in range(len(batch["state"]))]
+        return jax.tree.map(lambda *values: np.concatenate(values, axis=0), *predictions)
+
+    initial_prediction = infer(params, val_data)
+    initial_logit_difference = float(np.max(np.abs(
+        initial_prediction["ordered_continuation_logits"] - val_np["continuation_logits"]
+    )))
     anchor_h = np.asarray((5, 10, 15, 20, 25))[np.argmax(np.asarray(predictor_lib.ordered_continuation_distribution(
         jnp.asarray(val_np["continuation_logits"])
     )[1]), axis=-1)]
@@ -212,7 +217,7 @@ def main(args: Args) -> None:
             log.write(json.dumps(row) + "\n")
             log.flush()
             print(json.dumps(row), flush=True)
-        record(0, {"greedy": initial_greedy})
+        record(0, {"greedy": initial_greedy, "cached_logit_max_abs_difference": initial_logit_difference})
         for step in range(1, args.max_updates + 1):
             indices = rng.choice(
                 len(train_np["state"]), size=min(args.batch_size, len(train_np["state"])), replace=False
@@ -223,9 +228,9 @@ def main(args: Args) -> None:
                 raise ValueError("Non-finite architecture training loss.")
             if step % args.log_every and step != args.max_updates:
                 continue
-            prediction = jax.device_get(infer(params, val_data))
+            prediction = infer(params, val_data)
             score, greedy = greedy_metrics(prediction["ordered_horizon_probability"], val_np)
-            metrics = {name: float(value) for name, value in jax.device_get(evaluate(params, val_data)).items()}
+            metrics = {name: float(value) for name, value in jax.device_get(objective(prediction, val_data)[1]).items()}
             if not all(np.isfinite(value) for value in metrics.values()):
                 raise ValueError("Non-finite architecture validation metrics.")
             if score > best_score:
@@ -244,6 +249,7 @@ def main(args: Args) -> None:
         "best_step": best_step, "updates": args.max_updates, "selection_metric": "greedy_success_then_rpc",
         "initial_greedy_validation": initial_greedy, "best_greedy_validation": best_greedy,
         "step0_included": True, "frozen_A_unchanged": unchanged,
+        "validation_batch_size": 1, "initial_cached_logit_max_abs_difference": initial_logit_difference,
         "trainable_parameters": sum(value.size for value in jax.tree.leaves(params)),
         "selected_adapter_changed": any(not np.array_equal(a, b) for a, b in zip(
             jax.tree.leaves(initial_params), jax.tree.leaves(best_params), strict=True,

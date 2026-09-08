@@ -200,7 +200,7 @@ def execute(args):
         feedback.notify(args.output_dir, "features_complete", "360个root的特征与9000条配对分支结果采集完成，输入和标签来自相同真实调用。开始两个独立零增量模块训练，各固定650次更新，step0参与部署greedy选模。")
         for variant in ("visual_query", "expert_hidden"):
             run_stage(args, f"train_{variant}", [
-                args.python, str(args.code_dir / "scripts/train_execution_horizon_architecture.py"),
+                args.python, str(pathlib.Path(__file__).with_name("train_execution_horizon_architecture.py")),
                 "--train-dir", str(args.output_dir / "features_train"),
                 "--validation-dir", str(args.output_dir / "features_early_stop"),
                 "--a-predictor-dir", str(args.a_predictor_dir), "--output-dir", str(args.output_dir / f"training_{variant}"),
