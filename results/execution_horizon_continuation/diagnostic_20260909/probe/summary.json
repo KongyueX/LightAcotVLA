@@ -1,0 +1,2332 @@
+{
+  "actual_policy_requests": 2779,
+  "aggregate": {
+    "delta_A": 3,
+    "delta_C": 3,
+    "interaction": 0,
+    "mean_delta_A": 0.05263157894736842,
+    "mean_delta_C": 0.05263157894736842,
+    "mean_interaction": 0.0,
+    "success_counts": {
+      "AA": 52,
+      "AC": 50,
+      "CA": 55,
+      "CC": 53
+    },
+    "trials_per_cell": 57
+  },
+  "definitions": {
+    "cell_order": "first H source, then continuation policy; A=original A, C=current step200",
+    "delta_A": "success(C first H, A continuation) minus success(A first H, A continuation)",
+    "delta_C": "success(C first H, C continuation) minus success(A first H, C continuation)",
+    "full_seconds": "live continuation segment walltime plus shared root RPC and root selector time",
+    "harmful_reversal": "delta_A > 0 and delta_C < 0",
+    "interaction": "delta_C minus delta_A",
+    "strict_reversal": "delta_A * delta_C < 0"
+  },
+  "diagnostic_only": true,
+  "different_sign_tasks": [
+    3,
+    6,
+    8
+  ],
+  "episodes": [
+    {
+      "a_h": 20,
+      "c_h": 25,
+      "episode_id": 300,
+      "source_calls": 6,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.7539060083217919,
+      "source_seconds": 5.4183549750596285,
+      "source_steps": 105,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 0
+    },
+    {
+      "a_h": 15,
+      "c_h": 20,
+      "episode_id": 301,
+      "source_calls": 2,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.20280288020148873,
+      "source_seconds": 3.671165610663593,
+      "source_steps": 35,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 0
+    },
+    {
+      "episode_id": 302,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 0
+    },
+    {
+      "episode_id": 303,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 0
+    },
+    {
+      "a_h": 15,
+      "c_h": 20,
+      "episode_id": 300,
+      "source_calls": 15,
+      "source_policy": "A",
+      "source_rpc_seconds": 1.7540650498121977,
+      "source_seconds": 7.636502862907946,
+      "source_steps": 170,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 1
+    },
+    {
+      "a_h": 15,
+      "c_h": 5,
+      "episode_id": 301,
+      "source_calls": 5,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.624866686295718,
+      "source_seconds": 4.895918989088386,
+      "source_steps": 80,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 1
+    },
+    {
+      "episode_id": 302,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 1
+    },
+    {
+      "episode_id": 303,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 1
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "episode_id": 300,
+      "source_calls": 4,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.49402191303670406,
+      "source_seconds": 2.701108899898827,
+      "source_steps": 80,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 2
+    },
+    {
+      "episode_id": 301,
+      "source_calls": 10,
+      "source_policy": "A",
+      "source_rpc_seconds": 1.2202511369250715,
+      "source_seconds": 5.352562475018203,
+      "source_steps": 247,
+      "source_terminal_success": true,
+      "status": "no_disagreement",
+      "task_id": 2
+    },
+    {
+      "episode_id": 302,
+      "source_calls": 10,
+      "source_policy": "A",
+      "source_rpc_seconds": 1.2066207695752382,
+      "source_seconds": 5.281214997172356,
+      "source_steps": 241,
+      "source_terminal_success": true,
+      "status": "no_disagreement",
+      "task_id": 2
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "episode_id": 303,
+      "source_calls": 3,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.3453954644501209,
+      "source_seconds": 2.2762084743008018,
+      "source_steps": 55,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 2
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "episode_id": 300,
+      "source_calls": 2,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.2522709905169904,
+      "source_seconds": 2.5064078117720783,
+      "source_steps": 35,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 3
+    },
+    {
+      "a_h": 10,
+      "c_h": 25,
+      "episode_id": 301,
+      "source_calls": 5,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.5642301044426858,
+      "source_seconds": 3.6360467821359634,
+      "source_steps": 105,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 3
+    },
+    {
+      "episode_id": 302,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 3
+    },
+    {
+      "episode_id": 303,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 3
+    },
+    {
+      "a_h": 25,
+      "c_h": 15,
+      "episode_id": 300,
+      "source_calls": 7,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.7272204104810953,
+      "source_seconds": 6.479464347939938,
+      "source_steps": 125,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 4
+    },
+    {
+      "episode_id": 301,
+      "source_calls": 11,
+      "source_policy": "A",
+      "source_rpc_seconds": 1.264422762207687,
+      "source_seconds": 8.30995163694024,
+      "source_steps": 224,
+      "source_terminal_success": true,
+      "status": "no_disagreement",
+      "task_id": 4
+    },
+    {
+      "episode_id": 302,
+      "source_calls": 12,
+      "source_policy": "A",
+      "source_rpc_seconds": 1.4431255925446749,
+      "source_seconds": 8.634165085852146,
+      "source_steps": 231,
+      "source_terminal_success": true,
+      "status": "no_disagreement",
+      "task_id": 4
+    },
+    {
+      "a_h": 15,
+      "c_h": 5,
+      "episode_id": 303,
+      "source_calls": 9,
+      "source_policy": "A",
+      "source_rpc_seconds": 1.1391884521581233,
+      "source_seconds": 7.619304888881743,
+      "source_steps": 175,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 4
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "episode_id": 300,
+      "source_calls": 3,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.36345244478434324,
+      "source_seconds": 2.9809944918379188,
+      "source_steps": 60,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 5
+    },
+    {
+      "episode_id": 301,
+      "source_calls": 8,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.9740289533510804,
+      "source_seconds": 5.1351354592479765,
+      "source_steps": 201,
+      "source_terminal_success": true,
+      "status": "no_disagreement",
+      "task_id": 5
+    },
+    {
+      "episode_id": 302,
+      "source_calls": 7,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.8732064883224666,
+      "source_seconds": 4.4703004020266235,
+      "source_steps": 157,
+      "source_terminal_success": true,
+      "status": "no_disagreement",
+      "task_id": 5
+    },
+    {
+      "episode_id": 303,
+      "source_calls": 8,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.9513349249027669,
+      "source_seconds": 4.849705426953733,
+      "source_steps": 178,
+      "source_terminal_success": true,
+      "status": "no_disagreement",
+      "task_id": 5
+    },
+    {
+      "episode_id": 300,
+      "source_calls": 11,
+      "source_policy": "A",
+      "source_rpc_seconds": 1.2736421972513199,
+      "source_seconds": 6.669418937992305,
+      "source_steps": 225,
+      "source_terminal_success": true,
+      "status": "no_disagreement",
+      "task_id": 6
+    },
+    {
+      "a_h": 10,
+      "c_h": 15,
+      "episode_id": 301,
+      "source_calls": 4,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.46577387722209096,
+      "source_seconds": 4.071815862786025,
+      "source_steps": 75,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 6
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "episode_id": 302,
+      "source_calls": 3,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.35163610707968473,
+      "source_seconds": 3.717170799151063,
+      "source_steps": 50,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 6
+    },
+    {
+      "episode_id": 303,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 6
+    },
+    {
+      "a_h": 5,
+      "c_h": 25,
+      "episode_id": 300,
+      "source_calls": 19,
+      "source_policy": "A",
+      "source_rpc_seconds": 2.254842260386795,
+      "source_seconds": 8.248969624284655,
+      "source_steps": 275,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 7
+    },
+    {
+      "a_h": 25,
+      "c_h": 5,
+      "episode_id": 301,
+      "source_calls": 5,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.6102969320490956,
+      "source_seconds": 3.9969674949534237,
+      "source_steps": 80,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 7
+    },
+    {
+      "episode_id": 302,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 7
+    },
+    {
+      "episode_id": 303,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 7
+    },
+    {
+      "a_h": 20,
+      "c_h": 25,
+      "episode_id": 300,
+      "source_calls": 2,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.258589721750468,
+      "source_seconds": 2.0302108014002442,
+      "source_steps": 30,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 8
+    },
+    {
+      "a_h": 20,
+      "c_h": 25,
+      "episode_id": 301,
+      "source_calls": 6,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.7456501773558557,
+      "source_seconds": 3.7701301490888,
+      "source_steps": 135,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 8
+    },
+    {
+      "episode_id": 302,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 8
+    },
+    {
+      "episode_id": 303,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 8
+    },
+    {
+      "a_h": 20,
+      "c_h": 5,
+      "episode_id": 300,
+      "source_calls": 6,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.712198069319129,
+      "source_seconds": 4.472361417021602,
+      "source_steps": 135,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 9
+    },
+    {
+      "a_h": 20,
+      "c_h": 5,
+      "episode_id": 301,
+      "source_calls": 6,
+      "source_policy": "A",
+      "source_rpc_seconds": 0.7353046229109168,
+      "source_seconds": 4.379419501870871,
+      "source_steps": 125,
+      "source_terminal_success": null,
+      "status": "found_root",
+      "task_id": 9
+    },
+    {
+      "episode_id": 302,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 9
+    },
+    {
+      "episode_id": 303,
+      "status": "not_attempted_task_root_cap",
+      "task_id": 9
+    }
+  ],
+  "harmful_reversal_roots": [],
+  "harmful_reversal_tasks": [],
+  "no_disagreement_episodes": [
+    [
+      2,
+      301
+    ],
+    [
+      2,
+      302
+    ],
+    [
+      4,
+      301
+    ],
+    [
+      4,
+      302
+    ],
+    [
+      5,
+      301
+    ],
+    [
+      5,
+      302
+    ],
+    [
+      5,
+      303
+    ],
+    [
+      6,
+      300
+    ]
+  ],
+  "nonnegative_to_harmful_roots": [
+    [
+      3,
+      300
+    ]
+  ],
+  "num_branches": 228,
+  "num_roots": 19,
+  "root_results": [
+    {
+      "a_h": 20,
+      "c_h": 25,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 9.666666666666666,
+            "full_seconds": 4.810082490866383,
+            "policy_seconds": 1.0309487728712459,
+            "rpc_seconds": 1.137830018531531,
+            "steps": 189.33333333333334
+          },
+          "AC": {
+            "calls": 9.666666666666666,
+            "full_seconds": 4.878915598305563,
+            "policy_seconds": 1.0812928494997323,
+            "rpc_seconds": 1.2022104471301038,
+            "steps": 190.0
+          },
+          "CA": {
+            "calls": 9.0,
+            "full_seconds": 4.34132448847716,
+            "policy_seconds": 0.9735015714541078,
+            "rpc_seconds": 1.0780964774700503,
+            "steps": 177.0
+          },
+          "CC": {
+            "calls": 9.333333333333334,
+            "full_seconds": 4.4635505876503885,
+            "policy_seconds": 1.025553966872394,
+            "rpc_seconds": 1.1388588353681068,
+            "steps": 180.66666666666666
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 105,
+      "task_id": 0
+    },
+    {
+      "a_h": 15,
+      "c_h": 20,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 14.0,
+            "full_seconds": 6.7904999647289515,
+            "policy_seconds": 1.4541142972496648,
+            "rpc_seconds": 1.6012102913421888,
+            "steps": 269.6666666666667
+          },
+          "AC": {
+            "calls": 13.333333333333334,
+            "full_seconds": 6.476638694604238,
+            "policy_seconds": 1.4468661188147962,
+            "rpc_seconds": 1.6034543264346819,
+            "steps": 256.0
+          },
+          "CA": {
+            "calls": 15.666666666666666,
+            "full_seconds": 7.470263036433607,
+            "policy_seconds": 1.677758058377852,
+            "rpc_seconds": 1.8429303836698334,
+            "steps": 304.6666666666667
+          },
+          "CC": {
+            "calls": 12.0,
+            "full_seconds": 5.95088885895287,
+            "policy_seconds": 1.289206809985141,
+            "rpc_seconds": 1.431048961977164,
+            "steps": 238.66666666666666
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 301,
+      "root_step": 35,
+      "task_id": 0
+    },
+    {
+      "a_h": 15,
+      "c_h": 20,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 6.0,
+            "full_seconds": 2.100115308072418,
+            "policy_seconds": 0.6447790145563582,
+            "rpc_seconds": 0.709841321532925,
+            "steps": 78.66666666666667
+          },
+          "AC": {
+            "calls": 6.0,
+            "full_seconds": 2.088929526042193,
+            "policy_seconds": 0.6389938875411948,
+            "rpc_seconds": 0.704990747384727,
+            "steps": 78.0
+          },
+          "CA": {
+            "calls": 4.0,
+            "full_seconds": 1.7641834767224889,
+            "policy_seconds": 0.42464589575926465,
+            "rpc_seconds": 0.4704370133889218,
+            "steps": 73.33333333333333
+          },
+          "CC": {
+            "calls": 4.0,
+            "full_seconds": 1.8289766917005181,
+            "policy_seconds": 0.43371119536459446,
+            "rpc_seconds": 0.47827206427852315,
+            "steps": 73.33333333333333
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 170,
+      "task_id": 1
+    },
+    {
+      "a_h": 15,
+      "c_h": 5,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 16.333333333333332,
+            "full_seconds": 5.226315016703059,
+            "policy_seconds": 1.7647629658070703,
+            "rpc_seconds": 1.9564322602624695,
+            "steps": 186.66666666666666
+          },
+          "AC": {
+            "calls": 17.333333333333332,
+            "full_seconds": 5.183881511135648,
+            "policy_seconds": 1.7890502529529233,
+            "rpc_seconds": 1.9701656053463619,
+            "steps": 184.33333333333334
+          },
+          "CA": {
+            "calls": 19.666666666666668,
+            "full_seconds": 5.548676406654219,
+            "policy_seconds": 2.0851536809156337,
+            "rpc_seconds": 2.3045740237769983,
+            "steps": 184.0
+          },
+          "CC": {
+            "calls": 19.0,
+            "full_seconds": 5.505904892925173,
+            "policy_seconds": 1.9854720020666718,
+            "rpc_seconds": 2.200556746373574,
+            "steps": 186.66666666666666
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 301,
+      "root_step": 80,
+      "task_id": 1
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 8.666666666666666,
+            "full_seconds": 3.4371067509055138,
+            "policy_seconds": 0.9537535865480701,
+            "rpc_seconds": 1.0565406953295071,
+            "steps": 202.33333333333334
+          },
+          "AC": {
+            "calls": 8.666666666666666,
+            "full_seconds": 3.43661731434986,
+            "policy_seconds": 0.955411173713704,
+            "rpc_seconds": 1.0605081875498097,
+            "steps": 202.33333333333334
+          },
+          "CA": {
+            "calls": 8.333333333333334,
+            "full_seconds": 3.288031448920568,
+            "policy_seconds": 0.9101474919977287,
+            "rpc_seconds": 1.0095062456093729,
+            "steps": 193.0
+          },
+          "CC": {
+            "calls": 8.333333333333334,
+            "full_seconds": 3.290143760231634,
+            "policy_seconds": 0.8830798471656939,
+            "rpc_seconds": 0.9732400771851341,
+            "steps": 193.0
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 80,
+      "task_id": 2
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 9.0,
+            "full_seconds": 3.6096059757595262,
+            "policy_seconds": 0.9666304481215775,
+            "rpc_seconds": 1.0704804649576545,
+            "steps": 214.0
+          },
+          "AC": {
+            "calls": 9.0,
+            "full_seconds": 3.604073721760263,
+            "policy_seconds": 0.9830186793891093,
+            "rpc_seconds": 1.0922426704006891,
+            "steps": 214.0
+          },
+          "CA": {
+            "calls": 9.0,
+            "full_seconds": 3.574679491420587,
+            "policy_seconds": 0.9728779918514192,
+            "rpc_seconds": 1.075430918795367,
+            "steps": 209.33333333333334
+          },
+          "CC": {
+            "calls": 9.0,
+            "full_seconds": 3.5628055247167745,
+            "policy_seconds": 0.9932940990353624,
+            "rpc_seconds": 1.1030637381287913,
+            "steps": 209.33333333333334
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 303,
+      "root_step": 55,
+      "task_id": 2
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 10.0,
+            "full_seconds": 3.759374328268071,
+            "policy_seconds": 1.0737237140225868,
+            "rpc_seconds": 1.1831642598845065,
+            "steps": 204.0
+          },
+          "AC": {
+            "calls": 11.666666666666666,
+            "full_seconds": 4.164176054298878,
+            "policy_seconds": 1.2571768349347014,
+            "rpc_seconds": 1.3876965334638953,
+            "steps": 213.66666666666666
+          },
+          "CA": {
+            "calls": 10.0,
+            "full_seconds": 3.828640232949207,
+            "policy_seconds": 1.084769939382871,
+            "rpc_seconds": 1.1980993451240163,
+            "steps": 205.66666666666666
+          },
+          "CC": {
+            "calls": 22.666666666666668,
+            "full_seconds": 8.708055793307722,
+            "policy_seconds": 2.4273266276965537,
+            "rpc_seconds": 2.677252307223777,
+            "steps": 457.0
+          }
+        },
+        "delta_A": 0,
+        "delta_C": -1,
+        "harmful_reversal": false,
+        "interaction": -1,
+        "nonnegative_to_harmful": true,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": -1,
+            "interaction": -1,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 0
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": false,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 2
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 35,
+      "task_id": 3
+    },
+    {
+      "a_h": 10,
+      "c_h": 25,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 7.0,
+            "full_seconds": 2.6598134455271065,
+            "policy_seconds": 0.7607540097087622,
+            "rpc_seconds": 0.8404414732940495,
+            "steps": 137.66666666666666
+          },
+          "AC": {
+            "calls": 8.0,
+            "full_seconds": 2.5790686390052238,
+            "policy_seconds": 0.840285477694124,
+            "rpc_seconds": 0.9209835167663792,
+            "steps": 127.66666666666667
+          },
+          "CA": {
+            "calls": 6.0,
+            "full_seconds": 2.475156511180103,
+            "policy_seconds": 0.6647990983910859,
+            "rpc_seconds": 0.7384101290566226,
+            "steps": 130.66666666666666
+          },
+          "CC": {
+            "calls": 6.0,
+            "full_seconds": 2.452910015359521,
+            "policy_seconds": 0.6549532334320247,
+            "rpc_seconds": 0.7247279761359096,
+            "steps": 130.66666666666666
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 301,
+      "root_step": 105,
+      "task_id": 3
+    },
+    {
+      "a_h": 25,
+      "c_h": 15,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 5.0,
+            "full_seconds": 2.067499579396099,
+            "policy_seconds": 0.5463862549513578,
+            "rpc_seconds": 0.6084110545925796,
+            "steps": 99.66666666666667
+          },
+          "AC": {
+            "calls": 5.0,
+            "full_seconds": 2.041205400135368,
+            "policy_seconds": 0.5472336526339253,
+            "rpc_seconds": 0.6080179812076191,
+            "steps": 99.66666666666667
+          },
+          "CA": {
+            "calls": 5.0,
+            "full_seconds": 1.9763618426707883,
+            "policy_seconds": 0.5398501084807018,
+            "rpc_seconds": 0.5975944441743195,
+            "steps": 96.0
+          },
+          "CC": {
+            "calls": 5.0,
+            "full_seconds": 1.9961977304580312,
+            "policy_seconds": 0.5356069492797056,
+            "rpc_seconds": 0.5926539214948813,
+            "steps": 96.0
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 125,
+      "task_id": 4
+    },
+    {
+      "a_h": 15,
+      "c_h": 5,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 16.666666666666668,
+            "full_seconds": 7.01489258526514,
+            "policy_seconds": 1.7922745395141344,
+            "rpc_seconds": 1.9855604629653196,
+            "steps": 329.3333333333333
+          },
+          "AC": {
+            "calls": 16.666666666666668,
+            "full_seconds": 7.1208713206773,
+            "policy_seconds": 1.823608972132206,
+            "rpc_seconds": 2.0246957279741764,
+            "steps": 329.3333333333333
+          },
+          "CA": {
+            "calls": 5.0,
+            "full_seconds": 1.8866113897723455,
+            "policy_seconds": 0.5483131827786565,
+            "rpc_seconds": 0.6102808335175117,
+            "steps": 86.0
+          },
+          "CC": {
+            "calls": 5.0,
+            "full_seconds": 1.876691205582271,
+            "policy_seconds": 0.5468808192138871,
+            "rpc_seconds": 0.6088058984217545,
+            "steps": 86.0
+          }
+        },
+        "delta_A": 1,
+        "delta_C": 1,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 1,
+            "delta_C": 1,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 0,
+              "AC": 0,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 2,
+          "AC": 2,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 303,
+      "root_step": 175,
+      "task_id": 4
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 6.0,
+            "full_seconds": 2.080029022259017,
+            "policy_seconds": 0.6659120408197244,
+            "rpc_seconds": 0.7369629782624543,
+            "steps": 129.66666666666666
+          },
+          "AC": {
+            "calls": 6.0,
+            "full_seconds": 2.016026989246408,
+            "policy_seconds": 0.6521719723629454,
+            "rpc_seconds": 0.7225817772559822,
+            "steps": 129.66666666666666
+          },
+          "CA": {
+            "calls": 6.0,
+            "full_seconds": 2.161877683519075,
+            "policy_seconds": 0.6670406386256218,
+            "rpc_seconds": 0.7397468675238391,
+            "steps": 135.33333333333334
+          },
+          "CC": {
+            "calls": 6.0,
+            "full_seconds": 2.078658176896473,
+            "policy_seconds": 0.6646010392966369,
+            "rpc_seconds": 0.7381668793968856,
+            "steps": 135.33333333333334
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 60,
+      "task_id": 5
+    },
+    {
+      "a_h": 10,
+      "c_h": 15,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 21.333333333333332,
+            "full_seconds": 7.603039100921403,
+            "policy_seconds": 2.328562730612854,
+            "rpc_seconds": 2.580983986457189,
+            "steps": 413.6666666666667
+          },
+          "AC": {
+            "calls": 21.666666666666668,
+            "full_seconds": 7.617763560420523,
+            "policy_seconds": 2.360527145986756,
+            "rpc_seconds": 2.6140487636439502,
+            "steps": 413.6666666666667
+          },
+          "CA": {
+            "calls": 31.0,
+            "full_seconds": 9.125590533794215,
+            "policy_seconds": 3.2234655992748835,
+            "rpc_seconds": 3.5427243430167437,
+            "steps": 422.3333333333333
+          },
+          "CC": {
+            "calls": 13.666666666666666,
+            "full_seconds": 4.938045444587867,
+            "policy_seconds": 1.5000807605683804,
+            "rpc_seconds": 1.6643746617871027,
+            "steps": 249.66666666666666
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 1,
+        "harmful_reversal": false,
+        "interaction": 1,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 1,
+            "interaction": 1,
+            "repeat": 2,
+            "success": {
+              "AA": 0,
+              "AC": 0,
+              "CA": 0,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": false,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 2,
+          "AC": 2,
+          "CA": 2,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 301,
+      "root_step": 75,
+      "task_id": 6
+    },
+    {
+      "a_h": 25,
+      "c_h": 20,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 9.333333333333334,
+            "full_seconds": 3.2573826937004924,
+            "policy_seconds": 0.9704157887026668,
+            "rpc_seconds": 1.066131642088294,
+            "steps": 174.33333333333334
+          },
+          "AC": {
+            "calls": 8.666666666666666,
+            "full_seconds": 3.2487458546335497,
+            "policy_seconds": 0.9394910639772812,
+            "rpc_seconds": 1.0342474859207869,
+            "steps": 176.33333333333334
+          },
+          "CA": {
+            "calls": 9.333333333333334,
+            "full_seconds": 3.2978761585739753,
+            "policy_seconds": 0.9869769785242776,
+            "rpc_seconds": 1.0842678189898531,
+            "steps": 169.0
+          },
+          "CC": {
+            "calls": 9.666666666666666,
+            "full_seconds": 3.4463036973029375,
+            "policy_seconds": 1.0680554433104892,
+            "rpc_seconds": 1.1863114557539423,
+            "steps": 173.33333333333334
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 302,
+      "root_step": 50,
+      "task_id": 6
+    },
+    {
+      "a_h": 5,
+      "c_h": 25,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 9.0,
+            "full_seconds": 3.074464347989609,
+            "policy_seconds": 0.9929761216044426,
+            "rpc_seconds": 1.0964491243163745,
+            "steps": 158.66666666666666
+          },
+          "AC": {
+            "calls": 19.333333333333332,
+            "full_seconds": 6.703205029169719,
+            "policy_seconds": 2.0983900787929692,
+            "rpc_seconds": 2.317672705743462,
+            "steps": 366.0
+          },
+          "CA": {
+            "calls": 8.333333333333334,
+            "full_seconds": 2.9439466727587082,
+            "policy_seconds": 0.8858901613081495,
+            "rpc_seconds": 0.9772151997312903,
+            "steps": 158.0
+          },
+          "CC": {
+            "calls": 18.333333333333332,
+            "full_seconds": 6.914316929721584,
+            "policy_seconds": 2.009124436570952,
+            "rpc_seconds": 2.2236341734727225,
+            "steps": 349.0
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": -1,
+            "interaction": -1,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 0
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 1,
+            "interaction": 1,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 0,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 2,
+          "CA": 3,
+          "CC": 2
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 275,
+      "task_id": 7
+    },
+    {
+      "a_h": 25,
+      "c_h": 5,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 9.333333333333334,
+            "full_seconds": 3.200581379700452,
+            "policy_seconds": 1.009870344772935,
+            "rpc_seconds": 1.1173114678822458,
+            "steps": 168.0
+          },
+          "AC": {
+            "calls": 9.0,
+            "full_seconds": 3.2057082930890224,
+            "policy_seconds": 0.9819820613289872,
+            "rpc_seconds": 1.0874792157361906,
+            "steps": 171.33333333333334
+          },
+          "CA": {
+            "calls": 13.666666666666666,
+            "full_seconds": 3.685429494207104,
+            "policy_seconds": 1.4127215541278322,
+            "rpc_seconds": 1.5561550321678321,
+            "steps": 173.33333333333334
+          },
+          "CC": {
+            "calls": 14.333333333333334,
+            "full_seconds": 3.9552154815755785,
+            "policy_seconds": 1.5586716656883557,
+            "rpc_seconds": 1.72907970007509,
+            "steps": 177.33333333333334
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 301,
+      "root_step": 80,
+      "task_id": 7
+    },
+    {
+      "a_h": 20,
+      "c_h": 25,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 15.0,
+            "full_seconds": 6.207532606553286,
+            "policy_seconds": 1.6459598327055573,
+            "rpc_seconds": 1.824375796597451,
+            "steps": 339.6666666666667
+          },
+          "AC": {
+            "calls": 23.0,
+            "full_seconds": 9.981314403625825,
+            "policy_seconds": 2.5473126764409244,
+            "rpc_seconds": 2.8226597203562656,
+            "steps": 548.0
+          },
+          "CA": {
+            "calls": 14.666666666666666,
+            "full_seconds": 6.130470742161076,
+            "policy_seconds": 1.5872412991399567,
+            "rpc_seconds": 1.7534238298734028,
+            "steps": 338.6666666666667
+          },
+          "CC": {
+            "calls": 22.666666666666668,
+            "full_seconds": 9.30400122438247,
+            "policy_seconds": 2.4874249336620173,
+            "rpc_seconds": 2.754817826052507,
+            "steps": 549.0
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 1,
+            "interaction": 1,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 0,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": -1,
+            "interaction": -1,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 0
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 2,
+          "CA": 3,
+          "CC": 2
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 30,
+      "task_id": 8
+    },
+    {
+      "a_h": 20,
+      "c_h": 25,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 20.0,
+            "full_seconds": 8.608051075755307,
+            "policy_seconds": 2.228408328567942,
+            "rpc_seconds": 2.469414331174145,
+            "steps": 477.3333333333333
+          },
+          "AC": {
+            "calls": 12.0,
+            "full_seconds": 5.13380823067079,
+            "policy_seconds": 1.2979192822240293,
+            "rpc_seconds": 1.4397204437603552,
+            "steps": 283.6666666666667
+          },
+          "CA": {
+            "calls": 12.333333333333334,
+            "full_seconds": 5.199926694544653,
+            "policy_seconds": 1.341315486157934,
+            "rpc_seconds": 1.4834107231969635,
+            "steps": 283.0
+          },
+          "CC": {
+            "calls": 12.0,
+            "full_seconds": 5.097184197666745,
+            "policy_seconds": 1.2753764373871188,
+            "rpc_seconds": 1.4093915804599721,
+            "steps": 283.6666666666667
+          }
+        },
+        "delta_A": 1,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": -1,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 1,
+            "delta_C": 0,
+            "interaction": -1,
+            "repeat": 1,
+            "success": {
+              "AA": 0,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": false,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 2,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 301,
+      "root_step": 135,
+      "task_id": 8
+    },
+    {
+      "a_h": 20,
+      "c_h": 5,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 7.333333333333333,
+            "full_seconds": 2.941466826479882,
+            "policy_seconds": 0.8098613237962127,
+            "rpc_seconds": 0.8940162470874687,
+            "steps": 160.66666666666666
+          },
+          "AC": {
+            "calls": 7.0,
+            "full_seconds": 2.779527989216149,
+            "policy_seconds": 0.7515946780331433,
+            "rpc_seconds": 0.829742913444837,
+            "steps": 150.66666666666666
+          },
+          "CA": {
+            "calls": 9.333333333333334,
+            "full_seconds": 3.061410605131338,
+            "policy_seconds": 1.0234808994767566,
+            "rpc_seconds": 1.1307812829812367,
+            "steps": 152.0
+          },
+          "CC": {
+            "calls": 9.0,
+            "full_seconds": 2.9517472595907748,
+            "policy_seconds": 0.9811929385177791,
+            "rpc_seconds": 1.0850787401820223,
+            "steps": 148.0
+          }
+        },
+        "delta_A": 0,
+        "delta_C": 0,
+        "harmful_reversal": false,
+        "interaction": 0,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 0,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 1,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 0,
+            "interaction": 0,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 1,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 3,
+          "AC": 3,
+          "CA": 3,
+          "CC": 3
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 300,
+      "root_step": 135,
+      "task_id": 9
+    },
+    {
+      "a_h": 20,
+      "c_h": 5,
+      "effects": {
+        "cell_means": {
+          "AA": {
+            "calls": 30.666666666666668,
+            "full_seconds": 11.803170788877955,
+            "policy_seconds": 3.2407721329169967,
+            "rpc_seconds": 3.5727316035578647,
+            "steps": 652.6666666666666
+          },
+          "AC": {
+            "calls": 40.666666666666664,
+            "full_seconds": 15.735692080886414,
+            "policy_seconds": 4.294931339410444,
+            "rpc_seconds": 4.747554317271958,
+            "steps": 875.0
+          },
+          "CA": {
+            "calls": 23.333333333333332,
+            "full_seconds": 8.40378642998015,
+            "policy_seconds": 2.404511133674532,
+            "rpc_seconds": 2.646111491446694,
+            "steps": 441.6666666666667
+          },
+          "CC": {
+            "calls": 30.666666666666668,
+            "full_seconds": 11.567595712219676,
+            "policy_seconds": 3.2078810005138316,
+            "rpc_seconds": 3.5439132233150303,
+            "steps": 624.0
+          }
+        },
+        "delta_A": 1,
+        "delta_C": 2,
+        "harmful_reversal": false,
+        "interaction": 1,
+        "nonnegative_to_harmful": false,
+        "paired": [
+          {
+            "delta_A": 1,
+            "delta_C": 0,
+            "interaction": -1,
+            "repeat": 0,
+            "success": {
+              "AA": 0,
+              "AC": 0,
+              "CA": 1,
+              "CC": 0
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 1,
+            "interaction": 1,
+            "repeat": 1,
+            "success": {
+              "AA": 0,
+              "AC": 0,
+              "CA": 0,
+              "CC": 1
+            }
+          },
+          {
+            "delta_A": 0,
+            "delta_C": 1,
+            "interaction": 1,
+            "repeat": 2,
+            "success": {
+              "AA": 1,
+              "AC": 0,
+              "CA": 1,
+              "CC": 1
+            }
+          }
+        ],
+        "same_sign": true,
+        "strict_reversal": false,
+        "success_counts": {
+          "AA": 1,
+          "AC": 0,
+          "CA": 2,
+          "CC": 2
+        },
+        "trials_per_cell": 3
+      },
+      "episode_id": 301,
+      "root_step": 125,
+      "task_id": 9
+    }
+  ],
+  "same_sign_tasks": [
+    0,
+    1,
+    2,
+    4,
+    5,
+    7,
+    9
+  ],
+  "scope": [
+    "Only first-disagreement states reached by A on training IDs300-303; at most two roots per task.",
+    "No terminal-outcome selection; episodes without a disagreement and task-cap omissions are recorded.",
+    "Each branch reconstructs the full recorded prefix in a new same-seed environment without policy calls.",
+    "One A-service VLA response supplies both H choices; the saved root chunk and observation cache are shared.",
+    "Seeds pair by repeat and continuation call index; reconstruction time is excluded from branch timing.",
+    "These conditional counterfactual outcomes are not whole-policy success rates or generalization results."
+  ],
+  "status": "complete",
+  "strict_reversal_roots": [],
+  "strict_reversal_tasks": [],
+  "tasks": [
+    {
+      "delta_A": 0,
+      "delta_C": 0,
+      "harmful_reversal": false,
+      "interaction": 0,
+      "num_roots": 2,
+      "same_sign": true,
+      "strict_reversal": false,
+      "task_id": 0
+    },
+    {
+      "delta_A": 0,
+      "delta_C": 0,
+      "harmful_reversal": false,
+      "interaction": 0,
+      "num_roots": 2,
+      "same_sign": true,
+      "strict_reversal": false,
+      "task_id": 1
+    },
+    {
+      "delta_A": 0,
+      "delta_C": 0,
+      "harmful_reversal": false,
+      "interaction": 0,
+      "num_roots": 2,
+      "same_sign": true,
+      "strict_reversal": false,
+      "task_id": 2
+    },
+    {
+      "delta_A": 0,
+      "delta_C": -1,
+      "harmful_reversal": false,
+      "interaction": -1,
+      "num_roots": 2,
+      "same_sign": false,
+      "strict_reversal": false,
+      "task_id": 3
+    },
+    {
+      "delta_A": 1,
+      "delta_C": 1,
+      "harmful_reversal": false,
+      "interaction": 0,
+      "num_roots": 2,
+      "same_sign": true,
+      "strict_reversal": false,
+      "task_id": 4
+    },
+    {
+      "delta_A": 0,
+      "delta_C": 0,
+      "harmful_reversal": false,
+      "interaction": 0,
+      "num_roots": 1,
+      "same_sign": true,
+      "strict_reversal": false,
+      "task_id": 5
+    },
+    {
+      "delta_A": 0,
+      "delta_C": 1,
+      "harmful_reversal": false,
+      "interaction": 1,
+      "num_roots": 2,
+      "same_sign": false,
+      "strict_reversal": false,
+      "task_id": 6
+    },
+    {
+      "delta_A": 0,
+      "delta_C": 0,
+      "harmful_reversal": false,
+      "interaction": 0,
+      "num_roots": 2,
+      "same_sign": true,
+      "strict_reversal": false,
+      "task_id": 7
+    },
+    {
+      "delta_A": 1,
+      "delta_C": 0,
+      "harmful_reversal": false,
+      "interaction": -1,
+      "num_roots": 2,
+      "same_sign": false,
+      "strict_reversal": false,
+      "task_id": 8
+    },
+    {
+      "delta_A": 1,
+      "delta_C": 2,
+      "harmful_reversal": false,
+      "interaction": 1,
+      "num_roots": 2,
+      "same_sign": true,
+      "strict_reversal": false,
+      "task_id": 9
+    }
+  ]
+}

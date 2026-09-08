@@ -1,0 +1,14 @@
+[
+  "/root/autodl-tmp/acotvla/envs/acotvla-py311/bin/python",
+  "/root/autodl-tmp/acotvla/code/LightAcotVLA_140d6ea/scripts/probe_execution_horizon_continuation.py",
+  "--initial-state-bank",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1/initial_state_bank_0_365",
+  "--candidate-params",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/greedy_selection_9dca506/training_current/checkpoint.npz",
+  "--host",
+  "localhost",
+  "--port",
+  "8040",
+  "--output-dir",
+  "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/continuation_diagnosis_20260909_v1/probe"
+]

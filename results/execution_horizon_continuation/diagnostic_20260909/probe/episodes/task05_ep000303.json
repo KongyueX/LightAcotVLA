@@ -1,0 +1,11 @@
+{
+  "episode_id": 303,
+  "source_calls": 8,
+  "source_policy": "A",
+  "source_rpc_seconds": 0.9513349249027669,
+  "source_seconds": 4.849705426953733,
+  "source_steps": 178,
+  "source_terminal_success": true,
+  "status": "no_disagreement",
+  "task_id": 5
+}

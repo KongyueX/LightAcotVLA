@@ -1,6 +1,6 @@
 # A接力与候选接力：有界测试
 
-2026-09-09。按[迭代分析](execution_horizon_iteration_analysis.md)的第一优先级推进，先判断局部H收益是否依赖后续接力策略，再决定是否进行一次带A完整参考轨迹的组相对更新。当前尚无新结果。
+2026-09-09。按[迭代分析](execution_horizon_iteration_analysis.md)的第一优先级完成有界诊断：19个状态、228条分支，候选首H在A/current接力下均净增加3次成功，交互差0，无严格排序反转。条件组更新未触发，本批结束。完整数字与下一步建议见[结果报告](execution_horizon_continuation_results.md)。
 
 ## 判断实验
 
@@ -30,9 +30,7 @@
 
 `/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/continuation_diagnosis_20260909_v1`
 
-`probe/roots/*.json`按分支写入，`probe/summary.json`在整批完成时生成。启动通知获飞书服务`FEISHU_OK start`；首个Task0、ID300分歧root已找到并开始四格接力比较。目前未启动第二阶段更新，尚无整批结论。
-
-首root位于step105，A选H20、current选H25；首个repeat四格均已完成，重构physics差为0，均成功。它只确认真实输入输出和分支流程已跑通，不代表整体接力差异结论。已建立15分钟任务心跳`a`，运行中按需处理，完成后分析并依据上述条件推进；状态无实质变化时静默。
+00:58:33整批完成，`continuation_probe.exit=0`，`probe/summary.json`及全部逐分支JSON已生成并归档。Task5仅一个分歧root，因此共19个；不补采凑满上限。AA/CA/AC/CC成功52/55/50/53，各57次；严格反转0。未启动80局组采样、参数更新、开发或预留测试。运行阶段的飞书通知与15分钟任务心跳用于本批跟进，结束后清理心跳。
 
 ## Limitations
 

@@ -1,0 +1,13 @@
+{
+  "a_h": 25,
+  "c_h": 20,
+  "episode_id": 302,
+  "source_calls": 3,
+  "source_policy": "A",
+  "source_rpc_seconds": 0.35163610707968473,
+  "source_seconds": 3.717170799151063,
+  "source_steps": 50,
+  "source_terminal_success": null,
+  "status": "found_root",
+  "task_id": 6
+}

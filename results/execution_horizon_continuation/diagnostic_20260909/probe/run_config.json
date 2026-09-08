@@ -1,0 +1,32 @@
+{
+  "action_cot_denoising_steps": 10,
+  "candidate_params": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/replanning_diagnosis_20260908_v1/greedy_selection_9dca506/training_current/checkpoint.npz",
+  "episodes": [
+    300,
+    301,
+    302,
+    303
+  ],
+  "final_denoising_steps": 10,
+  "host": "localhost",
+  "initial_state_bank": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/feedback_paired_8e22b1f_20260907_v1/initial_state_bank_0_365",
+  "model_action_horizon": 25,
+  "num_steps_wait": 10,
+  "port": 8040,
+  "repeats": 3,
+  "resize_size": 224,
+  "roots_per_task": 2,
+  "seed": 87007,
+  "tasks": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ]
+}

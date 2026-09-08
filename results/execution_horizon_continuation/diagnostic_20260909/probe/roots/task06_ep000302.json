@@ -1,0 +1,1137 @@
+{
+  "a_h": 25,
+  "branches": [
+    {
+      "actual_first_h": 25,
+      "calls": 9,
+      "continuation": "A",
+      "continuation_calls": 8,
+      "continuation_rpc_seconds": 0.9815888688899577,
+      "continuation_seeds": [
+        1603107057,
+        1603107058,
+        1603107059,
+        1603107060,
+        1603107061,
+        1603107062,
+        1603107063,
+        1603107064
+      ],
+      "decisions": [
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 75
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 90
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 115
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 215
+        }
+      ],
+      "final_step": 218,
+      "first": "A",
+      "forced_h": 25,
+      "full_seconds": 3.155377916060388,
+      "policy_seconds": 0.9974238844588399,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 0,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.1065510958433151,
+      "segment_seconds_excluding_shared_root_rpc": 3.0302151190117,
+      "steps": 168,
+      "success": true
+    },
+    {
+      "actual_first_h": 20,
+      "calls": 9,
+      "continuation": "A",
+      "continuation_calls": 8,
+      "continuation_rpc_seconds": 0.9863500245846808,
+      "continuation_seeds": [
+        1603107057,
+        1603107058,
+        1603107059,
+        1603107060,
+        1603107061,
+        1603107062,
+        1603107063,
+        1603107064
+      ],
+      "decisions": [
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 70
+        },
+        {
+          "a_h": 15,
+          "c_h": 20,
+          "selected_h": 15,
+          "step": 95
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 110
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 130
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 150
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 170
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 190
+        },
+        {
+          "a_h": 20,
+          "c_h": 5,
+          "selected_h": 20,
+          "step": 215
+        }
+      ],
+      "final_step": 218,
+      "first": "C",
+      "forced_h": 20,
+      "full_seconds": 3.3291018651798368,
+      "policy_seconds": 1.0061499592848122,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 0,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.1113122515380383,
+      "segment_seconds_excluding_shared_root_rpc": 3.203939068131149,
+      "steps": 168,
+      "success": true
+    },
+    {
+      "actual_first_h": 25,
+      "calls": 8,
+      "continuation": "C",
+      "continuation_calls": 7,
+      "continuation_rpc_seconds": 0.8453916348516941,
+      "continuation_seeds": [
+        1603107057,
+        1603107058,
+        1603107059,
+        1603107060,
+        1603107061,
+        1603107062,
+        1603107063
+      ],
+      "decisions": [
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 75
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 90
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 115
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 195
+        }
+      ],
+      "final_step": 218,
+      "first": "A",
+      "forced_h": 25,
+      "full_seconds": 3.0096585154533386,
+      "policy_seconds": 0.88795943884179,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 0,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 0.9703538618050516,
+      "segment_seconds_excluding_shared_root_rpc": 2.8844957184046507,
+      "steps": 168,
+      "success": true
+    },
+    {
+      "actual_first_h": 20,
+      "calls": 9,
+      "continuation": "C",
+      "continuation_calls": 8,
+      "continuation_rpc_seconds": 0.9754093517549336,
+      "continuation_seeds": [
+        1603107057,
+        1603107058,
+        1603107059,
+        1603107060,
+        1603107061,
+        1603107062,
+        1603107063,
+        1603107064
+      ],
+      "decisions": [
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 70
+        },
+        {
+          "a_h": 15,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 95
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 115
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 215
+        }
+      ],
+      "final_step": 220,
+      "first": "C",
+      "forced_h": 20,
+      "full_seconds": 3.300116477999836,
+      "policy_seconds": 0.9873430472798645,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 0,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.100371578708291,
+      "segment_seconds_excluding_shared_root_rpc": 3.1749536809511483,
+      "steps": 170,
+      "success": true
+    },
+    {
+      "actual_first_h": 20,
+      "calls": 10,
+      "continuation": "C",
+      "continuation_calls": 9,
+      "continuation_rpc_seconds": 1.0832313583232462,
+      "continuation_seeds": [
+        1623107057,
+        1623107058,
+        1623107059,
+        1623107060,
+        1623107061,
+        1623107062,
+        1623107063,
+        1623107064,
+        1623107065
+      ],
+      "decisions": [
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 70
+        },
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 95
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 110
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 130
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 150
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 220
+        }
+      ],
+      "final_step": 221,
+      "first": "C",
+      "forced_h": 20,
+      "full_seconds": 3.4275445048697293,
+      "policy_seconds": 1.0885226088576019,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 1,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.2081935852766037,
+      "segment_seconds_excluding_shared_root_rpc": 3.3023817078210413,
+      "steps": 171,
+      "success": true
+    },
+    {
+      "actual_first_h": 25,
+      "calls": 9,
+      "continuation": "C",
+      "continuation_calls": 8,
+      "continuation_rpc_seconds": 0.9049543906003237,
+      "continuation_seeds": [
+        1623107057,
+        1623107058,
+        1623107059,
+        1623107060,
+        1623107061,
+        1623107062,
+        1623107063,
+        1623107064
+      ],
+      "decisions": [
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 75
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 90
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 115
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 215
+        }
+      ],
+      "final_step": 226,
+      "first": "A",
+      "forced_h": 25,
+      "full_seconds": 3.275039464235306,
+      "policy_seconds": 0.9358431189320982,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 1,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.0299166175536811,
+      "segment_seconds_excluding_shared_root_rpc": 3.149876667186618,
+      "steps": 176,
+      "success": true
+    },
+    {
+      "actual_first_h": 20,
+      "calls": 10,
+      "continuation": "A",
+      "continuation_calls": 9,
+      "continuation_rpc_seconds": 0.9121164917014539,
+      "continuation_seeds": [
+        1623107057,
+        1623107058,
+        1623107059,
+        1623107060,
+        1623107061,
+        1623107062,
+        1623107063,
+        1623107064,
+        1623107065
+      ],
+      "decisions": [
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 70
+        },
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 95
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 110
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 130
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 150
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 220
+        }
+      ],
+      "final_step": 221,
+      "first": "C",
+      "forced_h": 20,
+      "full_seconds": 3.3427532739005983,
+      "policy_seconds": 0.9605971658602357,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 1,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.0370787186548114,
+      "segment_seconds_excluding_shared_root_rpc": 3.2175904768519104,
+      "steps": 171,
+      "success": true
+    },
+    {
+      "actual_first_h": 25,
+      "calls": 9,
+      "continuation": "A",
+      "continuation_calls": 8,
+      "continuation_rpc_seconds": 0.7941714664921165,
+      "continuation_seeds": [
+        1623107057,
+        1623107058,
+        1623107059,
+        1623107060,
+        1623107061,
+        1623107062,
+        1623107063,
+        1623107064
+      ],
+      "decisions": [
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 75
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 90
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 115
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 215
+        }
+      ],
+      "final_step": 226,
+      "first": "A",
+      "forced_h": 25,
+      "full_seconds": 3.204867084044963,
+      "policy_seconds": 0.8523357706144452,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 1,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 0.9191336934454739,
+      "segment_seconds_excluding_shared_root_rpc": 3.079704286996275,
+      "steps": 176,
+      "success": true
+    },
+    {
+      "actual_first_h": 25,
+      "calls": 10,
+      "continuation": "A",
+      "continuation_calls": 9,
+      "continuation_rpc_seconds": 1.0477479100227356,
+      "continuation_seeds": [
+        1643107057,
+        1643107058,
+        1643107059,
+        1643107060,
+        1643107061,
+        1643107062,
+        1643107063,
+        1643107064,
+        1643107065
+      ],
+      "decisions": [
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 75
+        },
+        {
+          "a_h": 10,
+          "c_h": 25,
+          "selected_h": 10,
+          "step": 90
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 100
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 120
+        },
+        {
+          "a_h": 20,
+          "c_h": 5,
+          "selected_h": 20,
+          "step": 140
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 160
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 180
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 200
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 225
+        }
+      ],
+      "final_step": 229,
+      "first": "A",
+      "forced_h": 25,
+      "full_seconds": 3.411903080996126,
+      "policy_seconds": 1.0614877110347152,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 2,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.172710136976093,
+      "segment_seconds_excluding_shared_root_rpc": 3.286740283947438,
+      "steps": 179,
+      "success": true
+    },
+    {
+      "actual_first_h": 20,
+      "calls": 9,
+      "continuation": "A",
+      "continuation_calls": 8,
+      "continuation_rpc_seconds": 0.9794502598233521,
+      "continuation_seeds": [
+        1643107057,
+        1643107058,
+        1643107059,
+        1643107060,
+        1643107061,
+        1643107062,
+        1643107063,
+        1643107064
+      ],
+      "decisions": [
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 70
+        },
+        {
+          "a_h": 15,
+          "c_h": 20,
+          "selected_h": 15,
+          "step": 95
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 110
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 130
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 150
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 170
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 190
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 210
+        }
+      ],
+      "final_step": 218,
+      "first": "C",
+      "forced_h": 20,
+      "full_seconds": 3.2217733366414905,
+      "policy_seconds": 0.9941838104277849,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 2,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.1044124867767096,
+      "segment_seconds_excluding_shared_root_rpc": 3.0966105395928025,
+      "steps": 168,
+      "success": true
+    },
+    {
+      "actual_first_h": 25,
+      "calls": 9,
+      "continuation": "C",
+      "continuation_calls": 8,
+      "continuation_rpc_seconds": 0.9775097514502704,
+      "continuation_seeds": [
+        1643107057,
+        1643107058,
+        1643107059,
+        1643107060,
+        1643107061,
+        1643107062,
+        1643107063,
+        1643107064
+      ],
+      "decisions": [
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 75
+        },
+        {
+          "a_h": 10,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 90
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 115
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 215
+        }
+      ],
+      "final_step": 235,
+      "first": "A",
+      "forced_h": 25,
+      "full_seconds": 3.461539584212005,
+      "policy_seconds": 0.9946706341579556,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 2,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.1024719784036279,
+      "segment_seconds_excluding_shared_root_rpc": 3.336376787163317,
+      "steps": 185,
+      "success": true
+    },
+    {
+      "actual_first_h": 20,
+      "calls": 10,
+      "continuation": "C",
+      "continuation_calls": 9,
+      "continuation_rpc_seconds": 1.1254069763235748,
+      "continuation_seeds": [
+        1643107057,
+        1643107058,
+        1643107059,
+        1643107060,
+        1643107061,
+        1643107062,
+        1643107063,
+        1643107064,
+        1643107065
+      ],
+      "decisions": [
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 70
+        },
+        {
+          "a_h": 15,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 95
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 115
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 160
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 180
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 200
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 225
+        }
+      ],
+      "final_step": 229,
+      "first": "C",
+      "forced_h": 20,
+      "full_seconds": 3.611250109039247,
+      "policy_seconds": 1.1283006737940013,
+      "prefix_executed_steps": 50,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 50,
+      "repeat": 2,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.12496222695335746,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.2503692032769322,
+      "segment_seconds_excluding_shared_root_rpc": 3.486087311990559,
+      "steps": 179,
+      "success": true
+    }
+  ],
+  "c_h": 20,
+  "diagnostic_only": true,
+  "effects": {
+    "cell_means": {
+      "AA": {
+        "calls": 9.333333333333334,
+        "full_seconds": 3.2573826937004924,
+        "policy_seconds": 0.9704157887026668,
+        "rpc_seconds": 1.066131642088294,
+        "steps": 174.33333333333334
+      },
+      "AC": {
+        "calls": 8.666666666666666,
+        "full_seconds": 3.2487458546335497,
+        "policy_seconds": 0.9394910639772812,
+        "rpc_seconds": 1.0342474859207869,
+        "steps": 176.33333333333334
+      },
+      "CA": {
+        "calls": 9.333333333333334,
+        "full_seconds": 3.2978761585739753,
+        "policy_seconds": 0.9869769785242776,
+        "rpc_seconds": 1.0842678189898531,
+        "steps": 169.0
+      },
+      "CC": {
+        "calls": 9.666666666666666,
+        "full_seconds": 3.4463036973029375,
+        "policy_seconds": 1.0680554433104892,
+        "rpc_seconds": 1.1863114557539423,
+        "steps": 173.33333333333334
+      }
+    },
+    "delta_A": 0,
+    "delta_C": 0,
+    "harmful_reversal": false,
+    "interaction": 0,
+    "nonnegative_to_harmful": false,
+    "paired": [
+      {
+        "delta_A": 0,
+        "delta_C": 0,
+        "interaction": 0,
+        "repeat": 0,
+        "success": {
+          "AA": 1,
+          "AC": 1,
+          "CA": 1,
+          "CC": 1
+        }
+      },
+      {
+        "delta_A": 0,
+        "delta_C": 0,
+        "interaction": 0,
+        "repeat": 1,
+        "success": {
+          "AA": 1,
+          "AC": 1,
+          "CA": 1,
+          "CC": 1
+        }
+      },
+      {
+        "delta_A": 0,
+        "delta_C": 0,
+        "interaction": 0,
+        "repeat": 2,
+        "success": {
+          "AA": 1,
+          "AC": 1,
+          "CA": 1,
+          "CC": 1
+        }
+      }
+    ],
+    "same_sign": true,
+    "strict_reversal": false,
+    "success_counts": {
+      "AA": 3,
+      "AC": 3,
+      "CA": 3,
+      "CC": 3
+    },
+    "trials_per_cell": 3
+  },
+  "episode_id": 302,
+  "root_npz": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/continuation_diagnosis_20260909_v1/probe/roots/task06_ep000302.npz",
+  "root_step": 50,
+  "status": "complete",
+  "task_id": 6
+}

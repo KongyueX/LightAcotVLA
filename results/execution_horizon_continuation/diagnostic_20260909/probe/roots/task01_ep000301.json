@@ -1,0 +1,1879 @@
+{
+  "a_h": 15,
+  "branches": [
+    {
+      "actual_first_h": 15,
+      "calls": 19,
+      "continuation": "A",
+      "continuation_calls": 18,
+      "continuation_rpc_seconds": 2.1657711542211473,
+      "continuation_seeds": [
+        353097087,
+        353097088,
+        353097089,
+        353097090,
+        353097091,
+        353097092,
+        353097093,
+        353097094,
+        353097095,
+        353097096,
+        353097097,
+        353097098,
+        353097099,
+        353097100,
+        353097101,
+        353097102,
+        353097103,
+        353097104
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 130
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 190
+        },
+        {
+          "a_h": 10,
+          "c_h": 10,
+          "selected_h": 10,
+          "step": 210
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 220
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 225
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 230
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 235
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 20,
+          "step": 240
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 260
+        }
+      ],
+      "final_step": 273,
+      "first": "A",
+      "forced_h": 15,
+      "full_seconds": 5.773055633995682,
+      "policy_seconds": 2.0612089005298913,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 0,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 2.284423551056534,
+      "segment_seconds_excluding_shared_root_rpc": 5.654170964378864,
+      "steps": 193,
+      "success": true
+    },
+    {
+      "actual_first_h": 5,
+      "calls": 20,
+      "continuation": "A",
+      "continuation_calls": 19,
+      "continuation_rpc_seconds": 2.262919476721436,
+      "continuation_seeds": [
+        353097087,
+        353097088,
+        353097089,
+        353097090,
+        353097091,
+        353097092,
+        353097093,
+        353097094,
+        353097095,
+        353097096,
+        353097097,
+        353097098,
+        353097099,
+        353097100,
+        353097101,
+        353097102,
+        353097103,
+        353097104,
+        353097105
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 85
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 90
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 130
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 160
+        },
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 180
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 20,
+          "step": 215
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 235
+        },
+        {
+          "a_h": 5,
+          "c_h": 20,
+          "selected_h": 5,
+          "step": 240
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 20,
+          "step": 245
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 265
+        }
+      ],
+      "final_step": 267,
+      "first": "C",
+      "forced_h": 5,
+      "full_seconds": 5.654232732951641,
+      "policy_seconds": 2.1480795769020915,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 0,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 2.3815718735568225,
+      "segment_seconds_excluding_shared_root_rpc": 5.535348063334823,
+      "steps": 187,
+      "success": true
+    },
+    {
+      "actual_first_h": 15,
+      "calls": 19,
+      "continuation": "C",
+      "continuation_calls": 18,
+      "continuation_rpc_seconds": 2.1571247312240303,
+      "continuation_seeds": [
+        353097087,
+        353097088,
+        353097089,
+        353097090,
+        353097091,
+        353097092,
+        353097093,
+        353097094,
+        353097095,
+        353097096,
+        353097097,
+        353097098,
+        353097099,
+        353097100,
+        353097101,
+        353097102,
+        353097103,
+        353097104
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 130
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 190
+        },
+        {
+          "a_h": 10,
+          "c_h": 10,
+          "selected_h": 10,
+          "step": 210
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 220
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 225
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 230
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 235
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 240
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 265
+        }
+      ],
+      "final_step": 267,
+      "first": "A",
+      "forced_h": 15,
+      "full_seconds": 5.510660974308848,
+      "policy_seconds": 2.0522844083607197,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 0,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 2.275777128059417,
+      "segment_seconds_excluding_shared_root_rpc": 5.39177630469203,
+      "steps": 187,
+      "success": true
+    },
+    {
+      "actual_first_h": 5,
+      "calls": 18,
+      "continuation": "C",
+      "continuation_calls": 17,
+      "continuation_rpc_seconds": 1.8565931799821556,
+      "continuation_seeds": [
+        353097087,
+        353097088,
+        353097089,
+        353097090,
+        353097091,
+        353097092,
+        353097093,
+        353097094,
+        353097095,
+        353097096,
+        353097097,
+        353097098,
+        353097099,
+        353097100,
+        353097101,
+        353097102,
+        353097103
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 85
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 90
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 130
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 160
+        },
+        {
+          "a_h": 15,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 180
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 215
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 240
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 260
+        }
+      ],
+      "final_step": 270,
+      "first": "C",
+      "forced_h": 5,
+      "full_seconds": 5.334102865308523,
+      "policy_seconds": 1.8038621479645371,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 0,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.9752455768175423,
+      "segment_seconds_excluding_shared_root_rpc": 5.215218195691705,
+      "steps": 190,
+      "success": true
+    },
+    {
+      "actual_first_h": 5,
+      "calls": 20,
+      "continuation": "C",
+      "continuation_calls": 19,
+      "continuation_rpc_seconds": 2.237408105749637,
+      "continuation_seeds": [
+        373097087,
+        373097088,
+        373097089,
+        373097090,
+        373097091,
+        373097092,
+        373097093,
+        373097094,
+        373097095,
+        373097096,
+        373097097,
+        373097098,
+        373097099,
+        373097100,
+        373097101,
+        373097102,
+        373097103,
+        373097104,
+        373097105
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 85
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 90
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 5,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 130
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 150
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 170
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 190
+        },
+        {
+          "a_h": 10,
+          "c_h": 10,
+          "selected_h": 10,
+          "step": 210
+        },
+        {
+          "a_h": 20,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 220
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 225
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 230
+        },
+        {
+          "a_h": 5,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 235
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 260
+        }
+      ],
+      "final_step": 263,
+      "first": "C",
+      "forced_h": 5,
+      "full_seconds": 5.6031950381584466,
+      "policy_seconds": 2.119440609123558,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 1,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 2.3560605025850236,
+      "segment_seconds_excluding_shared_root_rpc": 5.484310368541628,
+      "steps": 183,
+      "success": true
+    },
+    {
+      "actual_first_h": 15,
+      "calls": 17,
+      "continuation": "C",
+      "continuation_calls": 16,
+      "continuation_rpc_seconds": 1.6150674722157419,
+      "continuation_seeds": [
+        373097087,
+        373097088,
+        373097089,
+        373097090,
+        373097091,
+        373097092,
+        373097093,
+        373097094,
+        373097095,
+        373097096,
+        373097097,
+        373097098,
+        373097099,
+        373097100,
+        373097101,
+        373097102
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 125
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 150
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 170
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 190
+        },
+        {
+          "a_h": 10,
+          "c_h": 10,
+          "selected_h": 10,
+          "step": 210
+        },
+        {
+          "a_h": 20,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 220
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 225
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 230
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 235
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 240
+        }
+      ],
+      "final_step": 264,
+      "first": "A",
+      "forced_h": 15,
+      "full_seconds": 4.931537811644375,
+      "policy_seconds": 1.6016341517679393,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 1,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.7337198690511286,
+      "segment_seconds_excluding_shared_root_rpc": 4.812653142027557,
+      "steps": 184,
+      "success": true
+    },
+    {
+      "actual_first_h": 5,
+      "calls": 20,
+      "continuation": "A",
+      "continuation_calls": 19,
+      "continuation_rpc_seconds": 2.2532217442058027,
+      "continuation_seeds": [
+        373097087,
+        373097088,
+        373097089,
+        373097090,
+        373097091,
+        373097092,
+        373097093,
+        373097094,
+        373097095,
+        373097096,
+        373097097,
+        373097098,
+        373097099,
+        373097100,
+        373097101,
+        373097102,
+        373097103,
+        373097104,
+        373097105
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 85
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 90
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 5,
+          "c_h": 20,
+          "selected_h": 5,
+          "step": 130
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 160
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 180
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 200
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 225
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 230
+        },
+        {
+          "a_h": 5,
+          "c_h": 20,
+          "selected_h": 5,
+          "step": 235
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 20,
+          "step": 240
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 260
+        }
+      ],
+      "final_step": 261,
+      "first": "C",
+      "forced_h": 5,
+      "full_seconds": 5.549244136549532,
+      "policy_seconds": 2.1444376837462187,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 1,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 2.3718741410411894,
+      "segment_seconds_excluding_shared_root_rpc": 5.430359466932714,
+      "steps": 181,
+      "success": true
+    },
+    {
+      "actual_first_h": 15,
+      "calls": 15,
+      "continuation": "A",
+      "continuation_calls": 14,
+      "continuation_rpc_seconds": 1.6607403117232025,
+      "continuation_seeds": [
+        373097087,
+        373097088,
+        373097089,
+        373097090,
+        373097091,
+        373097092,
+        373097093,
+        373097094,
+        373097095,
+        373097096,
+        373097097,
+        373097098,
+        373097099,
+        373097100
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 125
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 150
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 170
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 190
+        },
+        {
+          "a_h": 10,
+          "c_h": 10,
+          "selected_h": 10,
+          "step": 210
+        },
+        {
+          "a_h": 20,
+          "c_h": 5,
+          "selected_h": 20,
+          "step": 220
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 240
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 260
+        }
+      ],
+      "final_step": 263,
+      "first": "A",
+      "forced_h": 15,
+      "full_seconds": 4.923502081539482,
+      "policy_seconds": 1.6057137120515108,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 1,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.7793927085585892,
+      "segment_seconds_excluding_shared_root_rpc": 4.8046174119226635,
+      "steps": 183,
+      "success": true
+    },
+    {
+      "actual_first_h": 15,
+      "calls": 15,
+      "continuation": "A",
+      "continuation_calls": 14,
+      "continuation_rpc_seconds": 1.6868281243368983,
+      "continuation_seeds": [
+        393097087,
+        393097088,
+        393097089,
+        393097090,
+        393097091,
+        393097092,
+        393097093,
+        393097094,
+        393097095,
+        393097096,
+        393097097,
+        393097098,
+        393097099,
+        393097100
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 20,
+          "step": 130
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 150
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 170
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 190
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 210
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 235
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 255
+        }
+      ],
+      "final_step": 264,
+      "first": "A",
+      "forced_h": 15,
+      "full_seconds": 4.982387334574014,
+      "policy_seconds": 1.627366284839809,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 2,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.805480521172285,
+      "segment_seconds_excluding_shared_root_rpc": 4.8635026649571955,
+      "steps": 184,
+      "success": true
+    },
+    {
+      "actual_first_h": 5,
+      "calls": 19,
+      "continuation": "A",
+      "continuation_calls": 18,
+      "continuation_rpc_seconds": 2.0416236598975956,
+      "continuation_seeds": [
+        393097087,
+        393097088,
+        393097089,
+        393097090,
+        393097091,
+        393097092,
+        393097093,
+        393097094,
+        393097095,
+        393097096,
+        393097097,
+        393097098,
+        393097099,
+        393097100,
+        393097101,
+        393097102,
+        393097103,
+        393097104
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 85
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 90
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 130
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 160
+        },
+        {
+          "a_h": 15,
+          "c_h": 20,
+          "selected_h": 15,
+          "step": 180
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 215
+        },
+        {
+          "a_h": 20,
+          "c_h": 5,
+          "selected_h": 20,
+          "step": 220
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 240
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 260
+        }
+      ],
+      "final_step": 264,
+      "first": "C",
+      "forced_h": 5,
+      "full_seconds": 5.442552350461483,
+      "policy_seconds": 1.9629437820985913,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 2,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 2.1602760567329824,
+      "segment_seconds_excluding_shared_root_rpc": 5.323667680844665,
+      "steps": 184,
+      "success": true
+    },
+    {
+      "actual_first_h": 15,
+      "calls": 16,
+      "continuation": "C",
+      "continuation_calls": 15,
+      "continuation_rpc_seconds": 1.782347422093153,
+      "continuation_seeds": [
+        393097087,
+        393097088,
+        393097089,
+        393097090,
+        393097091,
+        393097092,
+        393097093,
+        393097094,
+        393097095,
+        393097096,
+        393097097,
+        393097098,
+        393097099,
+        393097100,
+        393097101
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 20,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 130
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 155
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 175
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 195
+        },
+        {
+          "a_h": 20,
+          "c_h": 15,
+          "selected_h": 15,
+          "step": 215
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 230
+        },
+        {
+          "a_h": 5,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 235
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 255
+        }
+      ],
+      "final_step": 262,
+      "first": "A",
+      "forced_h": 15,
+      "full_seconds": 5.109445747453719,
+      "policy_seconds": 1.7132321987301111,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 2,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 1.9009998189285398,
+      "segment_seconds_excluding_shared_root_rpc": 4.990561077836901,
+      "steps": 182,
+      "success": true
+    },
+    {
+      "actual_first_h": 5,
+      "calls": 19,
+      "continuation": "C",
+      "continuation_calls": 18,
+      "continuation_rpc_seconds": 2.151711762882769,
+      "continuation_seeds": [
+        393097087,
+        393097088,
+        393097089,
+        393097090,
+        393097091,
+        393097092,
+        393097093,
+        393097094,
+        393097095,
+        393097096,
+        393097097,
+        393097098,
+        393097099,
+        393097100,
+        393097101,
+        393097102,
+        393097103,
+        393097104
+      ],
+      "decisions": [
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 85
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 90
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 95
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 100
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 105
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 110
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 115
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 120
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 125
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 130
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 135
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 160
+        },
+        {
+          "a_h": 15,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 180
+        },
+        {
+          "a_h": 25,
+          "c_h": 25,
+          "selected_h": 25,
+          "step": 200
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 225
+        },
+        {
+          "a_h": 5,
+          "c_h": 5,
+          "selected_h": 5,
+          "step": 230
+        },
+        {
+          "a_h": 5,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 235
+        },
+        {
+          "a_h": 20,
+          "c_h": 20,
+          "selected_h": 20,
+          "step": 255
+        }
+      ],
+      "final_step": 267,
+      "first": "C",
+      "forced_h": 5,
+      "full_seconds": 5.580416775308549,
+      "policy_seconds": 2.0331132491119206,
+      "prefix_executed_steps": 80,
+      "prefix_policy_calls": 0,
+      "prefix_steps": 80,
+      "repeat": 2,
+      "root_physics_max_abs_difference": 0.0,
+      "root_reconstruction": "recorded_action_prefix",
+      "root_rpc_seconds": 0.11865239683538675,
+      "root_rpc_shared": true,
+      "root_valid": true,
+      "rpc_seconds": 2.270364159718156,
+      "segment_seconds_excluding_shared_root_rpc": 5.461532105691731,
+      "steps": 187,
+      "success": true
+    }
+  ],
+  "c_h": 5,
+  "diagnostic_only": true,
+  "effects": {
+    "cell_means": {
+      "AA": {
+        "calls": 16.333333333333332,
+        "full_seconds": 5.226315016703059,
+        "policy_seconds": 1.7647629658070703,
+        "rpc_seconds": 1.9564322602624695,
+        "steps": 186.66666666666666
+      },
+      "AC": {
+        "calls": 17.333333333333332,
+        "full_seconds": 5.183881511135648,
+        "policy_seconds": 1.7890502529529233,
+        "rpc_seconds": 1.9701656053463619,
+        "steps": 184.33333333333334
+      },
+      "CA": {
+        "calls": 19.666666666666668,
+        "full_seconds": 5.548676406654219,
+        "policy_seconds": 2.0851536809156337,
+        "rpc_seconds": 2.3045740237769983,
+        "steps": 184.0
+      },
+      "CC": {
+        "calls": 19.0,
+        "full_seconds": 5.505904892925173,
+        "policy_seconds": 1.9854720020666718,
+        "rpc_seconds": 2.200556746373574,
+        "steps": 186.66666666666666
+      }
+    },
+    "delta_A": 0,
+    "delta_C": 0,
+    "harmful_reversal": false,
+    "interaction": 0,
+    "nonnegative_to_harmful": false,
+    "paired": [
+      {
+        "delta_A": 0,
+        "delta_C": 0,
+        "interaction": 0,
+        "repeat": 0,
+        "success": {
+          "AA": 1,
+          "AC": 1,
+          "CA": 1,
+          "CC": 1
+        }
+      },
+      {
+        "delta_A": 0,
+        "delta_C": 0,
+        "interaction": 0,
+        "repeat": 1,
+        "success": {
+          "AA": 1,
+          "AC": 1,
+          "CA": 1,
+          "CC": 1
+        }
+      },
+      {
+        "delta_A": 0,
+        "delta_C": 0,
+        "interaction": 0,
+        "repeat": 2,
+        "success": {
+          "AA": 1,
+          "AC": 1,
+          "CA": 1,
+          "CC": 1
+        }
+      }
+    ],
+    "same_sign": true,
+    "strict_reversal": false,
+    "success_counts": {
+      "AA": 3,
+      "AC": 3,
+      "CA": 3,
+      "CC": 3
+    },
+    "trials_per_cell": 3
+  },
+  "episode_id": 301,
+  "root_npz": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/continuation_diagnosis_20260909_v1/probe/roots/task01_ep000301.npz",
+  "root_step": 80,
+  "status": "complete",
+  "task_id": 1
+}
