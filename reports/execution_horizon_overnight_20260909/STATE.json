@@ -1,10 +1,10 @@
 {
   "run_id": "run_20260909_031230",
-  "status": "finalizing",
-  "phase": "summary",
+  "status": "complete",
+  "phase": "complete",
   "start_utc": "2026-09-08T19:12:30Z",
   "deadline_utc": "2026-09-09T01:12:30Z",
-  "last_seen_utc": "2026-09-09T00:38:58.838174+00:00",
+  "last_seen_utc": "2026-09-09T00:45:02.382797+00:00",
   "round": 3,
   "pending_experiments": [],
   "reviewer_agent_id": "/root/overnight_reviewer",
@@ -32,18 +32,18 @@
   "code_commit": "97957a3",
   "code_snapshot": "/root/autodl-tmp/acotvla/code/LightAcotVLA_97957a3",
   "round_output": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round3",
-  "stage_child_pid": 172745,
+  "stage_child_pid": null,
   "last_progress": {
-    "checked_utc": "2026-09-09T00:01:29Z",
     "round": 3,
     "stage": "development",
-    "episodes": 168,
+    "status": "complete",
+    "episodes": 200,
     "episode_target": 200,
-    "child_alive": true,
-    "A_completed": 84,
-    "A_success": 77,
-    "masked_completed": 84,
-    "masked_success": 75
+    "child_alive": false,
+    "A_completed": 100,
+    "A_success": 93,
+    "masked_completed": 100,
+    "masked_success": 91
   },
   "round1_local_results": "results/execution_horizon_overnight_20260909/round1",
   "review_run_id": "run_20260909_6ab433e7",
@@ -74,9 +74,17 @@
     "rpc_change_percent": 7.084953531993034,
     "full_episode_change_percent": 2.8369885031536053
   },
-  "final_work_remaining": [
-    "publish final report",
-    "Feishu final notification",
-    "delete heartbeat"
+  "final_work_remaining": [],
+  "completed_at": "2026-09-09T00:45:02.382797+00:00",
+  "completion_reason": "precommitted stopping rule after unfavorable matched development; no supported replacement for A",
+  "final_report_commit": "22d243a",
+  "final_notification_result": "FEISHU_OK final_delivery_22d243a",
+  "automation_deleted": true,
+  "worker_sessions_running": [],
+  "baseline_server_retained": "h25_last_block_server on8040",
+  "reserved_346_365_used": false,
+  "conditional_evaluations_skipped": [
+    "R1 selected constant continue",
+    "R2 fresh did not beat matched masked"
   ]
 }

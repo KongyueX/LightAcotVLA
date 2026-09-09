@@ -23,3 +23,4 @@
 | 20260909_083858 | research-pipeline | NARRATIVE_REPORT_20260909_083858.md | implementation | Versioned final research handoff |
 | 20260909_083858 | research-pipeline | NARRATIVE_REPORT.md | implementation | Latest final report |
 | 20260909_083858 | research-pipeline | refine-logs/EXPERIMENT_TRACKER.md | implementation | Completed experiment stages |
+| 20260909_084502 | research-pipeline | refine-logs/EXPERIMENT_TRACKER_20260909_084502.md | implementation | Completed delivery and removed heartbeat |
