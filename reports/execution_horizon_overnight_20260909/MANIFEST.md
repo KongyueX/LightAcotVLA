@@ -19,3 +19,7 @@
 | 20260909_061617 | research-pipeline | refine-logs/round_1_results.md | implementation | Negative early selection with raw evidence |
 | 20260909_072903 | research-pipeline | refine-logs/round_2_results.md | implementation | Complete event data and locked candidate interpretation |
 | 20260909_072903 | research-pipeline | refine-logs/EXPERIMENT_PLAN.md | implementation | Frozen cached-policy validation registered before execution |
+| 20260909_083858 | research-pipeline | refine-logs/round_3_results.md | implementation | Complete paired development outcome |
+| 20260909_083858 | research-pipeline | NARRATIVE_REPORT_20260909_083858.md | implementation | Versioned final research handoff |
+| 20260909_083858 | research-pipeline | NARRATIVE_REPORT.md | implementation | Latest final report |
+| 20260909_083858 | research-pipeline | refine-logs/EXPERIMENT_TRACKER.md | implementation | Completed experiment stages |

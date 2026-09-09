@@ -1,14 +1,12 @@
 {
   "run_id": "run_20260909_031230",
-  "status": "running",
-  "phase": "experiment-bridge",
+  "status": "finalizing",
+  "phase": "summary",
   "start_utc": "2026-09-08T19:12:30Z",
   "deadline_utc": "2026-09-09T01:12:30Z",
-  "last_seen_utc": "2026-09-08T23:31:16.731181+00:00",
+  "last_seen_utc": "2026-09-09T00:38:58.838174+00:00",
   "round": 3,
-  "pending_experiments": [
-    "h25_overnight: frozen masked event versus A, 200 dev episodes"
-  ],
+  "pending_experiments": [],
   "reviewer_agent_id": "/root/overnight_reviewer",
   "auto_proceed": true,
   "human_checkpoint": false,
@@ -36,21 +34,23 @@
   "round_output": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round3",
   "stage_child_pid": 172745,
   "last_progress": {
-    "checked_utc": "2026-09-08T23:35:52.088366+00:00",
+    "checked_utc": "2026-09-09T00:01:29Z",
     "round": 3,
     "stage": "development",
-    "episodes": 9,
+    "episodes": 168,
     "episode_target": 200,
     "child_alive": true,
-    "event_checks": 11,
-    "event_triggers": 3
+    "A_completed": 84,
+    "A_success": 77,
+    "masked_completed": 84,
+    "masked_success": 75
   },
   "round1_local_results": "results/execution_horizon_overnight_20260909/round1",
   "review_run_id": "run_20260909_6ab433e7",
-  "review_round": 2,
+  "review_round": 3,
   "review_trace": ".aris/traces/auto-review-loop/2026-09-09_run01",
-  "review_score": 6,
-  "review_verdict": "not ready",
+  "review_score": 7,
+  "review_verdict": "ready",
   "round2_protocol": "gripper_event",
   "round1_outcome": "both_selected_constant_continue; saturated_early",
   "round2_local_results": "results/execution_horizon_overnight_20260909/round2",
@@ -58,5 +58,25 @@
   "first_real_io_round2": "Task0/308 root80, H15,k5,feature458,trials2x2,all4branches complete,physics_delta0",
   "round2_outcome": "fresh and masked identical early actions; no incremental proprio evidence",
   "round3_local_results": "results/execution_horizon_overnight_20260909/round3",
-  "candidate_masked_params": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2/training/masked/checkpoint.npz"
+  "candidate_masked_params": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2/training/masked/checkpoint.npz",
+  "review_scope": "bounded negative handoff; not publication",
+  "candidate_decision": "reject_fixed_event_masked_retain_A",
+  "candidate_promoted": false,
+  "experiments_complete": true,
+  "publication_ready": false,
+  "final_report": "reports/execution_horizon_overnight_20260909/NARRATIVE_REPORT.md",
+  "final_metrics": {
+    "A_success": 93,
+    "candidate_success": 91,
+    "paired_episodes": 100,
+    "rescues": 2,
+    "regressions": 4,
+    "rpc_change_percent": 7.084953531993034,
+    "full_episode_change_percent": 2.8369885031536053
+  },
+  "final_work_remaining": [
+    "publish final report",
+    "Feishu final notification",
+    "delete heartbeat"
+  ]
 }

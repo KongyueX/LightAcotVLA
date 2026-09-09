@@ -1,0 +1,391 @@
+{
+  "candidate_metadata": {
+    "batch_size": 64,
+    "best_step": 25,
+    "check_after": null,
+    "check_schedule": "gripper_event",
+    "checkpoint_selection": "root-equal greedy early success, then lower RPC seconds; threshold0; step0 included",
+    "feature_dim": 458,
+    "hidden_dim": 64,
+    "input_contract": "A summary, start proprio, original chunk, planned H, clock, fresh proprio",
+    "learning_rate": 0.001,
+    "normalization_fit": "common_raw_training_features_only",
+    "pre_feature_dim": 442,
+    "schema_version": 1,
+    "seed": 7,
+    "threshold": 0.027104230597615242,
+    "training_objective": "mse_success_gated_bounded_relative_rpc_gain",
+    "trigger_calibration": {
+      "actual_count": 6,
+      "actual_rate": 0.3157894736842105,
+      "exact_match": true,
+      "method": "single_early_score_order_statistic; nearest attainable count; tie favors fewer replans",
+      "outcomes_used": false,
+      "roots": 19,
+      "scope": "Early-root trigger matching only; deployment trigger rates and RPC costs may differ.",
+      "target_count": 6,
+      "target_rate": 0.3157894736842105,
+      "threshold": 0.027104230597615242
+    },
+    "updates": 400,
+    "variant": "masked"
+  },
+  "candidate_params": "/root/autodl-tmp/acotvla/execution_horizon_h25/snapshot_relabel_4770d19/overnight_20260909_031230/round2/training/masked/checkpoint.npz",
+  "development": {
+    "monitor": {
+      "ordered_midchunk_masked": {
+        "checks": 298,
+        "monitor_ms": 57.65093211084604,
+        "monitor_ms_per_episode": 0.5765093211084604,
+        "replans": 98,
+        "trigger_fraction": 0.3288590604026846
+      }
+    },
+    "pairwise": {
+      "ordered_midchunk_masked": {
+        "both_failure": 5,
+        "both_success": 89,
+        "exact_mcnemar_two_sided_p": 0.6875,
+        "gates": {
+          "full_elapsed_reduced_ucb95": false,
+          "policy_time_reduced_ucb95": false,
+          "rpc_time_reduced_ucb95": false,
+          "strict_engineering_go": false,
+          "success_noninferior_lcb95": false
+        },
+        "metric_delta_candidate_minus_reference": {
+          "actual_episode_elapsed_total_ms": {
+            "ci95": [
+              -636.2600887718145,
+              1530.415357762015
+            ],
+            "lcb95": -508.09452080749907,
+            "mean": 307.1053409622982,
+            "num_clusters": 100,
+            "num_rows": 100,
+            "num_tasks": 10,
+            "ucb95": 1284.64411015925
+          },
+          "actual_policy_total_ms": {
+            "ci95": [
+              -179.66234242112841,
+              530.3647826525848
+            ],
+            "lcb95": -136.81006611604244,
+            "mean": 123.02381771616638,
+            "num_clusters": 100,
+            "num_rows": 100,
+            "num_tasks": 10,
+            "ucb95": 440.5311042589601
+          },
+          "policy_calls": {
+            "ci95": [
+              -1.6099999999999999,
+              4.85
+            ],
+            "lcb95": -1.26,
+            "mean": 1.13,
+            "num_clusters": 100,
+            "num_rows": 100,
+            "num_tasks": 10,
+            "ucb95": 4.09
+          },
+          "policy_rpc_wall_total_ms": {
+            "ci95": [
+              -190.36543938796967,
+              567.046101979329
+            ],
+            "lcb95": -145.19862375291996,
+            "mean": 137.05524357035756,
+            "num_clusters": 100,
+            "num_rows": 100,
+            "num_tasks": 10,
+            "ucb95": 488.30105889705015
+          }
+        },
+        "net_rescues": -2,
+        "paired_episodes": 100,
+        "per_task": {
+          "0": {
+            "elapsed_ms_delta": 77.94294082559645,
+            "episodes": 10,
+            "policy_calls_delta": 0.4,
+            "policy_ms_delta": 61.49217085912824,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": 72.60371027514338,
+            "success_delta": 0.0
+          },
+          "1": {
+            "elapsed_ms_delta": -224.63940046727657,
+            "episodes": 10,
+            "policy_calls_delta": -1.0,
+            "policy_ms_delta": -89.87820209003985,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": -101.071836380288,
+            "success_delta": 0.0
+          },
+          "2": {
+            "elapsed_ms_delta": -1157.0426578633487,
+            "episodes": 10,
+            "policy_calls_delta": -3.2,
+            "policy_ms_delta": -343.10839935205877,
+            "regressions": 0,
+            "rescues": 1,
+            "rpc_ms_delta": -380.34192603081465,
+            "success_delta": 0.1
+          },
+          "3": {
+            "elapsed_ms_delta": 1535.174362314865,
+            "episodes": 10,
+            "policy_calls_delta": 4.6,
+            "policy_ms_delta": 489.35022526420653,
+            "regressions": 1,
+            "rescues": 0,
+            "rpc_ms_delta": 542.6778770983219,
+            "success_delta": -0.1
+          },
+          "4": {
+            "elapsed_ms_delta": 201.32460719905794,
+            "episodes": 10,
+            "policy_calls_delta": 0.9,
+            "policy_ms_delta": 92.48666488565505,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": 103.55865629389882,
+            "success_delta": 0.0
+          },
+          "5": {
+            "elapsed_ms_delta": 132.64102996326983,
+            "episodes": 10,
+            "policy_calls_delta": 0.7,
+            "policy_ms_delta": 72.34674235805869,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": 80.71049614809453,
+            "success_delta": 0.0
+          },
+          "6": {
+            "elapsed_ms_delta": 4135.314759099856,
+            "episodes": 10,
+            "policy_calls_delta": 13.0,
+            "policy_ms_delta": 1408.950224518776,
+            "regressions": 3,
+            "rescues": 0,
+            "rpc_ms_delta": 1567.1428435016423,
+            "success_delta": -0.3
+          },
+          "7": {
+            "elapsed_ms_delta": -1260.9213979914784,
+            "episodes": 10,
+            "policy_calls_delta": -3.3,
+            "policy_ms_delta": -361.40530914999545,
+            "regressions": 0,
+            "rescues": 1,
+            "rpc_ms_delta": -401.7901789397001,
+            "success_delta": 0.1
+          },
+          "8": {
+            "elapsed_ms_delta": 24.451336171478033,
+            "episodes": 10,
+            "policy_calls_delta": 0.3,
+            "policy_ms_delta": 28.564345836639404,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": 31.623446941375732,
+            "success_delta": 0.0
+          },
+          "9": {
+            "elapsed_ms_delta": -393.1921696290374,
+            "episodes": 10,
+            "policy_calls_delta": -1.1,
+            "policy_ms_delta": -128.560285968706,
+            "regressions": 0,
+            "rescues": 0,
+            "rpc_ms_delta": -144.56065320409834,
+            "success_delta": 0.0
+          }
+        },
+        "regressions": 4,
+        "rescues": 2,
+        "speedups": {
+          "actual_episode_elapsed_total_ms": {
+            "candidate_mean": 11132.152415383607,
+            "candidate_reduction_fraction": -0.028369885031536052,
+            "reference_mean": 10825.047074421309,
+            "reference_over_candidate": 0.9724127617460656
+          },
+          "actual_policy_total_ms": {
+            "candidate_mean": 1864.4884213153273,
+            "candidate_reduction_fraction": -0.0706438807093223,
+            "reference_mean": 1741.464603599161,
+            "reference_over_candidate": 0.934017387123607
+          },
+          "policy_calls": {
+            "candidate_mean": 17.23,
+            "candidate_reduction_fraction": -0.07018633540372664,
+            "reference_mean": 16.1,
+            "reference_over_candidate": 0.9344167150319211
+          },
+          "policy_rpc_wall_total_ms": {
+            "candidate_mean": 2071.5103243477643,
+            "candidate_reduction_fraction": -0.07084953531993034,
+            "reference_mean": 1934.4550807774067,
+            "reference_over_candidate": 0.9338380108660521
+          }
+        },
+        "success_delta_cluster_bootstrap": {
+          "ci95": [
+            -0.11000000000000001,
+            0.05
+          ],
+          "lcb95": -0.09,
+          "mean": -0.019999999999999997,
+          "num_clusters": 100,
+          "num_rows": 100,
+          "num_tasks": 10,
+          "ucb95": 0.04
+        },
+        "success_rate_delta": -0.02
+      }
+    },
+    "runs": {
+      "ordered_midchunk_masked": {
+        "episodes": 100,
+        "means": {
+          "actual_episode_elapsed_total_ms": 11132.152415383607,
+          "actual_policy_total_ms": 1864.4884213153273,
+          "policy_calls": 17.23,
+          "policy_rpc_wall_total_ms": 2071.5103243477643
+        },
+        "per_task_success": {
+          "0": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "1": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "2": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "3": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "4": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "5": {
+            "episodes": 10,
+            "success_count": 7,
+            "success_rate": 0.7
+          },
+          "6": {
+            "episodes": 10,
+            "success_count": 7,
+            "success_rate": 0.7
+          },
+          "7": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "8": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "9": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          }
+        },
+        "success_count": 91,
+        "success_rate": 0.91,
+        "timeout_count": 9,
+        "timeout_rate": 0.09
+      },
+      "ordered_transformer": {
+        "episodes": 100,
+        "means": {
+          "actual_episode_elapsed_total_ms": 10825.047074421309,
+          "actual_policy_total_ms": 1741.464603599161,
+          "policy_calls": 16.1,
+          "policy_rpc_wall_total_ms": 1934.4550807774067
+        },
+        "per_task_success": {
+          "0": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "1": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "2": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "3": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "4": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "5": {
+            "episodes": 10,
+            "success_count": 7,
+            "success_rate": 0.7
+          },
+          "6": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "7": {
+            "episodes": 10,
+            "success_count": 9,
+            "success_rate": 0.9
+          },
+          "8": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          },
+          "9": {
+            "episodes": 10,
+            "success_count": 10,
+            "success_rate": 1.0
+          }
+        },
+        "success_count": 93,
+        "success_rate": 0.93,
+        "timeout_count": 7,
+        "timeout_rate": 0.07
+      }
+    },
+    "status": "complete"
+  },
+  "scope": "Frozen cached-context event policy; no fresh-proprio benefit claim.",
+  "status": "complete",
+  "threshold": 0.027104230597615242,
+  "training_performed": false
+}
